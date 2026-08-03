@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+from app.common.models.file import CommonFile
+from worker.plugins.base import BasePlugin, PluginContext
+
+
+class HashPlugin(BasePlugin):
+    """SHA256 계산 및 중복 검사를 담당한다."""
+
+    plugin_name = "HashPlugin"
+    plugin_version = "1.0.0"
+    plugin_priority = 10
+    worker_scope = "upload"
+
+    def run(self, context: PluginContext) -> None:
+        if context.incoming_path is None:
+            raise ValueError("incoming_path is required")
+        if not context.incoming_path.exists():
+            raise FileNotFoundError(f"Incoming file not found: {context.incoming_path}")
+        if context.job is None:
+            raise ValueError("upload job is required")
+
+        context.file_size = context.incoming_path.stat().st_size
+        context.file_id = context.storage_service.calculate_sha256(context.incoming_path)
+        context.log("SHA256_COMPLETE")
+
+        existing = (
+            context.db.query(CommonFile)
+            .filter(CommonFile.file_id == context.file_id)
+            .first()
+        )
+        context.log("DUPLICATE_CHECK_COMPLETE")
+
+        if existing is not None:
+            context.common_file = existing
+            context.storage_service.delete_incoming(context.job.incoming_path)
+            context.stop_pipeline = True
+            context.log("DUPLICATE_FOUND")

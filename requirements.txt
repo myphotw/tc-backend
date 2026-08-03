@@ -4,3 +4,8 @@ sqlalchemy
 psycopg2-binary
 python-dotenv
 pydantic-settings
+Pillow
+python-multipart
+requests
+google-cloud-vision
+google-auth

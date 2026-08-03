@@ -35,6 +35,15 @@ Base = declarative_base()
 # 모델 등록
 from app.common.models import api_key
 from app.common.models import setting
+from app.common.models import file
+from app.common.models import upload_job
+from app.common.models import file_metadata
+from app.common.models import metadata_history
+from app.common.models import file_tag
+from app.common.models import vision_job
+from app.common.models import api_usage
+from app.common.models import geocode_cache
+from app.common.models import worker_status
 
 from app.memorykeeper.models import photo
 from app.memorykeeper.models import tag

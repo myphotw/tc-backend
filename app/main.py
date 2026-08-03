@@ -1,3 +1,4 @@
+from app.common.routers import api_keys, monitoring, upload
 from fastapi import FastAPI
 from sqlalchemy import text
 
@@ -10,11 +11,19 @@ app = FastAPI(
     version="1.0.0"
 )
 
+app.include_router(api_keys.router)
+app.include_router(upload.router)
+app.include_router(monitoring.router)
+
 
 @app.on_event("startup")
 def startup():
-    Base.metadata.create_all(bind=engine)
-
+    try:
+        Base.metadata.create_all(bind=engine)
+        print("Database initialization completed")
+    except Exception as e:
+        print("Database initialization skipped")
+        print(e)
 
 @app.get("/")
 def root():
