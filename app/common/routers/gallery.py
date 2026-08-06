@@ -40,7 +40,7 @@ def list_gallery(
     page: int = Query(1, ge=1, description="페이지 번호 (1부터)"),
     page_size: int = Query(20, ge=1, le=200, description="페이지 크기"),
     sort: str = Query("capture_datetime_desc", description="정렬 키"),
-    service_name: str | None = Query(None, description="MemoryKeeper / AstroJournal"),
+    service_name: str = Query("MemoryKeeper", description="MemoryKeeper / AstroJournal"),
     db: Session = Depends(get_db),
 ) -> GalleryListResponse:
     """사진 목록을 조회한다."""
@@ -65,7 +65,7 @@ def search_gallery(
     camera: str | None = Query(None),
     tag: str | None = Query(None),
     favorite: bool | None = Query(None),
-    service_name: str | None = Query(None),
+    service_name: str = Query("MemoryKeeper"),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
     keyword: str | None = Query(None),
@@ -99,7 +99,7 @@ def search_gallery(
     description="GPS가 있는 사진만 Marker로 반환한다.",
 )
 def map_gallery(
-    service_name: str | None = Query(None),
+    service_name: str = Query("MemoryKeeper"),
     year: int | None = Query(None),
     db: Session = Depends(get_db),
 ) -> MapMarkerListResponse:
@@ -117,7 +117,7 @@ def map_gallery(
     description="촬영 연도별 사진 수를 반환한다.",
 )
 def timeline_gallery(
-    service_name: str | None = Query(None),
+    service_name: str = Query("MemoryKeeper"),
     db: Session = Depends(get_db),
 ) -> TimelineResponse:
     """년도별 사진 그룹을 조회한다."""
@@ -131,7 +131,7 @@ def timeline_gallery(
     description="전체/GPS/AI Tag/Camera/Country/Year/Service 통계를 반환한다.",
 )
 def statistics_gallery(
-    service_name: str | None = Query(None),
+    service_name: str = Query("MemoryKeeper"),
     db: Session = Depends(get_db),
 ) -> StatisticsResponse:
     """Gallery 통계를 조회한다."""

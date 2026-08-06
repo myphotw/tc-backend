@@ -23,6 +23,9 @@ class UploadJobStatusResponse(BaseModel):
     completed_at: datetime | None = None
     last_error: str | None = None
     updated_at: datetime | None = None
+    service_name: str | None = None
+    client_file_id: str | None = None
+    backend_file_id: str | None = None
 
 
 class UploadJobListResponse(BaseModel):

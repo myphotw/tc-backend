@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.common.database import get_db
@@ -22,6 +24,8 @@ router = APIRouter(
 )
 
 storage_service = StorageService()
+SUPPORTED_SERVICES = {"MemoryKeeper", "AstroJournal"}
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @router.post(
@@ -52,8 +56,11 @@ storage_service = StorageService()
 )
 def upload_file(
     file: UploadFile = File(..., description="업로드할 원본 파일"),
+    service_name: str = Form("MemoryKeeper"),
+    client_file_id: str | None = Form(None),
+    client_content_sha256: str | None = Form(None),
     db: Session = Depends(get_db),
-) -> dict[str, str | int]:
+) -> dict[str, str | int | bool | None]:
     """
     파일을 incoming 영역에 저장하고 업로드 작업을 생성한다.
 
@@ -62,6 +69,18 @@ def upload_file(
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="filename is required")
+
+    service_name = _validate_service_name(service_name)
+    client_file_id = _normalize_client_file_id(client_file_id)
+    client_content_sha256 = _normalize_client_content_sha256(client_content_sha256)
+    repository = UploadJobRepository(db)
+    if client_file_id is not None:
+        existing = repository.get_by_client_file_id(
+            service_name=service_name,
+            client_file_id=client_file_id,
+        )
+        if existing is not None:
+            return _idempotent_response(repository, existing, client_content_sha256)
 
     watch = Stopwatch()
     incoming_path: str | None = None
@@ -86,12 +105,27 @@ def upload_file(
         incoming_ms = watch.stop("incoming_save")
 
         watch.start("upload_job_create")
-        repository = UploadJobRepository(db)
-        job: UploadJob = repository.create_waiting_job(
-            job_id=job_id,
-            source_type="UPLOAD",
-            incoming_path=incoming_path,
-        )
+        try:
+            job: UploadJob = repository.create_waiting_job(
+                job_id=job_id,
+                source_type="UPLOAD",
+                incoming_path=incoming_path,
+                service_name=service_name,
+                client_file_id=client_file_id,
+                client_content_sha256=client_content_sha256,
+            )
+        except IntegrityError:
+            db.rollback()
+            storage_service.delete_incoming(incoming_path)
+            if client_file_id is None:
+                raise
+            existing = repository.get_by_client_file_id(
+                service_name=service_name,
+                client_file_id=client_file_id,
+            )
+            if existing is None:
+                raise
+            return _idempotent_response(repository, existing, client_content_sha256)
         job_ms = watch.stop("upload_job_create")
 
         log_perf(
@@ -108,12 +142,22 @@ def upload_file(
             job.job_id,
             job.incoming_path,
         )
-        return {
+        response: dict[str, str | int | bool | None] = {
             "id": job.id,
             "job_id": job.job_id,
             "status": job.status,
             "incoming_path": job.incoming_path,
         }
+        if client_file_id is not None or service_name != "MemoryKeeper":
+            response.update(
+                {
+                    "service_name": job.service_name,
+                    "client_file_id": job.client_file_id,
+                    "backend_file_id": job.file_id,
+                    "idempotent_replay": False,
+                }
+            )
+        return response
 
     except HTTPException:
         raise
@@ -126,3 +170,64 @@ def upload_file(
             status_code=500,
             detail=f"Failed to upload file: {exc}",
         ) from exc
+
+
+def _validate_service_name(value: str) -> str:
+    normalized = (value or "").strip()
+    if normalized not in SUPPORTED_SERVICES:
+        raise HTTPException(
+            status_code=422,
+            detail="service_name must be MemoryKeeper or AstroJournal",
+        )
+    return normalized
+
+
+def _normalize_client_file_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or len(normalized) > 255:
+        raise HTTPException(
+            status_code=422,
+            detail="client_file_id must be a non-empty string up to 255 characters",
+        )
+    return normalized
+
+
+def _normalize_client_content_sha256(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    if not _SHA256_RE.fullmatch(value):
+        raise HTTPException(
+            status_code=422,
+            detail="client_content_sha256 must be a 64-character lowercase hex SHA-256",
+        )
+    return value
+
+
+def _idempotent_response(
+    repository: UploadJobRepository,
+    job: UploadJob,
+    requested_hash: str | None,
+) -> dict[str, str | int | bool | None]:
+    existing_hash = job.client_content_sha256
+    if existing_hash and requested_hash and existing_hash != requested_hash:
+        raise HTTPException(
+            status_code=409,
+            detail="client_file_id is already associated with a different content hash",
+        )
+    if requested_hash and not existing_hash:
+        job = repository.set_client_content_sha256_if_missing(
+            job,
+            client_content_sha256=requested_hash,
+        )
+    return {
+        "id": job.id,
+        "job_id": job.job_id,
+        "status": job.status,
+        "incoming_path": job.incoming_path,
+        "service_name": job.service_name,
+        "client_file_id": job.client_file_id,
+        "backend_file_id": job.file_id,
+        "idempotent_replay": True,
+    }

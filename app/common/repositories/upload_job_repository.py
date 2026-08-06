@@ -54,6 +54,9 @@ class UploadJobRepository:
         job_id: str,
         source_type: str,
         incoming_path: str,
+        service_name: str = "MemoryKeeper",
+        client_file_id: str | None = None,
+        client_content_sha256: str | None = None,
     ) -> UploadJob:
         """WAITING 상태의 업로드 작업을 생성한다."""
         job = UploadJob(
@@ -61,9 +64,40 @@ class UploadJobRepository:
             source_type=source_type,
             status=UploadJobStatus.WAITING,
             incoming_path=incoming_path,
+            service_name=service_name,
+            client_file_id=client_file_id,
+            client_content_sha256=client_content_sha256,
         )
         self.db.add(job)
         self.db.flush()
+        with self._commit_keep_state():
+            pass
+        return job
+
+    def get_by_client_file_id(
+        self,
+        *,
+        service_name: str,
+        client_file_id: str,
+    ) -> UploadJob | None:
+        """Return an existing service-scoped idempotency job."""
+        return (
+            self.db.query(UploadJob)
+            .filter(UploadJob.service_name == service_name)
+            .filter(UploadJob.client_file_id == client_file_id)
+            .first()
+        )
+
+    def set_client_content_sha256_if_missing(
+        self,
+        job: UploadJob,
+        *,
+        client_content_sha256: str,
+    ) -> UploadJob:
+        """Backfill a hash supplied by a later retry without changing job state."""
+        if job.client_content_sha256:
+            return job
+        job.client_content_sha256 = client_content_sha256
         with self._commit_keep_state():
             pass
         return job

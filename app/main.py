@@ -1,4 +1,11 @@
-from app.common.routers import api_keys, gallery, monitoring, upload, upload_jobs
+from app.common.routers import (
+    api_keys,
+    capabilities,
+    gallery,
+    monitoring,
+    upload,
+    upload_jobs,
+)
 from fastapi import FastAPI, Request, Response
 from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -69,6 +76,7 @@ app.add_middleware(TimingMiddleware)
 app.include_router(api_keys.router)
 app.include_router(upload.router)
 app.include_router(upload_jobs.router)
+app.include_router(capabilities.router)
 app.include_router(monitoring.router)
 app.include_router(gallery.router)
 

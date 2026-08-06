@@ -153,7 +153,7 @@ class GalleryService:
         page: int = 1,
         page_size: int = 20,
         sort: str = "capture_datetime_desc",
-        service_name: str | None = None,
+        service_name: str | None = "MemoryKeeper",
     ) -> GalleryListResponse:
         return self._timed_list_like(
             endpoint="gallery_list",
@@ -236,7 +236,7 @@ class GalleryService:
         camera: str | None = None,
         tag: str | None = None,
         favorite: bool | None = None,
-        service_name: str | None = None,
+        service_name: str | None = "MemoryKeeper",
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         keyword: str | None = None,
@@ -270,7 +270,7 @@ class GalleryService:
     def map_markers(
         self,
         *,
-        service_name: str | None = None,
+        service_name: str | None = "MemoryKeeper",
         year: int | None = None,
     ) -> MapMarkerListResponse:
         watch = Stopwatch()
@@ -312,7 +312,7 @@ class GalleryService:
         )
         return response
 
-    def timeline(self, *, service_name: str | None = None) -> TimelineResponse:
+    def timeline(self, *, service_name: str | None = "MemoryKeeper") -> TimelineResponse:
         watch = Stopwatch()
         bind = self.repository.db.get_bind()
         with QueryCounter(bind) as counter:  # type: ignore[arg-type]
@@ -335,7 +335,7 @@ class GalleryService:
         )
         return response
 
-    def statistics(self, *, service_name: str | None = None) -> StatisticsResponse:
+    def statistics(self, *, service_name: str | None = "MemoryKeeper") -> StatisticsResponse:
         watch = Stopwatch()
         bind = self.repository.db.get_bind()
         with QueryCounter(bind) as counter:  # type: ignore[arg-type]

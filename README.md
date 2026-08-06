@@ -16,6 +16,21 @@ MemoryKeeper & AstroJournal 공통 Backend (**Version 1.0.0 Freeze**).
 Swagger UI: `/docs`  
 OpenAPI JSON: `/openapi.json`
 
+## Upload contract (API 1.1)
+
+`POST /api/common/upload` retains the legacy multipart `file` field. Optional
+multipart fields are `service_name` (`MemoryKeeper` by default; allowed values:
+`MemoryKeeper`, `AstroJournal`), `client_file_id`, and
+`client_content_sha256` (64-character lowercase SHA-256).
+
+The same `service_name + client_file_id` returns the existing UploadJob without
+saving another incoming file. Different non-null hashes return `409 Conflict`.
+File-only callers retain the original response shape; extended callers may
+receive `service_name`, `client_file_id`, `backend_file_id`, and
+`idempotent_replay`. Legacy Gallery endpoints default to MemoryKeeper when
+`service_name` is omitted. Feature discovery is available at
+`GET /api/common/capabilities`.
+
 ## 프로젝트 구조
 
 ```

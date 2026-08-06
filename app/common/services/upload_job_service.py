@@ -99,6 +99,9 @@ class UploadJobService:
             completed_at=job.completed_at,
             last_error=job.error_message,
             updated_at=job.completed_at or job.started_at or job.created_at,
+            service_name=job.service_name,
+            client_file_id=job.client_file_id,
+            backend_file_id=job.file_id,
         )
 
     def _calculate_progress(self, job: UploadJob) -> int:

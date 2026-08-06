@@ -255,7 +255,7 @@ class GalleryRepository:
                 {"name": str(year), "count": count}
                 for year, count in self.timeline(service_name=service_name)
             ],
-            "by_service": self._service_counts(),
+            "by_service": self._service_counts(service_name=service_name),
         }
 
     def _base_query(
@@ -397,14 +397,22 @@ class GalleryRepository:
         rows = query.group_by(column).order_by(func.count(CommonFile.id).desc()).all()
         return [{"name": str(name), "count": int(count)} for name, count in rows]
 
-    def _service_counts(self) -> list[dict[str, Any]]:
-        rows = (
+    def _service_counts(
+        self,
+        *,
+        service_name: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = (
             self.db.query(
                 CommonFile.service_name.label("name"),
                 func.count(CommonFile.id).label("count"),
             )
             .filter(CommonFile.deleted.is_(False))
-            .group_by(CommonFile.service_name)
+        )
+        if service_name:
+            query = query.filter(CommonFile.service_name == service_name)
+        rows = (
+            query.group_by(CommonFile.service_name)
             .order_by(func.count(CommonFile.id).desc())
             .all()
         )

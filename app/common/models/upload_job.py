@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Integer, String, Text
+from sqlalchemy import Column, DateTime, Index, Integer, String, Text, text
 from sqlalchemy.sql import func
 
 from app.common.database import Base
@@ -8,6 +8,16 @@ class UploadJob(Base):
     """업로드 후처리 작업 모델."""
 
     __tablename__ = "common_upload_jobs"
+    __table_args__ = (
+        Index(
+            "uq_common_upload_jobs_service_client_file_id",
+            "service_name",
+            "client_file_id",
+            unique=True,
+            postgresql_where=text("client_file_id IS NOT NULL"),
+            sqlite_where=text("client_file_id IS NOT NULL"),
+        ),
+    )
 
     id = Column(
         Integer,
@@ -37,6 +47,18 @@ class UploadJob(Base):
         Text,
         nullable=False,
     )
+
+    service_name = Column(
+        String(50),
+        nullable=False,
+        default="MemoryKeeper",
+        server_default=text("'MemoryKeeper'"),
+        index=True,
+    )
+
+    client_file_id = Column(String(255), nullable=True)
+
+    client_content_sha256 = Column(String(64), nullable=True)
 
     file_id = Column(
         String(64),

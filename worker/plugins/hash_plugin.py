@@ -36,3 +36,8 @@ class HashPlugin(BasePlugin):
             context.storage_service.delete_incoming(context.job.incoming_path)
             context.stop_pipeline = True
             context.log("DUPLICATE_FOUND")
+            context.log(
+                "DUPLICATE_FOUND "
+                f"existing_service={existing.service_name or 'MemoryKeeper'} "
+                f"requested_service={context.service_name}"
+            )

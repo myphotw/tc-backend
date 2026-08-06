@@ -187,10 +187,11 @@ def process_upload_job(
         extension=extension,
         mime_type=_guess_mime_type(extension),
         plugin_enabled={},
-        service_name="MemoryKeeper",
+        service_name=job.service_name or "MemoryKeeper",
         worker_id=resolved_worker_id,
         worker_monitor=monitor,
     )
+    context.log(f"SERVICE_NAME {context.service_name}")
 
     watch.start("plugins")
     PluginManager.load_plugins(worker_scope="upload").run(context)

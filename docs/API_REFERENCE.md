@@ -20,7 +20,21 @@ Version: `1.0.0`
 
 ## Upload
 
+### Capability discovery
+
+`GET /api/common/capabilities` returns API version `1.1`, supported services,
+and enabled upload-contract fields. It is separate from runtime health.
+
 ### `POST /api/common/upload`
+
+Optional multipart fields: `service_name` (`MemoryKeeper` default; allowed:
+`MemoryKeeper`, `AstroJournal`), `client_file_id`, and
+`client_content_sha256` (64-character lowercase hexadecimal SHA-256).
+
+For the same `service_name + client_file_id`, the API returns the original job
+without saving another incoming file. Different non-null hashes return `409`.
+If an earlier job has no hash, a later valid hash backfills it and returns the
+original job. File-only requests retain the legacy response shape.
 
 - **Request**: `multipart/form-data` field `file`
 - **Response 200**
@@ -40,6 +54,10 @@ Version: `1.0.0`
 ---
 
 ## Gallery
+
+Legacy Gallery list/search/map/timeline/statistics endpoints default to
+`MemoryKeeper` when `service_name` is omitted. Supply
+`service_name=AstroJournal` to query AstroJournal assets.
 
 | Method | Endpoint | Response Model | Status |
 |--------|----------|----------------|--------|
