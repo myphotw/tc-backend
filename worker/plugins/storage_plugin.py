@@ -1,10 +1,15 @@
+"""최종 storage 이동과 common_files 생성을 담당한다."""
+
 from __future__ import annotations
 
 import mimetypes
+import time
 
 from sqlalchemy.exc import IntegrityError
 
 from app.common.models.file import CommonFile
+from app.common.services.storage import StorageRuleEngine
+from app.common.utils.perf import elapsed_ms, log_perf
 from worker.plugins.base import BasePlugin, PluginContext
 
 
@@ -24,10 +29,19 @@ class StoragePlugin(BasePlugin):
         if context.incoming_path is None:
             raise ValueError("incoming_path is required")
 
+        total_started = time.perf_counter()
+        move_timings: dict[str, float] = {}
+
+        started = time.perf_counter()
+        relative_dir = StorageRuleEngine().build_path(context)
+        rule_build_ms = elapsed_ms(started)
+
         context.original_path = context.storage_service.move_to_storage(
             incoming_path=context.job.incoming_path,
             file_id=context.file_id,
             extension=context.extension or context.incoming_path.suffix.lower(),
+            relative_dir=relative_dir,
+            timings=move_timings,
         )
         context.storage_path = context.original_path
         context.log("MOVE_STORAGE_COMPLETE")
@@ -51,11 +65,24 @@ class StoragePlugin(BasePlugin):
                 if context.thumb_path is not None
                 else None
             ),
+            service_name=context.service_name or "MemoryKeeper",
         )
 
+        started = time.perf_counter()
         context.db.add(common_file)
+        insert_ms = 0.0
+        commit_ms = 0.0
         try:
-            context.db.commit()
+            previous = context.db.expire_on_commit
+            context.db.expire_on_commit = False
+            try:
+                context.db.flush()
+                insert_ms = elapsed_ms(started)
+                started_commit = time.perf_counter()
+                context.db.commit()
+                commit_ms = elapsed_ms(started_commit)
+            finally:
+                context.db.expire_on_commit = previous
         except IntegrityError:
             context.db.rollback()
             existing = (
@@ -68,11 +95,36 @@ class StoragePlugin(BasePlugin):
             context.common_file = existing
             context.stop_pipeline = True
             context.log("DUPLICATE_FOUND")
+            log_perf(
+                "storage_plugin",
+                rule_build_ms=rule_build_ms,
+                path_resolve_ms=move_timings.get("path_resolve_ms"),
+                mkdir_ms=move_timings.get("mkdir_ms"),
+                file_move_ms=move_timings.get("file_move_ms"),
+                common_file_insert_ms=0,
+                commit_ms=0,
+                duplicate=True,
+                elapsed_ms=elapsed_ms(total_started),
+                job_id=getattr(context.job, "job_id", None),
+            )
             return
+        except Exception:
+            context.db.rollback()
+            raise
 
-        context.db.refresh(common_file)
         context.common_file = common_file
         context.log("COMMON_FILE_CREATED")
+        log_perf(
+            "storage_plugin",
+            rule_build_ms=rule_build_ms,
+            path_resolve_ms=move_timings.get("path_resolve_ms"),
+            mkdir_ms=move_timings.get("mkdir_ms"),
+            file_move_ms=move_timings.get("file_move_ms"),
+            common_file_insert_ms=insert_ms,
+            commit_ms=commit_ms,
+            elapsed_ms=elapsed_ms(total_started),
+            job_id=getattr(context.job, "job_id", None),
+        )
 
 
 def guess_mime_type(extension: str | None) -> str | None:

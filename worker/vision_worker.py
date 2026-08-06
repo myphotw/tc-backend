@@ -8,7 +8,7 @@ import time
 
 from sqlalchemy.orm import Session
 
-from app.common.database import Base, SessionLocal, engine
+from app.common.database import SessionLocal, initialize_database
 from app.common.models.file import CommonFile
 from app.common.models.vision_job import CommonVisionJob
 from app.common.repositories.api_usage_repository import (
@@ -18,6 +18,7 @@ from app.common.repositories.api_usage_repository import (
 )
 from app.common.repositories.vision_job_repository import VisionJobRepository
 from app.common.services.storage_service import StorageService
+from app.common.utils.perf import Stopwatch, log_perf
 from worker.plugins.base import PluginContext
 from worker.plugins.plugin_manager import PluginManager
 from worker.worker_monitor import WorkerMonitor
@@ -37,7 +38,7 @@ def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
     WAITING job을 priority DESC / requested_at DESC로 가져와 VisionPlugin을 실행한다.
     Usage limit 초과 시 Worker를 종료하지 않고 WAITING을 유지한 채 재시도한다.
     """
-    Base.metadata.create_all(bind=engine)
+    initialize_database()
     monitor = WorkerMonitor(WORKER_NAME)
     monitor.start()
     logger.info("Vision worker started")
@@ -114,6 +115,22 @@ def process_next_vision_job(
 
 def process_vision_job(db: Session, job: CommonVisionJob) -> None:
     """VisionJob에 대해 VisionPlugin pipeline을 실행한다."""
+    watch = Stopwatch()
+    queue_wait_ms = None
+    if job.requested_at is not None:
+        try:
+            from datetime import datetime, timezone
+
+            requested = job.requested_at
+            if requested.tzinfo is None:
+                requested = requested.replace(tzinfo=timezone.utc)
+            queue_wait_ms = round(
+                (datetime.now(timezone.utc) - requested).total_seconds() * 1000,
+                2,
+            )
+        except Exception:
+            queue_wait_ms = None
+
     common_file = (
         db.query(CommonFile)
         .filter(CommonFile.id == job.file_id)
@@ -139,10 +156,20 @@ def process_vision_job(db: Session, job: CommonVisionJob) -> None:
     )
 
     try:
+        watch.start("plugins")
         PluginManager.load_plugins(worker_scope="vision").run(context)
+        plugins_ms = watch.stop("plugins")
     except Exception:
         if "VISION_FAILED" not in context.processing_log:
             context.log("VISION_FAILED")
+        log_perf(
+            "vision_worker_job",
+            stage="failed",
+            pipeline="VISION_SEPARATE_FROM_UPLOAD",
+            vision_job_id=job.id,
+            queue_wait_ms=queue_wait_ms,
+            elapsed_ms=watch.total_ms(),
+        )
         logger.error(
             "Vision job processing failed id=%s file_id=%s log=%s",
             job.id,
@@ -151,6 +178,16 @@ def process_vision_job(db: Session, job: CommonVisionJob) -> None:
         )
         raise
 
+    log_perf(
+        "vision_worker_job",
+        stage="complete",
+        pipeline="VISION_SEPARATE_FROM_UPLOAD",
+        vision_job_id=job.id,
+        queue_wait_ms=queue_wait_ms,
+        plugins_ms=plugins_ms,
+        elapsed_ms=watch.total_ms(),
+        note="Vision completion is separate from Upload completion",
+    )
     logger.info(
         "Completed vision job id=%s file_id=%s log=%s",
         job.id,

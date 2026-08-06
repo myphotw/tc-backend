@@ -35,10 +35,12 @@ class ExifPlugin(BasePlugin):
         context.gps_lon = gps_lon
         context.has_gps = gps_lat is not None and gps_lon is not None
 
-        MetadataRepository(context.db).save_metadata(
+        # MetadataPlugin이 flush만 한 변경분을 포함해 한 번 commit한다.
+        MetadataRepository(context.db).upsert_fields(
             file_id=context.common_file.id,
-            metadata=exif_metadata,
+            values=exif_metadata,
             source=MetadataSource.EXIF,
             modified_by="ExifPlugin",
+            commit=True,
         )
         context.log("EXIF_COMPLETE")

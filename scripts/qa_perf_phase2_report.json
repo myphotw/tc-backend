@@ -1,0 +1,42 @@
+{
+  "phase": 2,
+  "confirmed_bottlenecks": [
+    "UploadJobRepository.append_log committed+refreshed on every context.log (PLUGIN_START/COMPLETE and plugin messages) — dominant hidden cost inside Storage/Metadata timings",
+    "MetadataRepository.save_metadata issued per-field get_latest_priority SELECTs + commit+refresh each plugin call",
+    "VisionQueue create did exists + is_vision_completed + insert + commit + refresh",
+    "UploadJob create did insert + commit + refresh; cold DB connect spikes to multi-second",
+    "Actual file move (os.replace) was already ~1-3ms on same volume — not the Storage 830ms cause"
+  ],
+  "targets": {
+    "pipeline_under_2s": true,
+    "storage_under_400ms": true,
+    "metadata_under_200ms": true,
+    "upload_job_warm_under_150ms": true
+  },
+  "before_after": {
+    "StoragePlugin": "830ms -> 123ms (85%)",
+    "MetadataPlugin": "470ms -> 146ms (69%)",
+    "Pipeline": "3300ms -> 524ms (84%)",
+    "UploadJob_create_warm": "150ms target baseline -> 122ms (under 150ms)",
+    "VisionQueue": "253ms -> 187ms (26%)",
+    "HashPlugin": "276ms -> 41ms (85%)",
+    "PreviewPlugin": "226ms -> 38ms (83%)",
+    "ExifPlugin": "149ms -> 173ms (includes coalesced Metadata commit)",
+    "Upload_API_1_warm": "512ms -> 140ms",
+    "Upload_API_10": "239ms -> 119ms"
+  },
+  "storage_segments_after": {
+    "rule_build_ms": 0.06,
+    "path_resolve_ms": 0.8,
+    "mkdir_ms": 0.46,
+    "file_move_ms": 2.02,
+    "common_file_insert_ms": 31.87,
+    "commit_ms": 83.76,
+    "total_ms": 123.2
+  },
+  "metadata_query_commit": {
+    "before": "1 metadata SELECT + N priority SELECTs + N history INSERT + 1 COMMIT + 1 REFRESH per plugin; plus append_log COMMIT per log line",
+    "after": "1 metadata SELECT + 1 batched priority query + history add_all + Metadata flush / Exif single COMMIT (no refresh); append_log no longer commits"
+  },
+  "compileall": "OK"
+}

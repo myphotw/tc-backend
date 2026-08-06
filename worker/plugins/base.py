@@ -50,10 +50,23 @@ class PluginContext:
     resolved_district: str | None = None
     resolved_place: str | None = None
     plugin_enabled: dict[str, bool] = field(default_factory=dict)
+    service_name: str = "MemoryKeeper"
+    worker_id: str | None = None
+    worker_monitor: Any | None = None
 
     def is_plugin_enabled(self, plugin_name: str) -> bool:
         """Plugin enable 여부를 반환한다. 기본값은 True."""
         return self.plugin_enabled.get(plugin_name, True)
+
+    def notify_plugin_boundary(self) -> None:
+        """Plugin 경계에서 throttled worker heartbeat를 호출한다."""
+        monitor = self.worker_monitor
+        if monitor is None:
+            return
+        job_id = self.job.job_id if self.job is not None else None
+        on_boundary = getattr(monitor, "on_plugin_boundary", None)
+        if callable(on_boundary):
+            on_boundary(current_job_id=job_id)
 
     def log(self, message: str) -> None:
         """작업 로그를 context와 UploadJob에 기록한다."""

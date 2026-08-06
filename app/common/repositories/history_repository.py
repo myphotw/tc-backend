@@ -1,7 +1,10 @@
+"""Metadata history 저장소."""
+
 from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.common.models.metadata_history import CommonMetadataHistory
@@ -44,18 +47,65 @@ class HistoryRepository:
             self.db.refresh(history)
         return history
 
+    def create_histories(
+        self,
+        *,
+        items: list[dict[str, Any]],
+        commit: bool = False,
+    ) -> list[CommonMetadataHistory]:
+        """변경 이력을 일괄 추가한다 (기본은 flush만, commit은 호출자 정책)."""
+        histories: list[CommonMetadataHistory] = []
+        for item in items:
+            history = CommonMetadataHistory(
+                file_id=item["file_id"],
+                field_name=item["field_name"],
+                old_value=self._stringify(item.get("old_value")),
+                new_value=self._stringify(item.get("new_value")),
+                source=item["source"],
+                priority=int(item["priority"]),
+                modified_by=item.get("modified_by"),
+                approved=bool(item.get("approved", False)),
+            )
+            histories.append(history)
+        if histories:
+            self.db.add_all(histories)
+            if commit:
+                self.db.commit()
+        return histories
+
     def get_latest_priority(self, *, file_id: int, field_name: str) -> int:
         """특정 필드의 마지막 저장 priority를 조회한다."""
-        history = (
-            self.db.query(CommonMetadataHistory)
-            .filter(CommonMetadataHistory.file_id == file_id)
-            .filter(CommonMetadataHistory.field_name == field_name)
-            .order_by(CommonMetadataHistory.created_at.desc(), CommonMetadataHistory.id.desc())
-            .first()
+        priorities = self.get_latest_priorities(
+            file_id=file_id,
+            field_names=[field_name],
         )
-        if history is None:
-            return 0
-        return history.priority
+        return priorities.get(field_name, 0)
+
+    def get_latest_priorities(
+        self,
+        *,
+        file_id: int,
+        field_names: list[str] | None = None,
+    ) -> dict[str, int]:
+        """필드별 최신 priority를 한 번에 조회한다."""
+        query = self.db.query(
+            CommonMetadataHistory.field_name,
+            func.max(CommonMetadataHistory.id).label("max_id"),
+        ).filter(CommonMetadataHistory.file_id == file_id)
+        if field_names is not None:
+            if not field_names:
+                return {}
+            query = query.filter(CommonMetadataHistory.field_name.in_(field_names))
+        subq = query.group_by(CommonMetadataHistory.field_name).subquery()
+        rows = (
+            self.db.query(
+                CommonMetadataHistory.field_name,
+                CommonMetadataHistory.priority,
+            )
+            .join(subq, CommonMetadataHistory.id == subq.c.max_id)
+            .all()
+        )
+        return {field_name: int(priority) for field_name, priority in rows}
 
     def get_history(
         self,

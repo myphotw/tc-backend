@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from app.common.repositories.history_repository import HistoryRepository
 from app.common.repositories.metadata_priority import MetadataPriority
 from app.common.repositories.metadata_repository import MetadataSource
+from app.common.utils.perf import elapsed_ms, log_perf
 from worker.plugins.base import BasePlugin, PluginContext
 from worker.plugins.plugin_registry import discover_plugins, get_registered_plugins
 
@@ -35,6 +37,8 @@ class PluginManager:
 
     def run(self, context: PluginContext) -> None:
         """등록된 plugin을 priority 순서대로 실행한다."""
+        pipeline_started = time.perf_counter()
+        plugin_timings: dict[str, float] = {}
         for plugin in self.plugins:
             if context.stop_pipeline:
                 break
@@ -46,10 +50,27 @@ class PluginManager:
                 continue
 
             context.log(f"PLUGIN_START {plugin_name} v{plugin_version}")
+            context.notify_plugin_boundary()
+            started = time.perf_counter()
             try:
                 plugin.run(context)
+                ms = elapsed_ms(started)
+                plugin_timings[plugin_name] = ms
+                log_perf(
+                    "worker_plugin",
+                    worker_scope=getattr(plugin, "worker_scope", "upload"),
+                    plugin=plugin_name,
+                    plugin_version=plugin_version,
+                    elapsed_ms=ms,
+                    job_id=getattr(context.job, "job_id", None),
+                    vision_job_id=getattr(context.vision_job, "id", None),
+                    worker_id=getattr(context, "worker_id", None),
+                )
                 context.log(f"PLUGIN_COMPLETE {plugin_name} v{plugin_version}")
+                context.notify_plugin_boundary()
             except Exception as exc:
+                ms = elapsed_ms(started)
+                plugin_timings[plugin_name] = ms
                 context.error_message = str(exc)
                 context.log(
                     f"PLUGIN_FAILED {plugin_name} v{plugin_version}:{exc}"
@@ -59,8 +80,24 @@ class PluginManager:
                     plugin_name=plugin_name,
                     error=exc,
                 )
+                log_perf(
+                    "worker_plugin_failed",
+                    plugin=plugin_name,
+                    elapsed_ms=ms,
+                    job_id=getattr(context.job, "job_id", None),
+                )
                 logger.exception("Worker plugin failed: %s", plugin_name)
                 raise
+
+        log_perf(
+            "worker_pipeline",
+            worker_scope=self.plugins[0].worker_scope if self.plugins else "unknown",
+            elapsed_ms=elapsed_ms(pipeline_started),
+            plugin_count=len(plugin_timings),
+            **{f"{name}_ms": value for name, value in plugin_timings.items()},
+            job_id=getattr(context.job, "job_id", None),
+            vision_job_id=getattr(context.vision_job, "id", None),
+        )
 
     def _save_failure_history(
         self,

@@ -1,10 +1,18 @@
 from pathlib import Path
 
 from pydantic import model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    VERSION: str = "1.0.0"
+
     POSTGRES_HOST: str
     POSTGRES_PORT: int
     POSTGRES_DB: str
@@ -22,6 +30,8 @@ class Settings(BaseSettings):
     TEMP_DIR: str | None = None
 
     GOOGLE_API_KEY: str | None = None
+    # Compatibility alias used by some docs / MemoryKeeper naming.
+    GOOGLE_MAP_API_KEY: str | None = None
     GOOGLE_VISION_CREDENTIAL: str | None = None
     WEATHER_API_KEY: str | None = None
     ASTROMETRY_API_KEY: str | None = None
@@ -33,12 +43,12 @@ class Settings(BaseSettings):
     WEATHER_MONTHLY_LIMIT: int = 100000
     PLATESOLVE_MONTHLY_LIMIT: int = 100000
 
-    class Config:
-        env_file = ".env"
-
     @model_validator(mode="after")
     def resolve_storage_dirs(self) -> "Settings":
         """PHOTO_PLATFORM_ROOT 기준으로 Storage 하위 경로를 채운다."""
+        if not self.GOOGLE_API_KEY and self.GOOGLE_MAP_API_KEY:
+            self.GOOGLE_API_KEY = self.GOOGLE_MAP_API_KEY
+
         root = self.PHOTO_PLATFORM_ROOT.rstrip("/\\")
         defaults = {
             "INCOMING_DIR": f"{root}/incoming",

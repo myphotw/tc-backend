@@ -1,0 +1,21 @@
+{
+  "watch_paths": [
+    "D:/사진",
+    "E:/Camera"
+  ],
+  "recursive": true,
+  "extensions": [
+    "jpg",
+    "jpeg",
+    "png",
+    "heic",
+    "dng",
+    "tif",
+    "tiff",
+    "mov",
+    "mp4"
+  ],
+  "upload_api_base_url": "http://127.0.0.1:8000",
+  "hash_cache_path": "./watcher_data/watch_file_cache.db",
+  "temp_dir": "./watcher_data/temp"
+}

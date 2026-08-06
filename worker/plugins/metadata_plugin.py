@@ -25,9 +25,11 @@ class MetadataPlugin(BasePlugin):
         }
         metadata.update(context.metadata)
 
-        MetadataRepository(context.db).save_metadata(
+        MetadataRepository(context.db).upsert_fields(
             file_id=context.common_file.id,
-            metadata=metadata,
+            values=metadata,
             source=MetadataSource.SYSTEM,
+            modified_by="MetadataPlugin",
+            commit=False,
         )
         context.log("METADATA_COMPLETE")

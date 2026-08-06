@@ -1,6 +1,10 @@
+"""Vision Queue 저장소."""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import contextmanager
+from typing import Iterator
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -33,22 +37,33 @@ class VisionJobRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
+    @contextmanager
+    def _commit_keep_state(self) -> Iterator[None]:
+        previous = self.db.expire_on_commit
+        self.db.expire_on_commit = False
+        try:
+            yield
+            self.db.commit()
+        finally:
+            self.db.expire_on_commit = previous
+
     def create(
         self,
         *,
         file_id: int,
         priority: int,
         vision_provider: str = VisionProvider.GOOGLE,
+        skip_duplicate_check: bool = False,
     ) -> CommonVisionJob | None:
         """
         Vision Queue를 생성한다.
 
         동일 file_id Queue가 이미 있거나 Vision 완료된 경우 생성하지 않는다.
         """
-        if self.exists(file_id=file_id):
-            return None
-        if self.is_vision_completed(file_id=file_id):
-            return None
+        if not skip_duplicate_check:
+            status = self.get_blocking_status(file_id=file_id)
+            if status is not None:
+                return None
 
         job = CommonVisionJob(
             file_id=file_id,
@@ -60,9 +75,36 @@ class VisionJobRepository:
             deleted=False,
         )
         self.db.add(job)
-        self.db.commit()
-        self.db.refresh(job)
+        self.db.flush()
+        with self._commit_keep_state():
+            pass
         return job
+
+    def get_blocking_status(self, *, file_id: int) -> str | None:
+        """
+        Queue 생성을 막을 상태(WAITING/PROCESSING/COMPLETED)가 있으면 반환한다.
+
+        한 번의 조회로 exists + is_vision_completed를 대체한다.
+        """
+        row = (
+            self.db.query(CommonVisionJob.status)
+            .filter(CommonVisionJob.file_id == file_id)
+            .filter(CommonVisionJob.deleted.is_(False))
+            .filter(
+                CommonVisionJob.status.in_(
+                    [
+                        VisionJobStatus.WAITING,
+                        VisionJobStatus.PROCESSING,
+                        VisionJobStatus.COMPLETED,
+                    ]
+                )
+            )
+            .order_by(CommonVisionJob.id.desc())
+            .first()
+        )
+        if row is None:
+            return None
+        return str(row[0])
 
     def get_waiting_jobs(self, *, limit: int = 50) -> list[CommonVisionJob]:
         """WAITING 상태의 Vision Queue를 priority 내림차순으로 조회한다."""
@@ -91,8 +133,8 @@ class VisionJobRepository:
         job.status = VisionJobStatus.PROCESSING
         job.started_at = datetime.now(timezone.utc)
         job.last_error = None
-        self.db.commit()
-        self.db.refresh(job)
+        with self._commit_keep_state():
+            pass
         return job
 
     def mark_completed(self, job: CommonVisionJob) -> CommonVisionJob:
@@ -100,8 +142,8 @@ class VisionJobRepository:
         job.status = VisionJobStatus.COMPLETED
         job.completed_at = datetime.now(timezone.utc)
         job.last_error = None
-        self.db.commit()
-        self.db.refresh(job)
+        with self._commit_keep_state():
+            pass
         return job
 
     def mark_failed(
@@ -115,8 +157,8 @@ class VisionJobRepository:
         job.retry_count = (job.retry_count or 0) + 1
         job.last_error = error_message
         job.completed_at = datetime.now(timezone.utc)
-        self.db.commit()
-        self.db.refresh(job)
+        with self._commit_keep_state():
+            pass
         return job
 
     def exists(self, *, file_id: int) -> bool:
@@ -126,7 +168,7 @@ class VisionJobRepository:
         WAITING / PROCESSING 상태만 중복으로 본다.
         """
         return (
-            self.db.query(CommonVisionJob)
+            self.db.query(CommonVisionJob.id)
             .filter(CommonVisionJob.file_id == file_id)
             .filter(CommonVisionJob.deleted.is_(False))
             .filter(
@@ -144,7 +186,7 @@ class VisionJobRepository:
     def is_vision_completed(self, *, file_id: int) -> bool:
         """동일 file_id의 Vision COMPLETED 이력이 있는지 확인한다."""
         return (
-            self.db.query(CommonVisionJob)
+            self.db.query(CommonVisionJob.id)
             .filter(CommonVisionJob.file_id == file_id)
             .filter(CommonVisionJob.deleted.is_(False))
             .filter(CommonVisionJob.status == VisionJobStatus.COMPLETED)

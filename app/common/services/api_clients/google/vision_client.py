@@ -50,12 +50,18 @@ class VisionClient(BaseClient):
         )
         self._client = client
 
-    def analyze(self, *, image_path: str) -> list[VisionLabel]:
+    def analyze(
+        self,
+        *,
+        image_path: str,
+        content: bytes | None = None,
+    ) -> list[VisionLabel]:
         """
         이미지 Label Detection을 수행한다.
 
         Args:
             image_path: 분석 대상 이미지 경로
+            content: 이미 읽은 이미지 바이트(있으면 재읽기 생략)
 
         Returns:
             list[VisionLabel]: name / confidence(0~100) 목록
@@ -69,7 +75,8 @@ class VisionClient(BaseClient):
         if not path.is_file():
             raise ApiClientError(f"Vision image file not found: {image_path}")
 
-        content = path.read_bytes()
+        if content is None:
+            content = path.read_bytes()
         image = vision.Image(content=content)
 
         try:

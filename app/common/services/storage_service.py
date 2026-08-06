@@ -130,24 +130,77 @@ class StorageService:
 
     def resolve_storage_path(self, path: str | Path) -> Path:
         """
-        PHOTO_PLATFORM_ROOT 기준 상대 경로 또는 절대 경로를 Path로 변환한다.
+        PHOTO_PLATFORM_ROOT 기준 상대 경로 또는 로컬 절대 경로를 Path로 변환한다.
 
-        Args:
-            path: 상대/절대 경로
-
-        Returns:
-            Path: 실제 파일 경로
+        Windows에서 NAS 스타일 경로(/volume1/..., \\volume1\\...)를
+        로컬 절대경로로 오인하지 않는다.
         """
-        value = Path(path)
-        if value.is_absolute():
+        raw = str(path).strip()
+        if not raw:
+            raise ValueError("storage path is empty")
+
+        normalized = raw.replace("\\", "/")
+        value = Path(raw)
+
+        if self._is_local_absolute_path(value, normalized):
             return value
-        return self.storage_root / value
+
+        relative = self._to_storage_relative(normalized)
+        return (self.storage_root / relative).resolve()
+
+    @staticmethod
+    def _is_local_absolute_path(path: Path, normalized: str) -> bool:
+        """현재 OS에서 실제로 사용 가능한 로컬 절대경로인지 판별한다."""
+        import os
+
+        if not path.is_absolute():
+            return False
+
+        if os.name != "nt":
+            return True
+
+        # Windows drive path: D:/...
+        if re.match(r"^[A-Za-z]:/", normalized):
+            return True
+        # UNC path: //server/share/...
+        if normalized.startswith("//"):
+            return True
+        # /volume1/... 같은 POSIX absolute는 Windows 로컬 절대경로로 쓰지 않는다.
+        return False
+
+    @staticmethod
+    def _to_storage_relative(normalized: str) -> str:
+        """
+        저장 경로를 PHOTO_PLATFORM_ROOT 기준 상대경로로 정규화한다.
+
+        예)
+        - thumb/aa/bb/x.jpg
+        - /volume1/.../PhotoPlatform/thumb/aa/bb/x.jpg → thumb/aa/bb/x.jpg
+        """
+        relative = normalized.lstrip("/")
+        markers = (
+            "incoming/",
+            "original/",
+            "preview/",
+            "thumb/",
+            "export/",
+            "cache/",
+            "temp/",
+        )
+        for marker in markers:
+            idx = relative.find(marker)
+            if idx >= 0:
+                return relative[idx:]
+        return relative
 
     def move_to_storage(
         self,
         incoming_path: str | Path,
         file_id: str,
         extension: str,
+        *,
+        relative_dir: str | None = None,
+        timings: dict[str, float] | None = None,
     ) -> Path:
         """
         incoming 파일을 최종 ORIGINAL_DIR로 이동한다.
@@ -156,25 +209,80 @@ class StorageService:
             incoming_path: incoming 파일 경로
             file_id: SHA256 해시
             extension: 확장자
+            relative_dir: StorageRuleEngine이 계산한 상대 디렉터리
+                예) 2026/대한민국/서울/남산타워
+            timings: 구간별 ms를 채울 선택 dict
 
         Returns:
             Path: 이동된 original 파일 경로
         """
-        source_path = self.resolve_storage_path(incoming_path)
-        target_path = self._build_path(
-            self.original_root,
-            file_id,
-            self._normalize_extension(extension),
-        )
-        target_path.parent.mkdir(parents=True, exist_ok=True)
+        import time
 
+        from app.common.utils.perf import elapsed_ms
+
+        started = time.perf_counter()
+        source_path = self.resolve_storage_path(incoming_path)
+        if timings is not None:
+            timings["path_resolve_ms"] = elapsed_ms(started)
+
+        normalized_ext = self._normalize_extension(extension)
+        if relative_dir:
+            safe_dir = self._normalize_relative_dir(relative_dir)
+            target_path = self.original_root / safe_dir / f"{file_id}{normalized_ext}"
+        else:
+            target_path = self._build_path(
+                self.original_root,
+                file_id,
+                normalized_ext,
+            )
+
+        started = time.perf_counter()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        if timings is not None:
+            timings["mkdir_ms"] = elapsed_ms(started)
+
+        started = time.perf_counter()
         if target_path.exists():
+            # 중복 해시 정책: 기존 original 유지, incoming만 제거
             source_path.unlink(missing_ok=True)
+            if timings is not None:
+                timings["file_move_ms"] = elapsed_ms(started)
+                timings["duplicate_target"] = 1.0
             return target_path
 
-        source_path.replace(target_path)
+        self._relocate_file(source_path, target_path)
+        if timings is not None:
+            timings["file_move_ms"] = elapsed_ms(started)
         logger.info("Moved incoming file to original storage: %s", target_path)
         return target_path
+
+    def _relocate_file(self, source_path: Path, target_path: Path) -> None:
+        """
+        동일 filesystem이면 os.replace, cross-device면 copy+fsync+delete.
+
+        원본 유실 방지를 위해 copy 성공 후에만 source를 삭제한다.
+        """
+        import errno
+        import os
+
+        try:
+            os.replace(source_path, target_path)
+            return
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            is_cross_device = exc.errno == errno.EXDEV or winerror == 17
+            if not is_cross_device:
+                raise
+
+        try:
+            with source_path.open("rb") as src, target_path.open("wb") as dst:
+                shutil.copyfileobj(src, dst, length=1024 * 1024)
+                dst.flush()
+                os.fsync(dst.fileno())
+        except Exception:
+            target_path.unlink(missing_ok=True)
+            raise
+        source_path.unlink(missing_ok=True)
 
     def save_original(
         self,
@@ -437,6 +545,21 @@ class StorageService:
             / sha256[2:4]
             / f"{sha256}{extension}"
         )
+
+    def _normalize_relative_dir(self, relative_dir: str) -> Path:
+        """Storage Rule 상대 경로를 안전한 Path로 변환한다."""
+        parts: list[str] = []
+        for part in str(relative_dir).replace("\\", "/").split("/"):
+            cleaned = part.strip().strip(".")
+            if not cleaned or cleaned in {".", ".."}:
+                continue
+            for token in (":", "*", "?", "\"", "<", ">", "|"):
+                cleaned = cleaned.replace(token, "_")
+            if cleaned:
+                parts.append(cleaned)
+        if not parts:
+            return Path("Unknown")
+        return Path(*parts)
 
     def _find_file(self, root_dir: Path, file_id: str) -> Path | None:
         """

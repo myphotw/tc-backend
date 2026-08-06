@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -24,14 +25,16 @@ from app.common.repositories.vision_job_repository import (
 )
 from app.common.repositories.worker_status_repository import WorkerStatusRepository
 
+logger = logging.getLogger(__name__)
+
 
 def check_health(db: Session) -> dict[str, str]:
     """운영 컴포넌트 Health Check 결과를 반환한다."""
-    database = _check_database(db)
-    storage = _check_storage()
-    vision = _check_vision_credential()
-    weather = _check_weather_key()
-    geocoding = _check_geocoding_key()
+    database, database_detail = _check_database(db)
+    storage, storage_detail = _check_storage()
+    vision, vision_detail = _check_vision_credential()
+    weather, weather_detail = _check_weather_key()
+    geocoding, geocoding_detail = _check_geocoding_key()
 
     components = {
         "database": database,
@@ -43,7 +46,13 @@ def check_health(db: Session) -> dict[str, str]:
     status = "OK" if all(value == "OK" for value in components.values()) else "DEGRADED"
     return {
         "status": status,
+        "version": settings.VERSION,
         **components,
+        "database_detail": database_detail,
+        "storage_detail": storage_detail,
+        "vision_detail": vision_detail,
+        "weather_detail": weather_detail,
+        "geocoding_detail": geocoding_detail,
         "time": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -74,17 +83,21 @@ def build_dashboard(db: Session) -> dict[str, object]:
             {
                 "name": item.worker_name,
                 "status": worker_repo.resolve_display_status(item),
+                "last_started": (
+                    item.last_started.isoformat() if item.last_started else None
+                ),
                 "last_heartbeat": (
                     item.last_heartbeat.isoformat() if item.last_heartbeat else None
                 ),
                 "processed_today": item.processed_count or 0,
                 "failed_today": item.failed_count or 0,
                 "current_job_id": item.current_job_id,
-                "version": item.version,
+                "version": item.version or settings.VERSION,
             }
         )
 
     return {
+        "version": settings.VERSION,
         "upload": {
             "waiting": upload_repo.count_by_status(UploadJobStatus.WAITING),
             "processing": upload_repo.count_by_status(UploadJobStatus.PROCESSING),
@@ -124,37 +137,61 @@ def build_dashboard(db: Session) -> dict[str, object]:
     }
 
 
-def _check_database(db: Session) -> str:
+def _check_database(db: Session) -> tuple[str, str]:
     try:
         db.execute(text("SELECT 1"))
-        return "OK"
-    except Exception:
-        return "FAIL"
+        return "OK", "database connection ok"
+    except Exception as exc:
+        logger.exception("Health database check failed")
+        return "FAIL", f"{type(exc).__name__}: {exc}"
 
 
-def _check_storage() -> str:
+def _check_storage() -> tuple[str, str]:
     try:
-        return "OK" if settings.incoming_dir_path.exists() else "FAIL"
-    except Exception:
-        return "FAIL"
+        path = settings.incoming_dir_path
+        if path.exists():
+            return "OK", f"incoming exists: {path}"
+        return "FAIL", f"incoming directory not found: {path}"
+    except Exception as exc:
+        logger.exception("Health storage check failed")
+        return "FAIL", f"{type(exc).__name__}: {exc}"
 
 
-def _check_vision_credential() -> str:
+def _check_vision_credential() -> tuple[str, str]:
     path = settings.GOOGLE_VISION_CREDENTIAL
     if not path:
-        return "FAIL"
+        detail = "GOOGLE_VISION_CREDENTIAL is not configured"
+        logger.error("Health vision check failed: %s", detail)
+        return "FAIL", detail
     try:
-        return "OK" if Path(path).is_file() else "FAIL"
-    except Exception:
-        return "FAIL"
+        credential = Path(path)
+        if credential.is_file():
+            return "OK", f"credential file exists: {credential}"
+        detail = f"GOOGLE_VISION_CREDENTIAL file not found: {credential}"
+        logger.error("Health vision check failed: %s", detail)
+        return "FAIL", detail
+    except Exception as exc:
+        logger.exception("Health vision check failed")
+        return "FAIL", f"{type(exc).__name__}: {exc}"
 
 
-def _check_weather_key() -> str:
-    return "OK" if settings.WEATHER_API_KEY else "FAIL"
+def _check_weather_key() -> tuple[str, str]:
+    if settings.WEATHER_API_KEY:
+        return "OK", "WEATHER_API_KEY is configured"
+    detail = "WEATHER_API_KEY is not configured"
+    logger.error("Health weather check failed: %s", detail)
+    return "FAIL", detail
 
 
-def _check_geocoding_key() -> str:
-    return "OK" if settings.GOOGLE_API_KEY else "FAIL"
+def _check_geocoding_key() -> tuple[str, str]:
+    if settings.GOOGLE_API_KEY:
+        return "OK", "GOOGLE_API_KEY is configured"
+    detail = (
+        "GOOGLE_API_KEY is not configured "
+        "(alias GOOGLE_MAP_API_KEY is also accepted via Settings)"
+    )
+    logger.error("Health geocoding check failed: %s", detail)
+    return "FAIL", detail
 
 
 def _count_files(path: Path) -> int:

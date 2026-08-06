@@ -18,7 +18,10 @@ DATABASE_URL = (
 
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True
+    pool_pre_ping=True,
+    pool_size=15,
+    max_overflow=30,
+    pool_timeout=30,
 )
 
 
@@ -49,6 +52,7 @@ from app.memorykeeper.models import photo
 from app.memorykeeper.models import tag
 from app.memorykeeper.models import photo_tag
 
+
 def get_db():
     db = SessionLocal()
 
@@ -57,3 +61,10 @@ def get_db():
 
     finally:
         db.close()
+
+
+def initialize_database():
+    """테이블 생성 + 누락 컬럼/인덱스 동기화 (기존 데이터 유지)."""
+    from app.common.schema_sync import initialize_database as _initialize_database
+
+    return _initialize_database(engine)

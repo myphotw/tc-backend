@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from app.common.repositories.api_usage_repository import (
     ApiName,
     ApiProvider,
@@ -11,6 +13,7 @@ from app.common.repositories.metadata_repository import (
     MetadataSource,
 )
 from app.common.services.api_clients.google import GeocodingClient
+from app.common.utils.perf import elapsed_ms, log_perf
 from worker.plugins.base import BasePlugin, PluginContext
 
 
@@ -55,6 +58,12 @@ class GpsPlugin(BasePlugin):
                     "source": "cache",
                 }
                 context.log("GPS_CACHE_HIT")
+                log_perf(
+                    "geocoding",
+                    cache="hit",
+                    external_api_ms=0,
+                    job_id=getattr(context.job, "job_id", None),
+                )
             else:
                 usage_repository = ApiUsageRepository(context.db)
                 if not usage_repository.can_use(
@@ -66,10 +75,12 @@ class GpsPlugin(BasePlugin):
                     return
 
                 client = GeocodingClient(db=context.db)
+                api_started = time.perf_counter()
                 result = client.reverse_geocode(
                     latitude=latitude,
                     longitude=longitude,
                 )
+                api_ms = elapsed_ms(api_started)
                 cache_repository.save(
                     latitude=latitude,
                     longitude=longitude,
@@ -81,6 +92,12 @@ class GpsPlugin(BasePlugin):
                     provider="GOOGLE",
                 )
                 context.log("GPS_CACHE_MISS")
+                log_perf(
+                    "geocoding",
+                    cache="miss",
+                    external_api_ms=api_ms,
+                    job_id=getattr(context.job, "job_id", None),
+                )
 
             metadata = {
                 "country": result.get("country"),
@@ -91,9 +108,9 @@ class GpsPlugin(BasePlugin):
                 "gps_lat": result.get("latitude", latitude),
                 "gps_lon": result.get("longitude", longitude),
             }
-            MetadataRepository(context.db).save_metadata(
+            MetadataRepository(context.db).upsert_fields(
                 file_id=context.common_file.id,
-                metadata=metadata,
+                values=metadata,
                 source=MetadataSource.GPS,
                 modified_by="GpsPlugin",
             )
