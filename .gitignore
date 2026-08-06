@@ -12,6 +12,15 @@ env/
 .env
 .env.*
 
+# Secrets
+config/secret/*
+!config/secret/google-vision.example.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+
 # IDE
 .vscode/
 .idea/
@@ -30,3 +39,21 @@ Thumbs.db
 # Build
 build/
 dist/
+
+# Local runtime / storage
+PhotoPlatform/
+backup/
+watcher_data/
+
+# Databases / dumps
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+
+# Generated QA outputs
+scripts/*_report.json
+scripts/*_stderr.txt
+scripts/*_stdout.json
+scripts/*_live.log
+scripts/cleanup_dry_run_stdout.json
