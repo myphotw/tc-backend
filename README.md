@@ -72,6 +72,15 @@ idempotent: the first request increments revision and repeated requests return
 the same deletion result. Optional `client_record_id` on POST provides
 idempotent record creation through a partial UNIQUE service/client key.
 
+## Changes Cursor API (B6-01)
+
+`GET /api/common/changes` exposes append-only common change events ordered by a
+monotonic cursor. Query parameters are `cursor` (exclusive, default `0`),
+`limit` (`1..500`), and optional `service_name`. ObservationRecord CREATE,
+UPDATE, and soft DELETE write events in the same transaction as the mutation.
+DELETE events set `tombstone=true`; clients advance using `next_cursor` while
+`has_more` is true.
+
 ## 프로젝트 구조
 
 ```
@@ -136,6 +145,7 @@ PHOTO_PLATFORM_ROOT/
 ## API 목록
 
 - `POST /api/common/upload`
+- `GET /api/common/changes`
 - `GET /api/common/gallery`
 - `GET /api/common/gallery/{file_id}`
 - `GET /api/common/gallery/search`

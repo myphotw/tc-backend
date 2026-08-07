@@ -12,10 +12,17 @@ class ObservationRecordRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def create(self, record: ObservationRecord) -> ObservationRecord:
+    def create(
+        self,
+        record: ObservationRecord,
+        *,
+        commit: bool = True,
+    ) -> ObservationRecord:
         self.db.add(record)
-        self.db.commit()
-        self.db.refresh(record)
+        self.db.flush()
+        if commit:
+            self.db.commit()
+            self.db.refresh(record)
         return record
 
     def get(self, record_id: str, *, include_deleted: bool = False) -> ObservationRecord | None:
@@ -51,16 +58,29 @@ class ObservationRecordRepository:
             query = query.filter(ObservationRecord.representative.is_(representative))
         return query.order_by(ObservationRecord.captured_at.desc(), ObservationRecord.id.desc()).all()
 
-    def clear_representative(self, catalog_object_id: str, *, except_id: str | None = None) -> None:
+    def clear_representative(
+        self,
+        catalog_object_id: str,
+        *,
+        except_id: str | None = None,
+    ) -> list[ObservationRecord]:
         query = (
             self.db.query(ObservationRecord)
             .filter(ObservationRecord.service_name == "AstroJournal")
             .filter(ObservationRecord.catalog_object_id == catalog_object_id)
             .filter(ObservationRecord.deleted_at.is_(None))
+            .filter(ObservationRecord.representative.is_(True))
         )
         if except_id is not None:
             query = query.filter(ObservationRecord.id != except_id)
-        query.update({ObservationRecord.representative: False}, synchronize_session=False)
+        records = query.with_for_update().all()
+        changed_at = datetime.now(timezone.utc)
+        for record in records:
+            record.representative = False
+            record.revision += 1
+            record.updated_at = changed_at
+        self.db.flush()
+        return records
 
     def update_if_revision(
         self,
@@ -68,6 +88,7 @@ class ObservationRecordRepository:
         *,
         revision: int,
         values: dict[str, object],
+        commit: bool = True,
     ) -> ObservationRecord | None:
         values = {
             **values,
@@ -84,12 +105,20 @@ class ObservationRecordRepository:
         if result.rowcount != 1:
             self.db.rollback()
             return None
-        self.db.commit()
+        if commit:
+            self.db.commit()
         return self.get(record_id)
 
-    def soft_delete(self, record: ObservationRecord) -> ObservationRecord:
+    def soft_delete(
+        self,
+        record: ObservationRecord,
+        *,
+        commit: bool = True,
+    ) -> ObservationRecord:
         record.deleted_at = datetime.now(timezone.utc)
         record.revision += 1
-        self.db.commit()
-        self.db.refresh(record)
+        self.db.flush()
+        if commit:
+            self.db.commit()
+            self.db.refresh(record)
         return record

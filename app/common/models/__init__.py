@@ -2,6 +2,7 @@ from app.common.models.api_key import ApiKey
 from app.common.models.setting import Setting
 from app.common.models.file import CommonFile
 from app.common.models.file_service import CommonFileService
+from app.common.models.change_event import CommonChangeEvent
 from app.common.models.upload_job import UploadJob
 from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.metadata_history import CommonMetadataHistory

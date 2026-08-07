@@ -65,6 +65,17 @@ erDiagram
         int revision
     }
 
+    common_change_events {
+        bigint id PK
+        string service_name
+        string resource_type
+        string resource_id
+        string operation
+        int revision
+        bool tombstone
+        datetime changed_at
+    }
+
     common_file_metadata {
         int id PK
         int file_id UK_FK

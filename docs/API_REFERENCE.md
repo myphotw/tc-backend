@@ -74,6 +74,40 @@ stale revision returns:
 returns `record_id`, `deleted`, `revision`, and `deleted_at`. The first delete
 increments revision; subsequent requests return the existing deletion result.
 
+## Changes Cursor API (B6-01)
+
+`GET /api/common/changes` returns changes whose event cursor is strictly greater
+than the supplied `cursor`.
+
+| Query | Default | Description |
+|-------|---------|-------------|
+| `cursor` | `0` | Exclusive non-negative event cursor. |
+| `limit` | `100` | Page size from 1 through 500. |
+| `service_name` | none | Optional `MemoryKeeper` or `AstroJournal` filter. |
+
+```json
+{
+  "items": [
+    {
+      "cursor": 42,
+      "service_name": "AstroJournal",
+      "resource_type": "ObservationRecord",
+      "resource_id": "2a3b6bce-b169-4b17-91b9-c09913735741",
+      "operation": "DELETE",
+      "revision": 4,
+      "tombstone": true,
+      "changed_at": "2026-08-07T12:00:00Z"
+    }
+  ],
+  "next_cursor": 42,
+  "has_more": false
+}
+```
+
+CREATE and UPDATE events identify the resource and revision; clients retrieve
+the current canonical resource separately. DELETE is represented as a
+tombstone. An empty page retains the requested cursor as `next_cursor`.
+
 신규 API는 v1.0 Freeze 이후 별도 버전으로 추가한다.
 
 ---

@@ -13,15 +13,21 @@ from app.astrojournal.schemas.observation_record import (
     ObservationRecordUpdate,
 )
 from app.common.models.file import CommonFile
+from app.common.repositories.change_event_repository import (
+    ChangeEventRepository,
+    ChangeOperation,
+)
 from app.common.repositories.file_service_repository import FileServiceRepository
 
 
 class ObservationRecordService:
     SERVICE_NAME = "AstroJournal"
+    RESOURCE_TYPE = "ObservationRecord"
 
     def __init__(self, db: Session) -> None:
         self.db = db
         self.repository = ObservationRecordRepository(db)
+        self.change_repository = ChangeEventRepository(db)
 
     def create(self, payload: ObservationRecordCreate) -> ObservationRecord:
         client_record_id = (
@@ -43,8 +49,11 @@ class ObservationRecordService:
             file_id=payload.file_id,
             service_name=self.SERVICE_NAME,
         )
+        demoted_records: list[ObservationRecord] = []
         if payload.representative:
-            self.repository.clear_representative(payload.catalog_object_id)
+            demoted_records = self.repository.clear_representative(
+                payload.catalog_object_id
+            )
 
         values = payload.model_dump(exclude={"client_record_id"})
         record = ObservationRecord(
@@ -53,7 +62,13 @@ class ObservationRecordService:
             **values,
         )
         try:
-            return self.repository.create(record)
+            self.repository.create(record, commit=False)
+            for demoted in demoted_records:
+                self._append_change(demoted, ChangeOperation.UPDATE)
+            self._append_change(record, ChangeOperation.CREATE)
+            self.db.commit()
+            self.db.refresh(record)
+            return record
         except IntegrityError:
             self.db.rollback()
             if client_record_id is not None:
@@ -102,15 +117,26 @@ class ObservationRecordService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="representative requires catalog_object_id",
             )
+        demoted_records: list[ObservationRecord] = []
         if representative:
-            self.repository.clear_representative(catalog_object_id, except_id=record.id)
+            demoted_records = self.repository.clear_representative(
+                catalog_object_id,
+                except_id=record.id,
+            )
 
         try:
             updated = self.repository.update_if_revision(
                 record_id,
                 revision=payload.revision,
                 values=values,
+                commit=False,
             )
+            if updated is not None:
+                for demoted in demoted_records:
+                    self._append_change(demoted, ChangeOperation.UPDATE)
+                self._append_change(updated, ChangeOperation.UPDATE)
+                self.db.commit()
+                self.db.refresh(updated)
         except IntegrityError:
             self.db.rollback()
             raise HTTPException(
@@ -136,7 +162,31 @@ class ObservationRecordService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
         if record.deleted_at is not None:
             return record
-        return self.repository.soft_delete(record)
+        try:
+            self.repository.soft_delete(record, commit=False)
+            self._append_change(record, ChangeOperation.DELETE, tombstone=True)
+            self.db.commit()
+            self.db.refresh(record)
+            return record
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def _append_change(
+        self,
+        record: ObservationRecord,
+        operation: str,
+        *,
+        tombstone: bool = False,
+    ) -> None:
+        self.change_repository.append(
+            service_name=self.SERVICE_NAME,
+            resource_type=self.RESOURCE_TYPE,
+            resource_id=record.id,
+            operation=operation,
+            revision=record.revision,
+            tombstone=tombstone,
+        )
 
     @staticmethod
     def _raise_revision_conflict(

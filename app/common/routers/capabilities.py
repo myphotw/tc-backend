@@ -22,7 +22,7 @@ def capabilities() -> dict[str, object]:
             "gallery": True,
             "vision": True,
             "astro_records": False,
-            "astro_changes": False,
+            "astro_changes": True,
             "plate_solve": False,
         },
         "supported_services": ["MemoryKeeper", "AstroJournal"],
