@@ -15,6 +15,7 @@ from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_tag import CommonFileTag
 from app.common.repositories.gallery_repository import GalleryRepository
+from app.common.services.gallery_media import build_gallery_media_url
 from app.common.repositories.tag_repository import TagSource
 from app.common.schemas.gallery import (
     CountItem,
@@ -463,9 +464,7 @@ class GalleryService:
         kind: str,
         storage_path: str | None,
     ) -> str | None:
-        if not storage_path:
-            return None
-        return f"/api/common/gallery/{file_id}/{kind}"
+        return build_gallery_media_url(file_id, kind, storage_path)
 
     @staticmethod
     def _metadata_dict(metadata: CommonFileMetadata | None) -> dict[str, Any]:

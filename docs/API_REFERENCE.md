@@ -28,6 +28,24 @@ active representative for the same catalog object. The response includes
 `revision`, timestamps, plate-solve status, and FileAsset FK. These endpoints do
 not change MemoryKeeper API behavior.
 
+## AstroJournal Gallery Projection (B4-01)
+
+Common Gallery is the FileAsset read API. Astro Gallery is the canonical
+`ObservationRecord + FileAsset` projection and does not add Astro-specific
+fields to `/api/common/gallery*`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/astro/gallery` | List active Astro observations with FileAsset media URLs. |
+| GET | `/api/astro/gallery/{record_id}` | Read one active projected observation; otherwise `404`. |
+
+List query parameters are `page`, `page_size`, `catalog_object_id`, `favorite`,
+`date_from`, and `date_to`. Results sort by `captured_at DESC`, then
+`created_at DESC`. Records are excluded when the ObservationRecord is soft
+deleted, the FileAsset is deleted or missing, or the FileAsset has no
+`AstroJournal` domain link. Media URLs reuse Common Gallery routes and are null
+when the corresponding storage path is absent.
+
 신규 API는 v1.0 Freeze 이후 별도 버전으로 추가한다.
 
 ---

@@ -50,6 +50,15 @@ optimistic locking (`409 Conflict` on stale updates). One active representative
 record is allowed per `catalog_object_id`. MemoryKeeper APIs and their response
 contracts are unchanged.
 
+## AstroJournal Gallery Projection (B4-01)
+
+Common Gallery remains the FileAsset read API. `GET /api/astro/gallery` and
+`GET /api/astro/gallery/{record_id}` are the AstroJournal canonical read model,
+joining an active `astro_observation_records` row to its active `common_files`
+asset and required `AstroJournal` entry in `common_file_services`. The list uses
+`page`/`page_size`, sorts by `captured_at DESC` with `created_at DESC` fallback,
+and supports `catalog_object_id`, `favorite`, `date_from`, and `date_to` filters.
+
 ## 프로젝트 구조
 
 ```

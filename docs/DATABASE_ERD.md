@@ -4,6 +4,10 @@ SQLAlchemy Model 기준. 물리 DB는 PostgreSQL.
 
 ## ER Diagram
 
+The Astro Gallery read model joins `astro_observation_records.file_id` to
+`common_files.id` and requires an `AstroJournal` row in `common_file_services`.
+It is a query projection only and introduces no additional table.
+
 ```mermaid
 erDiagram
     common_files ||--o| common_file_metadata : has
