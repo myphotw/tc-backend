@@ -8,6 +8,7 @@ import time
 from sqlalchemy.exc import IntegrityError
 
 from app.common.models.file import CommonFile
+from app.common.repositories.file_service_repository import FileServiceRepository
 from app.common.services.storage import StorageRuleEngine
 from app.common.utils.perf import elapsed_ms, log_perf
 from worker.plugins.base import BasePlugin, PluginContext
@@ -93,8 +94,13 @@ class StoragePlugin(BasePlugin):
             if existing is None:
                 raise
             context.common_file = existing
+            _, link_created = FileServiceRepository(context.db).ensure_link(
+                file_id=existing.id,
+                service_name=context.service_name or "MemoryKeeper",
+            )
             context.stop_pipeline = True
             context.log("DUPLICATE_FOUND")
+            context.log("LINK_CREATED" if link_created else "LINK_EXISTS")
             log_perf(
                 "storage_plugin",
                 rule_build_ms=rule_build_ms,
@@ -114,6 +120,11 @@ class StoragePlugin(BasePlugin):
 
         context.common_file = common_file
         context.log("COMMON_FILE_CREATED")
+        _, link_created = FileServiceRepository(context.db).ensure_link(
+            file_id=common_file.id,
+            service_name=context.service_name or "MemoryKeeper",
+        )
+        context.log("LINK_CREATED" if link_created else "LINK_EXISTS")
         log_perf(
             "storage_plugin",
             rule_build_ms=rule_build_ms,

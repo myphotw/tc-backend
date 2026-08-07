@@ -4,6 +4,15 @@ Base URL: `http://<host>:8000`
 OpenAPI: `/docs`, `/openapi.json`  
 Version: `1.0.0`
 
+## Shared FileAsset domain links (B2)
+
+The upload contract continues to accept `service_name`. Files with the same
+SHA-256 share one `common_files` FileAsset and are associated with each service
+through `common_file_services`. This does not alter existing upload or Gallery
+response fields. Gallery collection endpoints apply `service_name` using the
+domain link, so a shared asset can appear in both MemoryKeeper and AstroJournal
+collections without duplicating its physical storage.
+
 신규 API는 v1.0 Freeze 이후 별도 버전으로 추가한다.
 
 ---

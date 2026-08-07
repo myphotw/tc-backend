@@ -9,6 +9,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Query, Session
 
 from app.common.models.file import CommonFile
+from app.common.models.file_service import CommonFileService
 from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_tag import CommonFileTag
 from app.common.models.metadata_history import CommonMetadataHistory
@@ -166,8 +167,7 @@ class GalleryRepository:
             .filter(CommonFileMetadata.gps_lat.isnot(None))
             .filter(CommonFileMetadata.gps_lon.isnot(None))
         )
-        if service_name:
-            query = query.filter(CommonFile.service_name == service_name)
+        query = self._filter_by_service(query, service_name)
         if year is not None:
             query = query.filter(
                 func.extract("year", CommonFileMetadata.datetime_original) == year
@@ -193,8 +193,7 @@ class GalleryRepository:
             .filter(CommonFile.deleted.is_(False))
             .filter(CommonFileMetadata.datetime_original.isnot(None))
         )
-        if service_name:
-            query = query.filter(CommonFile.service_name == service_name)
+        query = self._filter_by_service(query, service_name)
         rows = (
             query.group_by(year_expr)
             .order_by(year_expr.desc())
@@ -209,8 +208,7 @@ class GalleryRepository:
     ) -> dict[str, Any]:
         """Gallery 통계를 조회한다."""
         files_query = self.db.query(CommonFile).filter(CommonFile.deleted.is_(False))
-        if service_name:
-            files_query = files_query.filter(CommonFile.service_name == service_name)
+        files_query = self._filter_by_service(files_query, service_name)
 
         total_photos = files_query.count()
 
@@ -224,8 +222,7 @@ class GalleryRepository:
             .filter(CommonFileMetadata.gps_lat.isnot(None))
             .filter(CommonFileMetadata.gps_lon.isnot(None))
         )
-        if service_name:
-            gps_query = gps_query.filter(CommonFile.service_name == service_name)
+        gps_query = self._filter_by_service(gps_query, service_name)
         gps_count = gps_query.scalar() or 0
 
         ai_tag_query = (
@@ -235,8 +232,7 @@ class GalleryRepository:
             .filter(CommonFileTag.deleted.is_(False))
             .filter(CommonFileTag.source == TagSource.AI)
         )
-        if service_name:
-            ai_tag_query = ai_tag_query.filter(CommonFile.service_name == service_name)
+        ai_tag_query = self._filter_by_service(ai_tag_query, service_name)
         ai_tag_count = ai_tag_query.scalar() or 0
 
         return {
@@ -271,9 +267,7 @@ class GalleryRepository:
             )
             .filter(CommonFile.deleted.is_(False))
         )
-        if service_name:
-            query = query.filter(CommonFile.service_name == service_name)
-        return query
+        return self._filter_by_service(query, service_name)
 
     def _apply_filters(
         self,
@@ -392,8 +386,7 @@ class GalleryRepository:
             .filter(column.isnot(None))
             .filter(column != "")
         )
-        if service_name:
-            query = query.filter(CommonFile.service_name == service_name)
+        query = self._filter_by_service(query, service_name)
         rows = query.group_by(column).order_by(func.count(CommonFile.id).desc()).all()
         return [{"name": str(name), "count": int(count)} for name, count in rows]
 
@@ -404,16 +397,26 @@ class GalleryRepository:
     ) -> list[dict[str, Any]]:
         query = (
             self.db.query(
-                CommonFile.service_name.label("name"),
+                CommonFileService.service_name.label("name"),
                 func.count(CommonFile.id).label("count"),
             )
+            .join(CommonFile, CommonFile.id == CommonFileService.file_id)
             .filter(CommonFile.deleted.is_(False))
         )
         if service_name:
-            query = query.filter(CommonFile.service_name == service_name)
+            query = query.filter(CommonFileService.service_name == service_name)
         rows = (
-            query.group_by(CommonFile.service_name)
+            query.group_by(CommonFileService.service_name)
             .order_by(func.count(CommonFile.id).desc())
             .all()
         )
         return [{"name": str(name), "count": int(count)} for name, count in rows]
+
+    @staticmethod
+    def _filter_by_service(query: Query, service_name: str | None) -> Query:
+        if not service_name:
+            return query
+        return (
+            query.join(CommonFileService, CommonFileService.file_id == CommonFile.id)
+            .filter(CommonFileService.service_name == service_name)
+        )

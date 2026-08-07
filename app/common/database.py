@@ -39,6 +39,7 @@ Base = declarative_base()
 from app.common.models import api_key
 from app.common.models import setting
 from app.common.models import file
+from app.common.models import file_service
 from app.common.models import upload_job
 from app.common.models import file_metadata
 from app.common.models import metadata_history

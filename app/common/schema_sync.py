@@ -27,11 +27,41 @@ def initialize_database(bind: Engine | None = None) -> list[str]:
     Base.metadata.create_all(bind=engine)
     changes = sync_missing_columns(engine)
     changes.extend(sync_missing_indexes(engine))
+    changes.extend(sync_file_service_links(engine))
     if changes:
         logger.info("Database schema synced: %s", changes)
     else:
         logger.info("Database schema already up to date")
     return changes
+
+
+def sync_file_service_links(engine: Engine) -> list[str]:
+    """Backfill one legacy service link for common files created before B2."""
+    inspector = inspect(engine)
+    if not (
+        inspector.has_table("common_files")
+        and inspector.has_table("common_file_services")
+    ):
+        return []
+
+    with engine.begin() as connection:
+        result = connection.execute(
+            text(
+                """
+                INSERT INTO common_file_services (file_id, service_name)
+                SELECT files.id, files.service_name
+                FROM common_files AS files
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM common_file_services AS links
+                    WHERE links.file_id = files.id
+                      AND links.service_name = files.service_name
+                )
+                """
+            )
+        )
+    inserted = result.rowcount or 0
+    return [f"backfill:common_file_services={inserted}"] if inserted else []
 
 
 def sync_missing_columns(engine: Engine) -> list[str]:

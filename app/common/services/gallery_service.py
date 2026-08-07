@@ -167,6 +167,7 @@ class GalleryService:
             page_size=page_size,
             sort=sort,
             response_cls=GalleryListResponse,
+            service_name=service_name,
         )
 
     def get_detail(self, file_id: str) -> GalleryDetailResponse:
@@ -265,6 +266,7 @@ class GalleryService:
             page_size=page_size,
             sort=sort,
             response_cls=GallerySearchResponse,
+            service_name=service_name,
         )
 
     def map_markers(
@@ -297,7 +299,7 @@ class GalleryService:
                             common_file.thumb_path,
                         ),
                         year=capture.year if capture is not None else None,
-                        service_name=common_file.service_name or "MemoryKeeper",
+                        service_name=service_name or common_file.service_name or "MemoryKeeper",
                     )
                 )
             response = MapMarkerListResponse(items=items, total=len(items))
@@ -371,6 +373,7 @@ class GalleryService:
         page_size: int,
         sort: str,
         response_cls,
+        service_name: str | None,
     ):
         watch = Stopwatch()
         bind = self.repository.db.get_bind()
@@ -380,7 +383,7 @@ class GalleryService:
             db_ms = watch.stop("db_query")
             watch.start("dto_mapping")
             items = [
-                self._to_list_item(file, metadata, has_ai_tag)
+                self._to_list_item(file, metadata, has_ai_tag, service_name=service_name)
                 for file, metadata, has_ai_tag in rows
             ]
             response = response_cls(
@@ -414,6 +417,8 @@ class GalleryService:
         common_file: CommonFile,
         metadata: CommonFileMetadata | None,
         has_ai_tag: bool,
+        *,
+        service_name: str | None = None,
     ) -> GalleryListItem:
         return GalleryListItem(
             file_id=common_file.file_id,
@@ -440,7 +445,7 @@ class GalleryService:
                 and metadata.gps_lon is not None
             ),
             has_ai_tag=has_ai_tag,
-            service_name=common_file.service_name or "MemoryKeeper",
+            service_name=service_name or common_file.service_name or "MemoryKeeper",
         )
 
     @staticmethod

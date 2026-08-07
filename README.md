@@ -31,6 +31,16 @@ receive `service_name`, `client_file_id`, `backend_file_id`, and
 `service_name` is omitted. Feature discovery is available at
 `GET /api/common/capabilities`.
 
+## Shared File Assets (B2)
+
+`common_files` remains the physical FileAsset record, keyed by SHA-256. Service
+ownership is represented by `common_file_services` (`UNIQUE(file_id,
+service_name)`). A matching upload from another supported service reuses the
+existing physical asset and adds only its service link; the UploadWorker records
+`LINK_CREATED`. Gallery queries filter through this link table, while existing
+MemoryKeeper API response fields remain unchanged. The legacy
+`common_files.service_name` remains only for compatibility and schema backfill.
+
 ## 프로젝트 구조
 
 ```

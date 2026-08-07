@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.common.models.file import CommonFile
+from app.common.repositories.file_service_repository import FileServiceRepository
 from worker.plugins.base import BasePlugin, PluginContext
 
 
@@ -33,6 +34,10 @@ class HashPlugin(BasePlugin):
 
         if existing is not None:
             context.common_file = existing
+            _, link_created = FileServiceRepository(context.db).ensure_link(
+                file_id=existing.id,
+                service_name=context.service_name or "MemoryKeeper",
+            )
             context.storage_service.delete_incoming(context.job.incoming_path)
             context.stop_pipeline = True
             context.log("DUPLICATE_FOUND")
@@ -41,3 +46,4 @@ class HashPlugin(BasePlugin):
                 f"existing_service={existing.service_name or 'MemoryKeeper'} "
                 f"requested_service={context.service_name}"
             )
+            context.log("LINK_CREATED" if link_created else "LINK_EXISTS")

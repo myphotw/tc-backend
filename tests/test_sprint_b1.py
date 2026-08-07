@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.common.database import Base
 from app.common.models.file import CommonFile
+from app.common.models.file_service import CommonFileService
 from app.common.models.upload_job import UploadJob
 from app.common.repositories.upload_job_repository import UploadJobRepository
 from app.common.routers.capabilities import capabilities
@@ -133,14 +134,18 @@ class SprintB1Tests(unittest.TestCase):
                 engine.dispose()
 
     def test_gallery_defaults_to_memorykeeper(self) -> None:
+        memory = CommonFile(file_id="m" * 64, original_name="memory.jpg")
+        astro = CommonFile(
+            file_id="a" * 64,
+            original_name="astro.jpg",
+            service_name="AstroJournal",
+        )
+        self.session.add_all([memory, astro])
+        self.session.flush()
         self.session.add_all(
             [
-                CommonFile(file_id="m" * 64, original_name="memory.jpg"),
-                CommonFile(
-                    file_id="a" * 64,
-                    original_name="astro.jpg",
-                    service_name="AstroJournal",
-                ),
+                CommonFileService(file_id=memory.id, service_name="MemoryKeeper"),
+                CommonFileService(file_id=astro.id, service_name="AstroJournal"),
             ]
         )
         self.session.commit()
