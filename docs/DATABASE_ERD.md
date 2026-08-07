@@ -10,6 +10,8 @@ erDiagram
     common_files ||--o{ common_file_tags : has
     common_files ||--o{ common_metadata_history : has
     common_files ||--o{ common_vision_jobs : queues
+    common_files ||--o{ common_file_services : linked_to
+    common_files ||--o{ astro_observation_records : observed_as
 
     common_files {
         int id PK
@@ -28,6 +30,34 @@ erDiagram
         datetime created_at
         datetime updated_at
         bool deleted
+    }
+
+    common_file_services {
+        int id PK
+        int file_id FK
+        string service_name
+        datetime created_at
+        datetime updated_at
+    }
+
+    astro_observation_records {
+        uuid id PK
+        int file_id FK
+        string service_name
+        string catalog_object_id
+        datetime captured_at
+        float latitude
+        float longitude
+        string location_name
+        string equipment_id
+        text memo
+        bool favorite
+        bool representative
+        string plate_solve_status
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
+        int revision
     }
 
     common_file_metadata {

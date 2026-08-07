@@ -1,0 +1,1 @@
+"""AstroJournal persistence adapters."""

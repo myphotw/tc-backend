@@ -53,6 +53,8 @@ from app.memorykeeper.models import photo
 from app.memorykeeper.models import tag
 from app.memorykeeper.models import photo_tag
 
+from app.astrojournal.models import observation_record
+
 
 def get_db():
     db = SessionLocal()

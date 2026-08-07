@@ -1,0 +1,1 @@
+"""AstroJournal API schemas."""

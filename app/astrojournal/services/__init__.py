@@ -1,0 +1,1 @@
+"""AstroJournal application services."""

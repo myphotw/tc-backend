@@ -13,6 +13,21 @@ response fields. Gallery collection endpoints apply `service_name` using the
 domain link, so a shared asset can appear in both MemoryKeeper and AstroJournal
 collections without duplicating its physical storage.
 
+## AstroJournal Observation Records (B3)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/astro/records` | Create an AstroJournal observation for an existing `common_files.id`. |
+| GET | `/api/astro/records` | List active records; supports `catalog_object_id`, `favorite`, `representative`. |
+| GET | `/api/astro/records/{record_id}` | Read one active record. |
+| PATCH | `/api/astro/records/{record_id}` | Update with required `revision`; stale revisions return `409 Conflict`. |
+| DELETE | `/api/astro/records/{record_id}` | Soft delete the record. |
+
+`representative=true` requires `catalog_object_id`; the service clears any other
+active representative for the same catalog object. The response includes
+`revision`, timestamps, plate-solve status, and FileAsset FK. These endpoints do
+not change MemoryKeeper API behavior.
+
 신규 API는 v1.0 Freeze 이후 별도 버전으로 추가한다.
 
 ---

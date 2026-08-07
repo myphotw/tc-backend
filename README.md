@@ -41,6 +41,15 @@ existing physical asset and adds only its service link; the UploadWorker records
 MemoryKeeper API response fields remain unchanged. The legacy
 `common_files.service_name` remains only for compatibility and schema backfill.
 
+## AstroJournal Observation Records (B3)
+
+`/api/astro/records` provides AstroJournal-only observation metadata for an
+existing shared FileAsset. Each record references `common_files.id`, ensures an
+`AstroJournal` domain link, supports soft delete, and uses `revision` for PATCH
+optimistic locking (`409 Conflict` on stale updates). One active representative
+record is allowed per `catalog_object_id`. MemoryKeeper APIs and their response
+contracts are unchanged.
+
 ## 프로젝트 구조
 
 ```
