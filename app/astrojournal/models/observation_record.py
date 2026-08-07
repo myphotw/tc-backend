@@ -23,6 +23,27 @@ class ObservationRecord(Base):
             "representative",
             "deleted_at",
         ),
+        Index(
+            "uq_astro_observation_records_active_representative",
+            "catalog_object_id",
+            unique=True,
+            postgresql_where=text(
+                "representative = true AND deleted_at IS NULL "
+                "AND catalog_object_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "representative = 1 AND deleted_at IS NULL "
+                "AND catalog_object_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_astro_observation_records_service_client_record_id",
+            "service_name",
+            "client_record_id",
+            unique=True,
+            postgresql_where=text("client_record_id IS NOT NULL"),
+            sqlite_where=text("client_record_id IS NOT NULL"),
+        ),
     )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -34,6 +55,7 @@ class ObservationRecord(Base):
         server_default=text("'AstroJournal'"),
         index=True,
     )
+    client_record_id = Column(String(36), nullable=True)
     catalog_object_id = Column(String(255), nullable=True)
     captured_at = Column(DateTime(timezone=True), nullable=False)
     latitude = Column(Float, nullable=True)

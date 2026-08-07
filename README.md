@@ -59,6 +59,19 @@ asset and required `AstroJournal` entry in `common_file_services`. The list uses
 `page`/`page_size`, sorts by `captured_at DESC` with `created_at DESC` fallback,
 and supports `catalog_object_id`, `favorite`, `date_from`, and `date_to` filters.
 
+## AstroJournal Mutation Contract (B5-01)
+
+`PATCH /api/astro/records/{record_id}` uses the required `revision` as the
+expected revision. A successful partial update increments `revision`, refreshes
+`updated_at`, and returns both the legacy `id` and canonical `record_id`. Stale
+updates return `409` with `expected_revision` and `current_revision`.
+
+Representative changes run in one transaction and an active partial UNIQUE
+index enforces one representative per `catalog_object_id`. DELETE is soft and
+idempotent: the first request increments revision and repeated requests return
+the same deletion result. Optional `client_record_id` on POST provides
+idempotent record creation through a partial UNIQUE service/client key.
+
 ## 프로젝트 구조
 
 ```

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.astrojournal.models.observation_record import ObservationRecord
@@ -23,6 +24,14 @@ class ObservationRecordService:
         self.repository = ObservationRecordRepository(db)
 
     def create(self, payload: ObservationRecordCreate) -> ObservationRecord:
+        client_record_id = (
+            str(payload.client_record_id) if payload.client_record_id is not None else None
+        )
+        if client_record_id is not None:
+            existing = self.repository.get_by_client_record_id(client_record_id)
+            if existing is not None:
+                return existing
+
         self._require_file(payload.file_id)
         if payload.representative and not payload.catalog_object_id:
             raise HTTPException(
@@ -37,11 +46,29 @@ class ObservationRecordService:
         if payload.representative:
             self.repository.clear_representative(payload.catalog_object_id)
 
+        values = payload.model_dump(exclude={"client_record_id"})
         record = ObservationRecord(
             service_name=self.SERVICE_NAME,
-            **payload.model_dump(),
+            client_record_id=client_record_id,
+            **values,
         )
-        return self.repository.create(record)
+        try:
+            return self.repository.create(record)
+        except IntegrityError:
+            self.db.rollback()
+            if client_record_id is not None:
+                existing = self.repository.get_by_client_record_id(client_record_id)
+                if existing is not None:
+                    return existing
+            if payload.representative:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "REPRESENTATIVE_CONFLICT",
+                        "catalog_object_id": payload.catalog_object_id,
+                    },
+                )
+            raise
 
     def get(self, record_id: str) -> ObservationRecord:
         record = self.repository.get(record_id)
@@ -65,7 +92,7 @@ class ObservationRecordService:
     def update(self, record_id: str, payload: ObservationRecordUpdate) -> ObservationRecord:
         record = self.get(record_id)
         if record.revision != payload.revision:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Revision conflict")
+            self._raise_revision_conflict(record, payload.revision)
 
         values = payload.model_dump(exclude={"revision"}, exclude_unset=True)
         catalog_object_id = values.get("catalog_object_id", record.catalog_object_id)
@@ -78,17 +105,53 @@ class ObservationRecordService:
         if representative:
             self.repository.clear_representative(catalog_object_id, except_id=record.id)
 
-        updated = self.repository.update_if_revision(
-            record_id,
-            revision=payload.revision,
-            values=values,
-        )
+        try:
+            updated = self.repository.update_if_revision(
+                record_id,
+                revision=payload.revision,
+                values=values,
+            )
+        except IntegrityError:
+            self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "REPRESENTATIVE_CONFLICT",
+                    "catalog_object_id": catalog_object_id,
+                },
+            )
         if updated is None:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Revision conflict")
+            current = self.repository.get(record_id, include_deleted=True)
+            if current is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Record not found",
+                )
+            self._raise_revision_conflict(current, payload.revision)
         return updated
 
     def soft_delete(self, record_id: str) -> ObservationRecord:
-        return self.repository.soft_delete(self.get(record_id))
+        record = self.repository.get(record_id, include_deleted=True)
+        if record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
+        if record.deleted_at is not None:
+            return record
+        return self.repository.soft_delete(record)
+
+    @staticmethod
+    def _raise_revision_conflict(
+        record: ObservationRecord,
+        expected_revision: int,
+    ) -> None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "REVISION_CONFLICT",
+                "record_id": record.id,
+                "expected_revision": expected_revision,
+                "current_revision": record.revision,
+            },
+        )
 
     def _require_file(self, file_id: int) -> CommonFile:
         file = self.db.get(CommonFile, file_id)

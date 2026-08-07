@@ -48,6 +48,7 @@ erDiagram
         uuid id PK
         int file_id FK
         string service_name
+        uuid client_record_id
         string catalog_object_id
         datetime captured_at
         float latitude

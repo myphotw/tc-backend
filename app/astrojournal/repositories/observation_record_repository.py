@@ -24,6 +24,17 @@ class ObservationRecordRepository:
             query = query.filter(ObservationRecord.deleted_at.is_(None))
         return query.first()
 
+    def get_by_client_record_id(
+        self,
+        client_record_id: str,
+    ) -> ObservationRecord | None:
+        return (
+            self.db.query(ObservationRecord)
+            .filter(ObservationRecord.service_name == "AstroJournal")
+            .filter(ObservationRecord.client_record_id == client_record_id)
+            .first()
+        )
+
     def list(
         self,
         *,
@@ -43,6 +54,7 @@ class ObservationRecordRepository:
     def clear_representative(self, catalog_object_id: str, *, except_id: str | None = None) -> None:
         query = (
             self.db.query(ObservationRecord)
+            .filter(ObservationRecord.service_name == "AstroJournal")
             .filter(ObservationRecord.catalog_object_id == catalog_object_id)
             .filter(ObservationRecord.deleted_at.is_(None))
         )

@@ -46,6 +46,34 @@ deleted, the FileAsset is deleted or missing, or the FileAsset has no
 `AstroJournal` domain link. Media URLs reuse Common Gallery routes and are null
 when the corresponding storage path is absent.
 
+## AstroJournal Mutation Contract (B5-01)
+
+`POST /api/astro/records` accepts optional UUID `client_record_id`. Replaying
+the same `AstroJournal + client_record_id` returns the existing record; request
+field differences on a replay do not overwrite it.
+
+`PATCH /api/astro/records/{record_id}` requires `revision` and supports partial
+updates to `catalog_object_id`, `captured_at`, latitude/longitude,
+`location_name`, `equipment_id`, `memo`, `favorite`, and `representative`.
+The existing `plate_solve_status` field remains accepted for B3 compatibility;
+this ticket adds no Plate Solve processing. Omitted fields are unchanged. A
+stale revision returns:
+
+```json
+{
+  "detail": {
+    "code": "REVISION_CONFLICT",
+    "record_id": "2a3b6bce-b169-4b17-91b9-c09913735741",
+    "expected_revision": 3,
+    "current_revision": 4
+  }
+}
+```
+
+`DELETE /api/astro/records/{record_id}` performs an idempotent soft delete and
+returns `record_id`, `deleted`, `revision`, and `deleted_at`. The first delete
+increments revision; subsequent requests return the existing deletion result.
+
 신규 API는 v1.0 Freeze 이후 별도 버전으로 추가한다.
 
 ---

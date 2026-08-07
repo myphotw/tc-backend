@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.astrojournal.schemas.observation_record import (
     ObservationRecordCreate,
+    ObservationRecordConflictResponse,
+    ObservationRecordDeleteResponse,
     ObservationRecordResponse,
     ObservationRecordUpdate,
 )
@@ -41,7 +43,11 @@ def get_record(record_id: str, db: Session = Depends(get_db)) -> ObservationReco
     return ObservationRecordService(db).get(record_id)
 
 
-@router.patch("/{record_id}", response_model=ObservationRecordResponse)
+@router.patch(
+    "/{record_id}",
+    response_model=ObservationRecordResponse,
+    responses={409: {"model": ObservationRecordConflictResponse}},
+)
 def update_record(
     record_id: str,
     payload: ObservationRecordUpdate,
@@ -50,7 +56,15 @@ def update_record(
     return ObservationRecordService(db).update(record_id, payload)
 
 
-@router.delete("/{record_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_record(record_id: str, db: Session = Depends(get_db)) -> Response:
-    ObservationRecordService(db).soft_delete(record_id)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{record_id}", response_model=ObservationRecordDeleteResponse)
+def delete_record(
+    record_id: str,
+    db: Session = Depends(get_db),
+) -> ObservationRecordDeleteResponse:
+    record = ObservationRecordService(db).soft_delete(record_id)
+    return ObservationRecordDeleteResponse(
+        record_id=record.id,
+        deleted=True,
+        revision=record.revision,
+        deleted_at=record.deleted_at,
+    )
