@@ -1,0 +1,78 @@
+x-app-base: &app-base
+  build:
+    context: .
+  env_file:
+    - .env
+  environment: &app-environment
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    PHOTO_PLATFORM_ROOT: /data/PhotoPlatform
+    INCOMING_DIR: /data/PhotoPlatform/incoming
+    ORIGINAL_DIR: /data/PhotoPlatform/original
+    PREVIEW_DIR: /data/PhotoPlatform/preview
+    THUMB_DIR: /data/PhotoPlatform/thumb
+    EXPORT_DIR: /data/PhotoPlatform/export
+    CACHE_DIR: /data/PhotoPlatform/cache
+    TEMP_DIR: /data/PhotoPlatform/temp
+    GOOGLE_VISION_CREDENTIAL: ""
+  volumes:
+    - "${PHOTO_PLATFORM_HOST_PATH:-./PhotoPlatform}:/data/PhotoPlatform"
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB:?set POSTGRES_DB in .env}"
+      POSTGRES_USER: "${POSTGRES_USER:?set POSTGRES_USER in .env}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    <<: *app-base
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  upload-worker:
+    <<: *app-base
+    command: ["python", "-m", "worker.background_worker"]
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  vision-worker:
+    <<: *app-base
+    profiles: ["vision"]
+    command: ["python", "-m", "worker.vision_worker"]
+    environment:
+      <<: *app-environment
+      GOOGLE_VISION_CREDENTIAL: /run/secrets/google-vision.json
+    volumes:
+      - "${PHOTO_PLATFORM_HOST_PATH:-./PhotoPlatform}:/data/PhotoPlatform"
+      - "${GOOGLE_VISION_CREDENTIAL_HOST:-./config/secret/google-vision.json}:/run/secrets/google-vision.json:ro"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

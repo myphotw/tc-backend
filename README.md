@@ -207,6 +207,9 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 
+# Development / regression tests
+pip install -r requirements-dev.txt
+
 # API 서버
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
@@ -218,6 +221,32 @@ python -m worker.vision_worker
 
 # (선택) PC Folder Watcher
 python -m watcher.folder_watcher
+```
+
+### Portable setup (Windows / Docker / NAS)
+
+Copy `.env.example` to `.env` and set local values. The `.env` file and the
+actual Vision service-account JSON must remain untracked. A virtual environment
+is machine-specific; recreate `.venv` after moving the repository instead of
+copying it from another PC.
+
+For Docker Compose, `PHOTO_PLATFORM_HOST_PATH` and
+`GOOGLE_VISION_CREDENTIAL_HOST` are host-side paths. Keep their machine- or
+NAS-specific values only in the local `.env`; containers always use
+`/data/PhotoPlatform` and `/run/secrets/google-vision.json`. Start the optional
+Vision worker with the `vision` profile only after mounting a real credential:
+
+```bash
+docker compose up -d backend upload-worker
+docker compose --profile vision up -d vision-worker
+```
+
+The tracked watcher configuration uses `./watcher_data/incoming`. Override
+`watch_paths` and `upload_api_base_url` in an ignored local copy when the watcher
+runs on another host; do not commit machine-specific paths:
+
+```bash
+python -m watcher.folder_watcher watcher_data/watch_config.local.json
 ```
 
 ## Repository 목록 (Freeze)
@@ -248,7 +277,7 @@ python -m watcher.folder_watcher
 
 ```bash
 set TEST_DATABASE_URL=postgresql://user:pass@host:5432/tc_backend_test
-set PHOTO_PLATFORM_ROOT_TEST=D:/tmp/PhotoPlatformTest
+set PHOTO_PLATFORM_ROOT_TEST=./watcher_data/qa-photo-platform
 ```
 
 대상 스크립트: `scripts/qa_perf_phase1.py`, `qa_perf_phase2.py`, `qa_phase3a.py`  

@@ -1,7 +1,6 @@
 {
   "watch_paths": [
-    "D:/사진",
-    "E:/Camera"
+    "./watcher_data/incoming"
   ],
   "recursive": true,
   "extensions": [

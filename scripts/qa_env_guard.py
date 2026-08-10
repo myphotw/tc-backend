@@ -66,7 +66,7 @@ def require_test_environment(*, script_name: str) -> None:
             "Do not run QA perf scripts against the operational database.\n"
             "Example:\n"
             "  set TEST_DATABASE_URL=postgresql://user:pass@host:5432/tc_backend_test\n"
-            "  set PHOTO_PLATFORM_ROOT_TEST=D:/tmp/PhotoPlatformTest",
+            "  set PHOTO_PLATFORM_ROOT_TEST=./watcher_data/qa-photo-platform",
             file=sys.stderr,
         )
         raise SystemExit(2)
