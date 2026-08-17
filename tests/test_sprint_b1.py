@@ -26,6 +26,7 @@ from app.common.routers.upload import (
 from app.common.schema_sync import initialize_database
 from app.common.services.gallery_service import GalleryService
 from app.common.services.upload_metadata import decode_upload_metadata
+from app.common.services.upload_job_service import UploadJobService
 from worker import background_worker
 
 
@@ -97,7 +98,9 @@ class SprintB1Tests(unittest.TestCase):
             )
         self.assertEqual(created["service_name"], "AstroJournal")
         self.assertFalse(created["idempotent_replay"])
+        self.assertIsNone(created["common_file_id"])
         self.assertTrue(replay["idempotent_replay"])
+        self.assertIsNone(replay["common_file_id"])
         self.assertEqual(replay["job_id"], created["job_id"])
         self.assertEqual(fake_storage.saved, 1)
         job = self.session.query(UploadJob).filter_by(job_id=created["job_id"]).one()
@@ -109,6 +112,71 @@ class SprintB1Tests(unittest.TestCase):
                 "target_display_name": "Andromeda Galaxy",
             },
         )
+
+    def test_completed_job_status_resolves_common_file_primary_key(self) -> None:
+        digest = "d" * 64
+        common_file = CommonFile(file_id=digest, original_name="astro.jpg")
+        job = UploadJob(
+            job_id="44444444-4444-4444-4444-444444444444",
+            source_type="UPLOAD",
+            status="COMPLETED",
+            incoming_path="incoming/astro.jpg",
+            service_name="AstroJournal",
+            file_id=digest,
+        )
+        self.session.add_all([common_file, job])
+        self.session.commit()
+
+        response = UploadJobService(self.session).get_job(job.job_id)
+
+        self.assertEqual(response.backend_file_id, digest)
+        self.assertIsInstance(response.common_file_id, int)
+        self.assertEqual(response.common_file_id, common_file.id)
+
+    def test_waiting_and_failed_job_status_allow_missing_common_file(self) -> None:
+        waiting = UploadJob(
+            job_id="55555555-5555-5555-5555-555555555555",
+            source_type="UPLOAD",
+            status="WAITING",
+            incoming_path="incoming/waiting.jpg",
+        )
+        failed = UploadJob(
+            job_id="66666666-6666-6666-6666-666666666666",
+            source_type="UPLOAD",
+            status="FAILED",
+            incoming_path="incoming/failed.jpg",
+        )
+        self.session.add_all([waiting, failed])
+        self.session.commit()
+
+        service = UploadJobService(self.session)
+        self.assertIsNone(service.get_job(waiting.job_id).common_file_id)
+        self.assertIsNone(service.get_job(failed.job_id).common_file_id)
+
+    def test_completed_idempotent_replay_returns_both_file_identifiers(self) -> None:
+        digest = "e" * 64
+        common_file = CommonFile(file_id=digest, original_name="completed.jpg")
+        job = UploadJob(
+            job_id="77777777-7777-7777-7777-777777777777",
+            source_type="UPLOAD",
+            status="COMPLETED",
+            incoming_path="incoming/completed.jpg",
+            service_name="AstroJournal",
+            client_file_id="completed-client-id",
+            client_content_sha256=digest,
+            file_id=digest,
+        )
+        self.session.add_all([common_file, job])
+        self.session.commit()
+
+        response = _idempotent_response(
+            UploadJobRepository(self.session),
+            job,
+            digest,
+        )
+
+        self.assertEqual(response["backend_file_id"], digest)
+        self.assertEqual(response["common_file_id"], common_file.id)
 
     def test_idempotency_hash_conflict_returns_409(self) -> None:
         repository = UploadJobRepository(self.session)

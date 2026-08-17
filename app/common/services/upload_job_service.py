@@ -102,6 +102,7 @@ class UploadJobService:
             service_name=job.service_name,
             client_file_id=job.client_file_id,
             backend_file_id=job.file_id,
+            common_file_id=self.repository.resolve_common_file_id(job.file_id),
         )
 
     def _calculate_progress(self, job: UploadJob) -> int:

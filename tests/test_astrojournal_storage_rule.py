@@ -23,6 +23,7 @@ from app.common.services.storage.storage_rule import AstroJournalStorageRule
 from app.common.services.storage.storage_rule_engine import StorageRuleEngine
 from app.common.services.storage_service import StorageService
 from app.common.services.upload_metadata import decode_upload_metadata
+from app.common.services.upload_job_service import UploadJobService
 from worker import background_worker
 
 
@@ -283,6 +284,9 @@ class AstroJournalPipelineTests(unittest.TestCase):
             self.assertTrue(storage.resolve_storage_path(common_file.thumb_path).exists())
             self.assertEqual(link.service_name, "AstroJournal")
             self.assertEqual(self.session.query(ObservationRecord).count(), 0)
+            status_response = UploadJobService(self.session).get_job(job.job_id)
+            self.assertEqual(status_response.backend_file_id, common_file.file_id)
+            self.assertEqual(status_response.common_file_id, common_file.id)
 
     def test_unknown_service_job_is_failed_without_memorykeeper_storage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

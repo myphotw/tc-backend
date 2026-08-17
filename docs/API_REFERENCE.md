@@ -151,6 +151,16 @@ without saving another incoming file. Different non-null hashes return `409`.
 If an earlier job has no hash, a later valid hash backfills it and returns the
 original job. File-only requests retain the legacy response shape.
 
+Extended upload and Upload Job status responses distinguish these identifiers:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `backend_file_id` | string or null | SHA-256-backed logical file identifier (`common_files.file_id`). |
+| `common_file_id` | integer or null | `common_files.id` database PK used by `ObservationRecord.file_id`. |
+
+`common_file_id` is normally null while the Job is WAITING and becomes
+available after the worker creates or resolves the shared `CommonFile`.
+
 - **Request**: `multipart/form-data` field `file`
 - **Response 200**
   ```json

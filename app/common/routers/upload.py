@@ -176,6 +176,7 @@ def upload_file(
                     "service_name": job.service_name,
                     "client_file_id": job.client_file_id,
                     "backend_file_id": job.file_id,
+                    "common_file_id": repository.resolve_common_file_id(job.file_id),
                     "idempotent_replay": False,
                 }
             )
@@ -269,5 +270,6 @@ def _idempotent_response(
         "service_name": job.service_name,
         "client_file_id": job.client_file_id,
         "backend_file_id": job.file_id,
+        "common_file_id": repository.resolve_common_file_id(job.file_id),
         "idempotent_replay": True,
     }

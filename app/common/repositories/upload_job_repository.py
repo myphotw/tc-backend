@@ -11,6 +11,7 @@ from typing import Iterator
 from sqlalchemy import func, update
 from sqlalchemy.orm import Session
 
+from app.common.models.file import CommonFile
 from app.common.models.upload_job import UploadJob
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,16 @@ class UploadJobRepository:
             .filter(UploadJob.service_name == service_name)
             .filter(UploadJob.client_file_id == client_file_id)
             .first()
+        )
+
+    def resolve_common_file_id(self, file_id: str | None) -> int | None:
+        """SHA-256 기반 file_id로 CommonFile 정수 PK를 조회한다."""
+        if not file_id:
+            return None
+        return (
+            self.db.query(CommonFile.id)
+            .filter(CommonFile.file_id == file_id)
+            .scalar()
         )
 
     def set_client_content_sha256_if_missing(

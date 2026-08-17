@@ -26,6 +26,7 @@ class UploadJobStatusResponse(BaseModel):
     service_name: str | None = None
     client_file_id: str | None = None
     backend_file_id: str | None = None
+    common_file_id: int | None = None
 
 
 class UploadJobListResponse(BaseModel):
