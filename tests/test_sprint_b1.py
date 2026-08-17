@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -24,6 +25,7 @@ from app.common.routers.upload import (
 )
 from app.common.schema_sync import initialize_database
 from app.common.services.gallery_service import GalleryService
+from app.common.services.upload_metadata import decode_upload_metadata
 from worker import background_worker
 
 
@@ -78,6 +80,9 @@ class SprintB1Tests(unittest.TestCase):
                 service_name="AstroJournal",
                 client_file_id="astro-client-1",
                 client_content_sha256=digest,
+                observation_date=date(2026, 8, 17),
+                canonical_target_id="M31",
+                target_display_name="Andromeda Galaxy",
                 db=self.session,
             )
             replay = upload_file(
@@ -85,6 +90,9 @@ class SprintB1Tests(unittest.TestCase):
                 service_name="AstroJournal",
                 client_file_id="astro-client-1",
                 client_content_sha256=digest,
+                observation_date=date(2025, 1, 1),
+                canonical_target_id="M42",
+                target_display_name="Orion Nebula",
                 db=self.session,
             )
         self.assertEqual(created["service_name"], "AstroJournal")
@@ -92,6 +100,15 @@ class SprintB1Tests(unittest.TestCase):
         self.assertTrue(replay["idempotent_replay"])
         self.assertEqual(replay["job_id"], created["job_id"])
         self.assertEqual(fake_storage.saved, 1)
+        job = self.session.query(UploadJob).filter_by(job_id=created["job_id"]).one()
+        self.assertEqual(
+            decode_upload_metadata(job.processing_log),
+            {
+                "observation_date": "2026-08-17",
+                "canonical_target_id": "M31",
+                "target_display_name": "Andromeda Galaxy",
+            },
+        )
 
     def test_idempotency_hash_conflict_returns_409(self) -> None:
         repository = UploadJobRepository(self.session)

@@ -18,6 +18,7 @@ from app.common.repositories.vision_job_repository import (
 )
 from app.common.services.priority_calculator import PriorityCalculator
 from app.common.services.storage_service import StorageService
+from app.common.services.upload_metadata import decode_upload_metadata
 from app.common.utils.perf import Stopwatch, log_perf
 from worker.plugins.base import PluginContext
 from worker.plugins.plugin_manager import PluginManager
@@ -186,6 +187,7 @@ def process_upload_job(
         original_name=_extract_original_name(incoming_path.name, job.job_id),
         extension=extension,
         mime_type=_guess_mime_type(extension),
+        metadata=decode_upload_metadata(job.processing_log),
         plugin_enabled={},
         service_name=job.service_name or "MemoryKeeper",
         worker_id=resolved_worker_id,

@@ -113,13 +113,67 @@ class AstroJournalStorageRule(StorageRule):
     """
     AstroJournal 저장 경로 규칙.
 
-    이번 STEP에서는 인터페이스만 준비한다.
-    향후 예) 2026/Messier/M42
+    AstroJournal / year / canonical target
+    값이 없으면 Unknown을 사용하며 예외를 발생시키지 않는다.
     """
 
     rule_name = "AstroJournal"
+    UNKNOWN = "Unknown"
+    MAX_TARGET_BYTES = 180
+    WINDOWS_RESERVED_NAMES = {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{number}" for number in range(1, 10)),
+        *(f"LPT{number}" for number in range(1, 10)),
+    }
 
     def build_path(self, context: Any) -> str:
-        raise NotImplementedError(
-            "AstroJournalStorageRule is not implemented in this step"
+        year = self._resolve_year(context)
+        target = self._resolve_target(context)
+        return "/".join([self.rule_name, year, target])
+
+    def _resolve_year(self, context: Any) -> str:
+        metadata = getattr(context, "metadata", None) or {}
+        for key in ("observation_date", "datetime_original"):
+            year = MemoryKeeperStorageRule._extract_year(metadata.get(key))
+            if year is not None:
+                return year
+
+        year = MemoryKeeperStorageRule._extract_year(
+            getattr(context, "datetime_original", None)
         )
+        if year is not None:
+            return year
+
+        job = getattr(context, "job", None)
+        for value in (
+            getattr(job, "created_at", None),
+            getattr(context, "created_at", None),
+        ):
+            year = MemoryKeeperStorageRule._extract_year(value)
+            if year is not None:
+                return year
+
+        return str(datetime.now(timezone.utc).year)
+
+    def _resolve_target(self, context: Any) -> str:
+        metadata = getattr(context, "metadata", None) or {}
+        for key in ("canonical_target_id", "target_display_name"):
+            value = MemoryKeeperStorageRule._normalize_segment(metadata.get(key))
+            if value is not None:
+                return self._normalize_target_length(value)
+        return self.UNKNOWN
+
+    def _normalize_target_length(self, value: str) -> str:
+        if value.split(".", 1)[0].upper() in self.WINDOWS_RESERVED_NAMES:
+            value = f"_{value}"
+        encoded = value.encode("utf-8")
+        if len(encoded) <= self.MAX_TARGET_BYTES:
+            return value
+        shortened = encoded[: self.MAX_TARGET_BYTES].decode(
+            "utf-8",
+            errors="ignore",
+        )
+        return shortened.rstrip(" .") or self.UNKNOWN

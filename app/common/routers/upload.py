@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date
+from typing import Annotated
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -14,6 +16,7 @@ from app.common.database import get_db
 from app.common.models.upload_job import UploadJob
 from app.common.repositories.upload_job_repository import UploadJobRepository
 from app.common.services.storage_service import StorageService
+from app.common.services.upload_metadata import encode_upload_metadata
 from app.common.utils.perf import Stopwatch, log_perf
 
 logger = logging.getLogger(__name__)
@@ -59,6 +62,9 @@ def upload_file(
     service_name: str = Form("MemoryKeeper"),
     client_file_id: str | None = Form(None),
     client_content_sha256: str | None = Form(None),
+    observation_date: Annotated[date | None, Form()] = None,
+    canonical_target_id: Annotated[str | None, Form()] = None,
+    target_display_name: Annotated[str | None, Form()] = None,
     db: Session = Depends(get_db),
 ) -> dict[str, str | int | bool | None]:
     """
@@ -73,6 +79,21 @@ def upload_file(
     service_name = _validate_service_name(service_name)
     client_file_id = _normalize_client_file_id(client_file_id)
     client_content_sha256 = _normalize_client_content_sha256(client_content_sha256)
+    canonical_target_id = _normalize_optional_metadata(
+        canonical_target_id,
+        field_name="canonical_target_id",
+    )
+    target_display_name = _normalize_optional_metadata(
+        target_display_name,
+        field_name="target_display_name",
+    )
+    upload_metadata_log = encode_upload_metadata(
+        {
+            "observation_date": observation_date,
+            "canonical_target_id": canonical_target_id,
+            "target_display_name": target_display_name,
+        }
+    )
     repository = UploadJobRepository(db)
     if client_file_id is not None:
         existing = repository.get_by_client_file_id(
@@ -113,6 +134,7 @@ def upload_file(
                 service_name=service_name,
                 client_file_id=client_file_id,
                 client_content_sha256=client_content_sha256,
+                processing_log=upload_metadata_log,
             )
         except IntegrityError:
             db.rollback()
@@ -203,6 +225,24 @@ def _normalize_client_content_sha256(value: str | None) -> str | None:
             detail="client_content_sha256 must be a 64-character lowercase hex SHA-256",
         )
     return value
+
+
+def _normalize_optional_metadata(
+    value: str | None,
+    *,
+    field_name: str,
+) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if len(normalized) > 255:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field_name} must be up to 255 characters",
+        )
+    return normalized
 
 
 def _idempotent_response(

@@ -27,6 +27,16 @@ IMAGE_EXTENSIONS: set[str] = {
     ".tiff",
 }
 
+_MAX_INCOMING_FILENAME_BYTES = 180
+_WINDOWS_RESERVED_FILENAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+}
+
 
 class StorageService:
     """
@@ -755,7 +765,31 @@ class StorageService:
             str: 정리된 파일명
         """
         name = Path(filename).name.strip() or "unknown"
-        return re.sub(r"[^A-Za-z0-9가-힣._-]+", "_", name)
+        name = re.sub(r"[^A-Za-z0-9가-힣._-]+", "_", name).strip(" .")
+        name = name or "unknown"
+
+        if Path(name).stem.upper() in _WINDOWS_RESERVED_FILENAMES:
+            name = f"_{name}"
+
+        return self._truncate_filename(name, _MAX_INCOMING_FILENAME_BYTES)
+
+    @staticmethod
+    def _truncate_filename(filename: str, max_bytes: int) -> str:
+        """확장자를 보존하며 UTF-8 기준으로 긴 파일명을 안전하게 줄인다."""
+        if len(filename.encode("utf-8")) <= max_bytes:
+            return filename
+
+        suffix = Path(filename).suffix
+        suffix_bytes = suffix.encode("utf-8")
+        if len(suffix_bytes) >= max_bytes:
+            suffix = ""
+            suffix_bytes = b""
+
+        stem = filename[: -len(suffix)] if suffix else filename
+        budget = max_bytes - len(suffix_bytes)
+        shortened = stem.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+        shortened = shortened.rstrip(" .") or "unknown"
+        return f"{shortened}{suffix}"
 
     def _to_relative_path(self, path: Path) -> str:
         """

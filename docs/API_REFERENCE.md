@@ -135,6 +135,17 @@ Optional multipart fields: `service_name` (`MemoryKeeper` default; allowed:
 `MemoryKeeper`, `AstroJournal`), `client_file_id`, and
 `client_content_sha256` (64-character lowercase hexadecimal SHA-256).
 
+AstroJournal uploads additionally accept these optional multipart fields:
+
+| Field | Format | Storage use |
+|-------|--------|-------------|
+| `observation_date` | ISO date (`YYYY-MM-DD`) | Observation year; preferred over EXIF/upload time. |
+| `canonical_target_id` | String, max 255 characters | Canonical target folder key. |
+| `target_display_name` | String, max 255 characters | Fallback when the canonical ID is absent. |
+
+These fields only determine the original storage path. They do not create or
+update an AstroJournal `ObservationRecord`.
+
 For the same `service_name + client_file_id`, the API returns the original job
 without saving another incoming file. Different non-null hashes return `409`.
 If an earlier job has no hash, a later valid hash backfills it and returns the

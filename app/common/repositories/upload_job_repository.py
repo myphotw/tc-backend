@@ -57,6 +57,7 @@ class UploadJobRepository:
         service_name: str = "MemoryKeeper",
         client_file_id: str | None = None,
         client_content_sha256: str | None = None,
+        processing_log: str | None = None,
     ) -> UploadJob:
         """WAITING 상태의 업로드 작업을 생성한다."""
         job = UploadJob(
@@ -67,6 +68,7 @@ class UploadJobRepository:
             service_name=service_name,
             client_file_id=client_file_id,
             client_content_sha256=client_content_sha256,
+            processing_log=processing_log,
         )
         self.db.add(job)
         self.db.flush()

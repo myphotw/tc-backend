@@ -41,9 +41,8 @@ class StorageRuleEngine:
 
         rule = self.rules.get(service_name)
         if rule is None:
-            rule = self.rules[self.DEFAULT_SERVICE]
-            service_name = self.DEFAULT_SERVICE
-            self._log(context, f"RULE_SELECTED {service_name}")
+            self._log(context, f"RULE_UNSUPPORTED {service_name}")
+            raise ValueError(f"Unsupported storage service: {service_name}")
 
         relative_path = rule.build_path(context).strip("/").replace("\\", "/")
         self._log(context, "RULE_COMPLETE")

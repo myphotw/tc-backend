@@ -41,10 +41,13 @@ StoragePlugin은 Path를 직접 만들지 않고:
 ```
 StorageRuleEngine.build_path(context)
 → MemoryKeeper: year/country/city/place_name
+→ AstroJournal: AstroJournal/year/canonical_target
 → 부족 시 Unknown
 ```
 
-AstroJournal Rule은 인터페이스만 준비 (미구현).
+AstroJournal의 촬영연도는 업로드의 `observation_date`, Storage 시점의
+`datetime_original`, Upload Job 생성연도 순서로 결정한다. 대상은
+`canonical_target_id`, `target_display_name`, `Unknown` 순서로 결정한다.
 
 ## Vision Tag 정책
 
