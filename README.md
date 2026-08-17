@@ -81,6 +81,16 @@ UPDATE, and soft DELETE write events in the same transaction as the mutation.
 DELETE events set `tombstone=true`; clients advance using `next_cursor` while
 `has_more` is true.
 
+## External API Centralization (Phase 1)
+
+Server-side Geocoding, Places, Weather, and Astrometry.net access is available
+through normalized Backend endpoints. Enabled `common_api_keys` rows take
+priority over `.env` fallbacks, and API key responses never expose plaintext or
+ciphertext. Google Maps mobile SDK keys remain app deployment credentials;
+Google Vision keeps its service-account JSON file flow. See
+`docs/API_REFERENCE.md` and `docs/SECURITY.md` for contracts and deployment
+boundaries.
+
 ## 프로젝트 구조
 
 ```

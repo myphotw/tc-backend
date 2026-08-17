@@ -2,6 +2,7 @@ from app.common.routers import (
     api_keys,
     capabilities,
     changes,
+    external_apis,
     gallery,
     monitoring,
     upload,
@@ -9,6 +10,7 @@ from app.common.routers import (
 )
 from app.astrojournal.routers import gallery as astro_gallery
 from app.astrojournal.routers import observation_records
+from app.astrojournal.routers import plate_solve
 from fastapi import FastAPI, Request, Response
 from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -81,10 +83,12 @@ app.include_router(upload.router)
 app.include_router(upload_jobs.router)
 app.include_router(capabilities.router)
 app.include_router(changes.router)
+app.include_router(external_apis.router)
 app.include_router(monitoring.router)
 app.include_router(gallery.router)
 app.include_router(observation_records.router)
 app.include_router(astro_gallery.router)
+app.include_router(plate_solve.router)
 
 
 @app.on_event("startup")

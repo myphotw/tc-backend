@@ -4,6 +4,87 @@ Base URL: `http://<host>:8000`
 OpenAPI: `/docs`, `/openapi.json`  
 Version: `1.0.0`
 
+## External API Centralization (Phase 1)
+
+All provider credentials remain server-side. Provider response bodies are
+normalized and are never passed through verbatim.
+
+### Geocoding and Places
+
+| Method | Endpoint | Query |
+|--------|----------|-------|
+| GET | `/api/common/geocoding/reverse` | `latitude`, `longitude`, optional `language=ko` |
+| GET | `/api/common/geocoding/forward` | `query`, optional `language=ko` |
+| GET | `/api/common/places/autocomplete` | `query`, optional `language`, `session_token` |
+| GET | `/api/common/places/details` | `place_id`, optional `language`, `session_token` |
+| GET | `/api/common/places/search` | `query`, optional `language` |
+
+Forward geocoding, Place Details and Text Search return normalized location
+items with `display_name`, `latitude`, `longitude`, `country`, `province`,
+`city`, `district`, `place_name`, `provider`, and optional `place_id`.
+Autocomplete returns `place_id`, `main_text`, `secondary_text`, and
+`display_name`. When the app uses an autocomplete billing session, it must send
+the same opaque `session_token` to Autocomplete and Place Details.
+
+Reverse geocoding reuses `common_geocode_cache`. A cache hit does not consume a
+usage unit. Actual successful Geocoding and Places provider calls consume one
+unit; mock calls and provider failures do not.
+
+### Weather
+
+| Method | Endpoint | Query |
+|--------|----------|-------|
+| GET | `/api/common/weather/current` | `lat`, `lon`, optional `language=ko` |
+| GET | `/api/common/weather/forecast` | `lat`, `lon`, optional `language=ko` |
+
+Weather uses OpenWeatherMap metric units. Current weather includes normalized
+temperature, feels-like, humidity, pressure, cloud, wind, condition,
+visibility, observation, sunrise and sunset fields. Forecast returns normalized
+timestamped slots including precipitation probability and rain volume.
+
+### Plate Solve
+
+`POST /api/astro/plate-solve` accepts:
+
+```json
+{"common_file_id": 180}
+```
+
+The file must be an active `common_files.id` linked to `AstroJournal`. The
+Backend reuses its original media and does not upload the image from the app a
+second time. A successful submission returns HTTP `202`:
+
+```json
+{
+  "job_id": "opaque-token",
+  "status": "WAITING",
+  "common_file_id": 180,
+  "provider": "astrometry.net",
+  "result": null,
+  "provider_metadata": {"submission_id": 123}
+}
+```
+
+`GET /api/astro/plate-solve/{job_id}` returns `WAITING`, `PROCESSING`,
+`COMPLETED`, or `FAILED`. A completed result contains `ra`, `dec`, `rotation`,
+`pixel_scale`, `field_width`, `field_height`, and `parity`. Phase 1 uses an
+encrypted stateless token backed by the provider submission rather than a new
+database table or worker queue.
+
+### External API errors
+
+Errors use FastAPI `detail` with a stable `code`: `API_KEY_NOT_CONFIGURED`
+(`503`), `API_LIMIT_EXCEEDED` (`429`), `PROVIDER_TIMEOUT` (`504`),
+`PROVIDER_ERROR` (`502`), or `INVALID_REQUEST` (`400`). Raw provider bodies,
+request URLs containing credentials, and key values are not returned.
+
+### Capability and readiness
+
+`GET /api/common/capabilities` describes supported contracts. Runtime key and
+Vision worker state is separate at `GET /api/common/readiness`. Readiness only
+reports whether a key is configured and whether its source is `database` or
+`environment`; it never returns key material.
+
 ## Shared FileAsset domain links (B2)
 
 The upload contract continues to accept `service_name`. Files with the same
@@ -232,6 +313,8 @@ Metadata 전체, `ai_tags`, `user_tags`, `storage_path`, preview/thumbnail/origi
   "vision": "OK",
   "weather": "OK",
   "geocoding": "OK",
+  "places": "OK",
+  "astrometry": "OK",
   "time": "ISO-8601"
 }
 ```
@@ -250,9 +333,13 @@ Worker 항목: `name`, `status` (`RUNNING`/`STOPPED`/`OFFLINE`), `last_heartbeat
 |--------|----------|--------|-------------|
 | GET | `/api/common/api-keys/` | 200 | 목록 |
 | POST | `/api/common/api-keys/` | 200 | 생성 (암호화 저장) |
+| PATCH | `/api/common/api-keys/{key_id}` | 200 | key/description/enabled 갱신 |
 | DELETE | `/api/common/api-keys/{key_id}` | 200 | 삭제 |
 
-Request (`POST`): `{ "service_name", "api_key", "description?" }`
+Request (`POST`): `{ "service_name", "api_key", "description?", "enabled?" }`.
+Supported service names are `GOOGLE_GEOCODING`, `GOOGLE_PLACES`, `WEATHER`, and
+`ASTROMETRY`. Read/write responses expose `configured`, `enabled`, metadata,
+and `masked="****"`; they never expose stored ciphertext or plaintext.
 
 ---
 

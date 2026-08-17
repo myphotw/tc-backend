@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from requests import Session as HttpSession
 from sqlalchemy.orm import Session
 
 from app.common.config import settings
 from app.common.repositories.api_usage_repository import ApiName, ApiProvider
-from app.common.services.api_clients.base_client import ApiClientError, BaseClient
+from app.common.services.api_clients.base_client import (
+    ApiClientError,
+    BaseClient,
+    ExternalApiErrorCode,
+)
 
 
 class GeocodingClient(BaseClient):
@@ -25,12 +30,14 @@ class GeocodingClient(BaseClient):
         api_key: str | None = None,
         use_mock: bool | None = None,
         db: Session | None = None,
+        session: HttpSession | None = None,
     ) -> None:
         super().__init__(
             base_url="https://maps.googleapis.com",
             db=db,
             provider=ApiProvider.GOOGLE,
             api_name=ApiName.GEOCODING,
+            session=session,
         )
         self.api_key = api_key if api_key is not None else settings.GOOGLE_API_KEY
         if use_mock is None:
@@ -43,6 +50,7 @@ class GeocodingClient(BaseClient):
         *,
         latitude: float,
         longitude: float,
+        language: str = "ko",
     ) -> dict[str, Any]:
         """
         GPS 좌표를 주소로 변환한다.
@@ -62,38 +70,74 @@ class GeocodingClient(BaseClient):
             bool(self.api_key),
         )
         if self.use_mock:
-            if not self.can_use(units=1):
-                raise ApiClientError(
-                    "API usage limit exceeded: provider=GOOGLE api_name=GEOCODING"
-                )
-            result = self._mock_response(latitude=latitude, longitude=longitude)
-            self.track_usage(units=1)
-            return result
-        return self._request_reverse_geocode(latitude=latitude, longitude=longitude)
+            return self._mock_response(latitude=latitude, longitude=longitude)
+        return self._request_reverse_geocode(
+            latitude=latitude,
+            longitude=longitude,
+            language=language,
+        )
 
     def _request_reverse_geocode(
         self,
         *,
         latitude: float,
         longitude: float,
+        language: str,
     ) -> dict[str, Any]:
         """실제 Google Geocoding API를 호출한다."""
         if not self.api_key:
-            raise ApiClientError("GOOGLE_API_KEY is not configured")
+            raise ApiClientError(
+                "Google Geocoding key is not configured",
+                code=ExternalApiErrorCode.API_KEY_NOT_CONFIGURED,
+            )
 
         payload = self.get(
             "/maps/api/geocode/json",
             params={
                 "latlng": f"{latitude},{longitude}",
                 "key": self.api_key,
-                "language": "ko",
+                "language": language,
             },
         )
-        return self._parse_geocode_payload(
+        result = self._parse_geocode_payload(
             payload,
             latitude=latitude,
             longitude=longitude,
         )
+        self.track_usage(units=1)
+        return result
+
+    def forward_geocode(
+        self,
+        *,
+        query: str,
+        language: str = "ko",
+    ) -> list[dict[str, Any]]:
+        """Resolve an address or place query into normalized candidates."""
+        if not self.api_key:
+            raise ApiClientError(
+                "Google Geocoding key is not configured",
+                code=ExternalApiErrorCode.API_KEY_NOT_CONFIGURED,
+            )
+        payload = self.get(
+            "/maps/api/geocode/json",
+            params={
+                "address": query,
+                "key": self.api_key,
+                "language": language,
+                "region": "kr",
+            },
+        )
+        status = payload.get("status")
+        if status not in {"OK", "ZERO_RESULTS"}:
+            raise ApiClientError("Geocoding provider returned an error")
+        items = [
+            item
+            for result in payload.get("results") or []
+            if (item := self._normalize_candidate(result)) is not None
+        ]
+        self.track_usage(units=1)
+        return items
 
     def _parse_geocode_payload(
         self,
@@ -105,7 +149,7 @@ class GeocodingClient(BaseClient):
         """Google Geocoding 응답을 Metadata 필드로 정규화한다."""
         status = payload.get("status")
         if status not in {"OK", "ZERO_RESULTS"}:
-            raise ApiClientError(f"Geocoding API status={status}")
+            raise ApiClientError("Geocoding provider returned an error")
 
         results = payload.get("results") or []
         if not results:
@@ -136,8 +180,8 @@ class GeocodingClient(BaseClient):
             "place_name": first.get("formatted_address"),
         }
 
+    @staticmethod
     def _map_address_components(
-        self,
         components: list[dict[str, Any]],
     ) -> dict[str, str | None]:
         """Google address_components를 country/province/city/district로 매핑한다."""
@@ -167,6 +211,43 @@ class GeocodingClient(BaseClient):
                 if mapped["district"] is None:
                     mapped["district"] = name
         return mapped
+
+    def _normalize_candidate(
+        self,
+        result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        location = (result.get("geometry") or {}).get("location") or {}
+        latitude = location.get("lat")
+        longitude = location.get("lng")
+        display_name = result.get("formatted_address")
+        if latitude is None or longitude is None or not display_name:
+            return None
+        components = result.get("address_components") or []
+        mapped = self._map_address_components(components)
+        return {
+            "display_name": display_name,
+            "latitude": float(latitude),
+            "longitude": float(longitude),
+            **mapped,
+            "place_name": self._primary_place_name(components),
+            "provider": "google_geocoding",
+        }
+
+    @staticmethod
+    def _primary_place_name(components: list[dict[str, Any]]) -> str | None:
+        for target in (
+            "administrative_area_level_3",
+            "sublocality_level_1",
+            "locality",
+            "administrative_area_level_2",
+            "administrative_area_level_1",
+        ):
+            for component in components:
+                if target in set(component.get("types") or []):
+                    value = component.get("long_name")
+                    if value:
+                        return str(value)
+        return None
 
     def _mock_response(
         self,

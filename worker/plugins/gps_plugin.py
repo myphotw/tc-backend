@@ -2,17 +2,13 @@ from __future__ import annotations
 
 import time
 
-from app.common.repositories.api_usage_repository import (
-    ApiName,
-    ApiProvider,
-    ApiUsageRepository,
-)
 from app.common.repositories.geocode_cache_repository import GeocodeCacheRepository
 from app.common.repositories.metadata_repository import (
     MetadataRepository,
     MetadataSource,
 )
 from app.common.services.api_clients.google import GeocodingClient
+from app.common.services.key_resolver import ExternalServiceName, KeyResolver
 from app.common.utils.perf import elapsed_ms, log_perf
 from worker.plugins.base import BasePlugin, PluginContext
 
@@ -65,16 +61,10 @@ class GpsPlugin(BasePlugin):
                     job_id=getattr(context.job, "job_id", None),
                 )
             else:
-                usage_repository = ApiUsageRepository(context.db)
-                if not usage_repository.can_use(
-                    provider=ApiProvider.GOOGLE,
-                    api_name=ApiName.GEOCODING,
-                    units=1,
-                ):
-                    context.log("GPS_FAILED:GEOCODING usage limit exceeded")
-                    return
-
-                client = GeocodingClient(db=context.db)
+                api_key = KeyResolver(context.db).resolve(
+                    ExternalServiceName.GOOGLE_GEOCODING
+                )
+                client = GeocodingClient(api_key=api_key, db=context.db)
                 api_started = time.perf_counter()
                 result = client.reverse_geocode(
                     latitude=latitude,

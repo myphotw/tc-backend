@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from enum import StrEnum
 from typing import Any
 
 import requests
@@ -15,19 +16,27 @@ from app.common.repositories.api_usage_repository import ApiUsageRepository
 logger = logging.getLogger(__name__)
 
 
+class ExternalApiErrorCode(StrEnum):
+    API_KEY_NOT_CONFIGURED = "API_KEY_NOT_CONFIGURED"
+    API_LIMIT_EXCEEDED = "API_LIMIT_EXCEEDED"
+    PROVIDER_TIMEOUT = "PROVIDER_TIMEOUT"
+    PROVIDER_ERROR = "PROVIDER_ERROR"
+    INVALID_REQUEST = "INVALID_REQUEST"
+
+
 class ApiClientError(Exception):
-    """외부 API Client 공통 예외."""
+    """Sanitized external provider failure safe for Backend responses."""
 
     def __init__(
         self,
         message: str,
         *,
+        code: ExternalApiErrorCode = ExternalApiErrorCode.PROVIDER_ERROR,
         status_code: int | None = None,
-        response_text: str | None = None,
     ) -> None:
         super().__init__(message)
+        self.code = code
         self.status_code = status_code
-        self.response_text = response_text
 
 
 class BaseClient:
@@ -86,6 +95,7 @@ class BaseClient:
         *,
         json: dict[str, Any] | None = None,
         data: Any = None,
+        files: Any = None,
         headers: dict[str, str] | None = None,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -96,6 +106,7 @@ class BaseClient:
             params=params,
             json=json,
             data=data,
+            files=files,
             headers=headers,
         )
 
@@ -136,6 +147,7 @@ class BaseClient:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         data: Any = None,
+        files: Any = None,
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
@@ -146,11 +158,12 @@ class BaseClient:
         """
         if not self.can_use(units=1):
             raise ApiClientError(
-                f"API usage limit exceeded: provider={self.provider} api_name={self.api_name}"
+                "External API monthly limit exceeded",
+                code=ExternalApiErrorCode.API_LIMIT_EXCEEDED,
             )
 
         url = self._build_url(path)
-        last_error: Exception | None = None
+        last_error: ApiClientError | None = None
 
         for attempt in range(1, self.retry_count + 1):
             try:
@@ -167,25 +180,32 @@ class BaseClient:
                     params=params,
                     json=json,
                     data=data,
+                    files=files,
                     headers=headers,
                     timeout=self.timeout,
                 )
                 payload = self._parse_response(response)
-                self.track_usage(units=1)
                 return payload
-            except (requests.RequestException, ApiClientError) as exc:
-                last_error = exc
-                self.logger.warning(
-                    "API request failed method=%s url=%s attempt=%s error=%s",
-                    method,
-                    url,
-                    attempt,
-                    exc,
+            except requests.Timeout:
+                last_error = ApiClientError(
+                    "External provider timed out",
+                    code=ExternalApiErrorCode.PROVIDER_TIMEOUT,
                 )
+            except requests.RequestException:
+                last_error = ApiClientError("External provider request failed")
+            except ApiClientError as exc:
+                last_error = exc
+            self.logger.warning(
+                "API request failed method=%s url=%s attempt=%s error_code=%s",
+                method,
+                url,
+                attempt,
+                last_error.code,
+            )
 
-        raise ApiClientError(
-            f"API request failed after {self.retry_count} retries: {last_error}"
-        ) from last_error
+        if isinstance(last_error, ApiClientError):
+            raise last_error
+        raise ApiClientError("External provider request failed")
 
     def _build_url(self, path: str) -> str:
         """base_url과 path를 결합한다."""
@@ -199,9 +219,8 @@ class BaseClient:
         """HTTP 응답을 dict로 변환한다."""
         if response.status_code >= 400:
             raise ApiClientError(
-                f"API responded with status={response.status_code}",
+                "External provider returned an HTTP error",
                 status_code=response.status_code,
-                response_text=response.text,
             )
 
         if not response.content:
@@ -211,9 +230,8 @@ class BaseClient:
             payload = response.json()
         except ValueError as exc:
             raise ApiClientError(
-                "API response is not valid JSON",
+                "External provider returned invalid JSON",
                 status_code=response.status_code,
-                response_text=response.text,
             ) from exc
 
         if isinstance(payload, dict):

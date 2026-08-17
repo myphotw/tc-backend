@@ -24,17 +24,29 @@ from app.common.repositories.vision_job_repository import (
     VisionJobStatus,
 )
 from app.common.repositories.worker_status_repository import WorkerStatusRepository
+from app.common.services.key_resolver import ExternalServiceName, KeyResolver
 
 logger = logging.getLogger(__name__)
 
 
-def check_health(db: Session) -> dict[str, str]:
+def check_health(db: Session) -> dict[str, object]:
     """운영 컴포넌트 Health Check 결과를 반환한다."""
     database, database_detail = _check_database(db)
     storage, storage_detail = _check_storage()
     vision, vision_detail = _check_vision_credential()
-    weather, weather_detail = _check_weather_key()
-    geocoding, geocoding_detail = _check_geocoding_key()
+    resolver = KeyResolver(db)
+    weather, weather_detail = _check_resolved_key(
+        resolver, ExternalServiceName.WEATHER
+    )
+    geocoding, geocoding_detail = _check_resolved_key(
+        resolver, ExternalServiceName.GOOGLE_GEOCODING
+    )
+    places, places_detail = _check_resolved_key(
+        resolver, ExternalServiceName.GOOGLE_PLACES
+    )
+    astrometry, astrometry_detail = _check_resolved_key(
+        resolver, ExternalServiceName.ASTROMETRY
+    )
 
     components = {
         "database": database,
@@ -42,6 +54,8 @@ def check_health(db: Session) -> dict[str, str]:
         "vision": vision,
         "weather": weather,
         "geocoding": geocoding,
+        "places": places,
+        "astrometry": astrometry,
     }
     status = "OK" if all(value == "OK" for value in components.values()) else "DEGRADED"
     return {
@@ -53,6 +67,8 @@ def check_health(db: Session) -> dict[str, str]:
         "vision_detail": vision_detail,
         "weather_detail": weather_detail,
         "geocoding_detail": geocoding_detail,
+        "places_detail": places_detail,
+        "astrometry_detail": astrometry_detail,
         "time": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -75,6 +91,14 @@ def build_dashboard(db: Session) -> dict[str, object]:
     weather_usage = usage_repo.get_usage(
         provider=ApiProvider.WEATHER,
         api_name=ApiName.WEATHER,
+    )
+    places_usage = usage_repo.get_usage(
+        provider=ApiProvider.GOOGLE,
+        api_name=ApiName.PLACES,
+    )
+    plate_solve_usage = usage_repo.get_usage(
+        provider=ApiProvider.ASTROMETRY,
+        api_name=ApiName.PLATESOLVE,
     )
 
     workers = []
@@ -126,6 +150,14 @@ def build_dashboard(db: Session) -> dict[str, object]:
             "weather": {
                 "used": weather_usage.used_unit or 0,
             },
+            "places": {
+                "used": places_usage.used_unit or 0,
+                "limit": places_usage.limit_unit or 0,
+            },
+            "plate_solve": {
+                "used": plate_solve_usage.used_unit or 0,
+                "limit": plate_solve_usage.limit_unit or 0,
+            },
         },
         "storage": {
             "incoming": _count_files(settings.incoming_dir_path),
@@ -166,8 +198,8 @@ def _check_vision_credential() -> tuple[str, str]:
     try:
         credential = Path(path)
         if credential.is_file():
-            return "OK", f"credential file exists: {credential}"
-        detail = f"GOOGLE_VISION_CREDENTIAL file not found: {credential}"
+            return "OK", "Vision credential file exists"
+        detail = "GOOGLE_VISION_CREDENTIAL file not found"
         logger.error("Health vision check failed: %s", detail)
         return "FAIL", detail
     except Exception as exc:
@@ -175,23 +207,56 @@ def _check_vision_credential() -> tuple[str, str]:
         return "FAIL", f"{type(exc).__name__}: {exc}"
 
 
-def _check_weather_key() -> tuple[str, str]:
-    if settings.WEATHER_API_KEY:
-        return "OK", "WEATHER_API_KEY is configured"
-    detail = "WEATHER_API_KEY is not configured"
-    logger.error("Health weather check failed: %s", detail)
-    return "FAIL", detail
+def _check_resolved_key(
+    resolver: KeyResolver,
+    service: ExternalServiceName,
+) -> tuple[str, str]:
+    try:
+        resolved = resolver.resolve_with_source(service)
+    except Exception as exc:
+        logger.warning(
+            "Health key resolution failed service=%s error_type=%s",
+            service.value,
+            type(exc).__name__,
+        )
+        return "FAIL", f"{service.value} key resolution failed"
+    if resolved is None:
+        return "FAIL", f"{service.value} is not configured"
+    return "OK", f"{service.value} is configured via {resolved.source.value}"
 
 
-def _check_geocoding_key() -> tuple[str, str]:
-    if settings.GOOGLE_API_KEY:
-        return "OK", "GOOGLE_API_KEY is configured"
-    detail = (
-        "GOOGLE_API_KEY is not configured "
-        "(alias GOOGLE_MAP_API_KEY is also accepted via Settings)"
+def check_external_readiness(db: Session) -> dict[str, object]:
+    """Return configuration/runtime state separately from support capabilities."""
+    resolver = KeyResolver(db)
+    services: dict[str, object] = {}
+    for service in ExternalServiceName:
+        try:
+            resolved = resolver.resolve_with_source(service)
+        except Exception:
+            resolved = None
+        services[service.value.lower()] = {
+            "configured": resolved is not None,
+            "source": resolved.source.value if resolved is not None else None,
+        }
+
+    vision_path = settings.GOOGLE_VISION_CREDENTIAL
+    worker_repo = WorkerStatusRepository(db)
+    vision_worker = worker_repo.get_worker("VisionWorker")
+    worker_status = (
+        worker_repo.resolve_display_status(vision_worker)
+        if vision_worker is not None
+        else "OFFLINE"
     )
-    logger.error("Health geocoding check failed: %s", detail)
-    return "FAIL", detail
+    return {
+        "services": services,
+        "vision": {
+            "credential_available": bool(
+                vision_path and Path(vision_path).is_file()
+            ),
+            "worker_running": worker_status == "RUNNING",
+            "worker_status": worker_status,
+        },
+    }
 
 
 def _count_files(path: Path) -> int:

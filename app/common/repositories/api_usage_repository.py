@@ -22,6 +22,7 @@ class ApiName:
 
     VISION = "VISION"
     GEOCODING = "GEOCODING"
+    PLACES = "PLACES"
     WEATHER = "WEATHER"
     PLATESOLVE = "PLATESOLVE"
 
@@ -160,6 +161,7 @@ class ApiUsageRepository:
         mapping = {
             ApiName.VISION: settings.VISION_MONTHLY_LIMIT,
             ApiName.GEOCODING: settings.GEOCODING_MONTHLY_LIMIT,
+            ApiName.PLACES: settings.GEOCODING_MONTHLY_LIMIT,
             ApiName.WEATHER: settings.WEATHER_MONTHLY_LIMIT,
             ApiName.PLATESOLVE: settings.PLATESOLVE_MONTHLY_LIMIT,
         }
