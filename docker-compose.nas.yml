@@ -1,6 +1,7 @@
 x-app-base: &app-base
   build:
     context: .
+    network: host
   env_file:
     - .env
   environment: &app-environment
