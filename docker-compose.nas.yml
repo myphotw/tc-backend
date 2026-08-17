@@ -2,11 +2,13 @@ x-app-base: &app-base
   build:
     context: .
     network: host
+
   env_file:
     - .env
-  environment: &app-environment
-    POSTGRES_HOST: postgres
-    POSTGRES_PORT: "5432"
+
+  environment:
+    POSTGRES_HOST: 127.0.0.1
+    POSTGRES_PORT: "15432"
 
     PHOTO_PLATFORM_ROOT: /data/PhotoPlatform
     INCOMING_DIR: /data/PhotoPlatform/incoming
@@ -22,9 +24,7 @@ x-app-base: &app-base
   volumes:
     - "${PHOTO_PLATFORM_HOST_PATH}:/data/PhotoPlatform"
 
-  networks:
-    - tc-network
-
+  network_mode: host
   restart: unless-stopped
 
 
@@ -40,9 +40,6 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
-
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
 
     healthcheck:
       test:
@@ -66,9 +63,3 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-
-
-networks:
-  tc-network:
-    external: true
-    name: Tc-network
