@@ -1,0 +1,73 @@
+x-app-base: &app-base
+  build:
+    context: .
+  env_file:
+    - .env
+  environment: &app-environment
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+
+    PHOTO_PLATFORM_ROOT: /data/PhotoPlatform
+    INCOMING_DIR: /data/PhotoPlatform/incoming
+    ORIGINAL_DIR: /data/PhotoPlatform/original
+    PREVIEW_DIR: /data/PhotoPlatform/preview
+    THUMB_DIR: /data/PhotoPlatform/thumb
+    EXPORT_DIR: /data/PhotoPlatform/export
+    CACHE_DIR: /data/PhotoPlatform/cache
+    TEMP_DIR: /data/PhotoPlatform/temp
+
+    GOOGLE_VISION_CREDENTIAL: ""
+
+  volumes:
+    - "${PHOTO_PLATFORM_HOST_PATH}:/data/PhotoPlatform"
+
+  networks:
+    - tc-network
+
+  restart: unless-stopped
+
+
+services:
+
+  backend:
+    <<: *app-base
+
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+
+  upload-worker:
+    <<: *app-base
+
+    command:
+      - python
+      - -m
+      - worker.background_worker
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+
+networks:
+  tc-network:
+    external: true
+    name: Tc-network
