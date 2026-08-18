@@ -11,14 +11,19 @@ from app.common.routers import (
 from app.astrojournal.routers import gallery as astro_gallery
 from app.astrojournal.routers import observation_records
 from app.astrojournal.routers import plate_solve
-from fastapi import FastAPI, Request, Response
+import logging
+import time
+
+from fastapi import APIRouter, Depends, FastAPI, Request, Response
 from sqlalchemy import text
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.common.config import settings
 from app.common.database import engine, initialize_database
+from app.common.security import require_backend_auth
 from app.common.utils.perf import elapsed_ms, log_perf, new_request_id
-import time
+
+logger = logging.getLogger(__name__)
 
 
 app = FastAPI(
@@ -78,21 +83,27 @@ class TimingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(TimingMiddleware)
 
-app.include_router(api_keys.router)
-app.include_router(upload.router)
-app.include_router(upload_jobs.router)
-app.include_router(capabilities.router)
-app.include_router(changes.router)
-app.include_router(external_apis.router)
-app.include_router(monitoring.router)
-app.include_router(gallery.router)
-app.include_router(observation_records.router)
-app.include_router(astro_gallery.router)
-app.include_router(plate_solve.router)
+protected_api_router = APIRouter(
+    dependencies=[Depends(require_backend_auth)],
+)
+protected_api_router.include_router(api_keys.router)
+protected_api_router.include_router(upload.router)
+protected_api_router.include_router(upload_jobs.router)
+protected_api_router.include_router(capabilities.router)
+protected_api_router.include_router(changes.router)
+protected_api_router.include_router(external_apis.router)
+protected_api_router.include_router(monitoring.router)
+protected_api_router.include_router(gallery.router)
+protected_api_router.include_router(observation_records.router)
+protected_api_router.include_router(astro_gallery.router)
+protected_api_router.include_router(plate_solve.router)
+app.include_router(protected_api_router)
 
 
 @app.on_event("startup")
 def startup():
+    if settings.TC_BACKEND_AUTH_TOKEN is None:
+        logger.warning("TC_BACKEND_AUTH_TOKEN is not configured")
     try:
         changes = initialize_database()
         print(f"Database initialization completed (version={settings.VERSION})")
@@ -103,7 +114,11 @@ def startup():
         print(e)
 
 
-@app.get("/", tags=["System"])
+@app.get(
+    "/",
+    tags=["System"],
+    dependencies=[Depends(require_backend_auth)],
+)
 def root():
     """서비스 기본 정보."""
     return {
@@ -136,9 +151,9 @@ def db_test():
             "version": settings.VERSION,
         }
 
-    except Exception as e:
+    except Exception:
         return {
             "database": "failed",
-            "error": str(e),
+            "error": "connection_failed",
             "version": settings.VERSION,
         }

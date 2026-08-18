@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -26,12 +27,23 @@ class UploadClient:
         timeout: int = 60,
         retry_count: int = 3,
         retry_delay: float = 2.0,
+        auth_token: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.upload_url = f"{self.base_url}/api/common/upload"
         self.timeout = timeout
         self.retry_count = retry_count
         self.retry_delay = retry_delay
+        configured_token = (
+            auth_token
+            if auth_token is not None
+            else os.environ.get("TC_BACKEND_AUTH_TOKEN")
+        )
+        self.auth_token = (
+            configured_token
+            if configured_token is not None and configured_token.strip()
+            else None
+        )
 
     def upload(self, file_path: Path) -> dict[str, Any]:
         """
@@ -47,12 +59,18 @@ class UploadClient:
         for attempt in range(1, self.retry_count + 1):
             try:
                 logger.info("UPLOAD_START path=%s attempt=%s", file_path, attempt)
+                headers = (
+                    {"Authorization": f"Bearer {self.auth_token}"}
+                    if self.auth_token is not None
+                    else None
+                )
                 with file_path.open("rb") as handle:
                     response = requests.post(
                         self.upload_url,
                         files={
                             "file": (file_path.name, handle),
                         },
+                        headers=headers,
                         timeout=self.timeout,
                     )
                 if response.status_code >= 400:

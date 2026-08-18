@@ -4,6 +4,35 @@ Base URL: `http://<host>:8000`
 OpenAPI: `/docs`, `/openapi.json`  
 Version: `1.0.0`
 
+## Authentication
+
+When `TC_BACKEND_AUTH_TOKEN` is configured, the informational root and every
+`/api/*` operation require the standard header:
+
+```http
+Authorization: Bearer <TC Backend token>
+```
+
+This includes capabilities/readiness, upload and polling, Common and Astro
+Gallery, Changes, ObservationRecord mutations, API-key administration,
+Geocoding, Places, Weather, and Plate Solve. Missing, empty, malformed, Basic,
+or incorrect credentials return HTTP `401`:
+
+```json
+{
+  "detail": {
+    "code": "UNAUTHORIZED",
+    "message": "Authentication required"
+  }
+}
+```
+
+The response also includes `WWW-Authenticate: Bearer`. Public operational
+exceptions are only `GET /health` and `GET /db-test`; their responses do not
+include credentials, configuration paths, or database connection details.
+An unset token retains LAN development compatibility, but must not be used for
+external deployment.
+
 ## External API Centralization (Phase 1)
 
 All provider credentials remain server-side. Provider response bodies are

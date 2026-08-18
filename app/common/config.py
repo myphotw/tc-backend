@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     MASTER_KEY: str
+    TC_BACKEND_AUTH_TOKEN: str | None = None
 
     PHOTO_PLATFORM_ROOT: str = "./PhotoPlatform"
     INCOMING_DIR: str | None = None
@@ -46,6 +47,11 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def resolve_storage_dirs(self) -> "Settings":
         """PHOTO_PLATFORM_ROOT 기준으로 Storage 하위 경로를 채운다."""
+        if (
+            self.TC_BACKEND_AUTH_TOKEN is not None
+            and not self.TC_BACKEND_AUTH_TOKEN.strip()
+        ):
+            self.TC_BACKEND_AUTH_TOKEN = None
         if not self.GOOGLE_API_KEY and self.GOOGLE_MAP_API_KEY:
             self.GOOGLE_API_KEY = self.GOOGLE_MAP_API_KEY
 
