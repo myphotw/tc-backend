@@ -72,6 +72,16 @@ idempotent: the first request increments revision and repeated requests return
 the same deletion result. Optional `client_record_id` on POST provides
 idempotent record creation through a partial UNIQUE service/client key.
 
+AstroJournal additionally applies `DELETE_IF_UNREFERENCED` after committing the
+record tombstone. If no active Astro record, non-Astro service link, or active
+Vision processing job still protects the FileAsset, only its exact
+`original`/`preview`/`thumb` paths are removed and the Astro service link is
+cleaned up. The `common_files` row remains as a deleted tombstone because soft-
+deleted records retain its FK; a later identical upload safely restores that
+row and its media. MemoryKeeper uses `PRESERVE_PHYSICAL_FILE`, so a shared
+MemoryKeeper link always prevents physical deletion. Storage cleanup failures
+are logged and never roll back the ObservationRecord delete or its sync event.
+
 ## Changes Cursor API (B6-01)
 
 `GET /api/common/changes` exposes append-only common change events ordered by a

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -7,6 +9,10 @@ from sqlalchemy.orm import Session
 from app.astrojournal.models.observation_record import ObservationRecord
 from app.astrojournal.repositories.observation_record_repository import (
     ObservationRecordRepository,
+)
+from app.astrojournal.services.file_cleanup_service import (
+    AstroJournalFileCleanupService,
+    FileCleanupResult,
 )
 from app.astrojournal.schemas.observation_record import (
     ObservationRecordCreate,
@@ -19,15 +25,24 @@ from app.common.repositories.change_event_repository import (
 )
 from app.common.repositories.file_service_repository import FileServiceRepository
 
+logger = logging.getLogger(__name__)
+
 
 class ObservationRecordService:
     SERVICE_NAME = "AstroJournal"
     RESOURCE_TYPE = "ObservationRecord"
 
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        cleanup_service: AstroJournalFileCleanupService | None = None,
+    ) -> None:
         self.db = db
         self.repository = ObservationRecordRepository(db)
         self.change_repository = ChangeEventRepository(db)
+        self.cleanup_service = cleanup_service or AstroJournalFileCleanupService(db)
+        self.last_cleanup_result: FileCleanupResult | None = None
 
     def create(self, payload: ObservationRecordCreate) -> ObservationRecord:
         client_record_id = (
@@ -160,17 +175,38 @@ class ObservationRecordService:
         record = self.repository.get(record_id, include_deleted=True)
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
-        if record.deleted_at is not None:
-            return record
+        if record.service_name != self.SERVICE_NAME:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
+        if record.deleted_at is None:
+            try:
+                self.repository.soft_delete(record, commit=False)
+                self._append_change(record, ChangeOperation.DELETE, tombstone=True)
+                self.db.commit()
+                self.db.refresh(record)
+            except Exception:
+                self.db.rollback()
+                raise
+
+        # Cleanup is intentionally a second transaction. A storage or dependent
+        # data failure must never roll back the user's record deletion/tombstone.
         try:
-            self.repository.soft_delete(record, commit=False)
-            self._append_change(record, ChangeOperation.DELETE, tombstone=True)
-            self.db.commit()
-            self.db.refresh(record)
-            return record
+            self.last_cleanup_result = self.cleanup_service.cleanup_if_unreferenced(
+                file_id=record.file_id
+            )
+            logger.info(
+                "AstroJournal delete cleanup result: record_id=%s common_file_id=%s status=%s",
+                record.id,
+                record.file_id,
+                self.last_cleanup_result.status,
+            )
         except Exception:
             self.db.rollback()
-            raise
+            logger.exception(
+                "AstroJournal delete cleanup failed after soft delete: record_id=%s common_file_id=%s",
+                record.id,
+                record.file_id,
+            )
+        return record
 
     def _append_change(
         self,

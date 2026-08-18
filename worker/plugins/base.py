@@ -35,6 +35,7 @@ class PluginContext:
     thumb_path: Path | None = None
     original_path: Path | None = None
     common_file: CommonFile | None = None
+    restore_deleted_common_file: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
     tags: list[dict[str, Any]] = field(default_factory=list)
     processing_log: list[str] = field(default_factory=list)

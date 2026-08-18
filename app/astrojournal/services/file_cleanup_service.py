@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import logging
+
+from sqlalchemy.orm import Session
+
+from app.astrojournal.models.observation_record import ObservationRecord
+from app.common.models.file import CommonFile
+from app.common.models.file_metadata import CommonFileMetadata
+from app.common.models.file_service import CommonFileService
+from app.common.models.file_tag import CommonFileTag
+from app.common.models.vision_job import CommonVisionJob
+from app.common.repositories.vision_job_repository import VisionJobStatus
+from app.common.services.storage_service import AssetDeleteStatus, StorageService
+
+logger = logging.getLogger(__name__)
+
+
+class FileCleanupStatus:
+    CLEANED = "CLEANED"
+    ALREADY_CLEANED = "ALREADY_CLEANED"
+    PRESERVED_ACTIVE_RECORD = "PRESERVED_ACTIVE_RECORD"
+    PRESERVED_OTHER_SERVICE = "PRESERVED_OTHER_SERVICE"
+    PRESERVED_PROCESSING_VISION = "PRESERVED_PROCESSING_VISION"
+    ASSET_DELETE_FAILED = "ASSET_DELETE_FAILED"
+    DATABASE_CLEANUP_FAILED = "DATABASE_CLEANUP_FAILED"
+    FILE_NOT_FOUND = "FILE_NOT_FOUND"
+
+
+@dataclass(frozen=True)
+class FileCleanupResult:
+    file_id: int
+    status: str
+    physical_file_deleted: bool = False
+    asset_results: dict[str, str] = field(default_factory=dict)
+
+
+class AstroJournalFileCleanupService:
+    """Apply AstroJournal's DELETE_IF_UNREFERENCED file policy.
+
+    MemoryKeeper and every non-AstroJournal service link are preservation
+    references. Soft-deleted ObservationRecords and append-only history rows do
+    not require physical media, but remain in the database for sync/idempotency.
+    """
+
+    SERVICE_NAME = "AstroJournal"
+    SUCCESSFUL_ASSET_RESULTS = {
+        AssetDeleteStatus.DELETED,
+        AssetDeleteStatus.ALREADY_ABSENT,
+    }
+
+    def __init__(
+        self,
+        db: Session,
+        *,
+        storage_service: StorageService | None = None,
+    ) -> None:
+        self.db = db
+        self.storage_service = storage_service or StorageService()
+
+    def cleanup_if_unreferenced(self, *, file_id: int) -> FileCleanupResult:
+        common_file = (
+            self.db.query(CommonFile)
+            .filter(CommonFile.id == file_id)
+            .with_for_update()
+            .first()
+        )
+        if common_file is None:
+            return FileCleanupResult(file_id=file_id, status=FileCleanupStatus.FILE_NOT_FOUND)
+
+        active_record_exists = (
+            self.db.query(ObservationRecord.id)
+            .filter(ObservationRecord.file_id == file_id)
+            .filter(ObservationRecord.service_name == self.SERVICE_NAME)
+            .filter(ObservationRecord.deleted_at.is_(None))
+            .first()
+            is not None
+        )
+        if active_record_exists:
+            return FileCleanupResult(
+                file_id=file_id,
+                status=FileCleanupStatus.PRESERVED_ACTIVE_RECORD,
+            )
+
+        other_service_exists = (
+            self.db.query(CommonFileService.id)
+            .filter(CommonFileService.file_id == file_id)
+            .filter(CommonFileService.service_name != self.SERVICE_NAME)
+            .first()
+            is not None
+        )
+        if other_service_exists:
+            try:
+                self.db.query(CommonFileService).filter(
+                    CommonFileService.file_id == file_id,
+                    CommonFileService.service_name == self.SERVICE_NAME,
+                ).delete(synchronize_session=False)
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                logger.exception(
+                    "Failed to remove AstroJournal file link: common_file_id=%s",
+                    file_id,
+                )
+                return FileCleanupResult(
+                    file_id=file_id,
+                    status=FileCleanupStatus.DATABASE_CLEANUP_FAILED,
+                )
+            return FileCleanupResult(
+                file_id=file_id,
+                status=FileCleanupStatus.PRESERVED_OTHER_SERVICE,
+            )
+
+        processing_vision_exists = (
+            self.db.query(CommonVisionJob.id)
+            .filter(CommonVisionJob.file_id == file_id)
+            .filter(CommonVisionJob.deleted.is_(False))
+            .filter(CommonVisionJob.status == VisionJobStatus.PROCESSING)
+            .first()
+            is not None
+        )
+        if processing_vision_exists:
+            return FileCleanupResult(
+                file_id=file_id,
+                status=FileCleanupStatus.PRESERVED_PROCESSING_VISION,
+            )
+
+        if common_file.deleted and not any(
+            (common_file.original_path, common_file.preview_path, common_file.thumb_path)
+        ):
+            return FileCleanupResult(
+                file_id=file_id,
+                status=FileCleanupStatus.ALREADY_CLEANED,
+            )
+
+        asset_results = self.storage_service.delete_common_file_assets(common_file)
+        if any(
+            result not in self.SUCCESSFUL_ASSET_RESULTS
+            for result in asset_results.values()
+        ):
+            logger.error(
+                "AstroJournal asset cleanup incomplete: common_file_id=%s results=%s",
+                file_id,
+                asset_results,
+            )
+            return FileCleanupResult(
+                file_id=file_id,
+                status=FileCleanupStatus.ASSET_DELETE_FAILED,
+                physical_file_deleted=any(
+                    result == AssetDeleteStatus.DELETED
+                    for result in asset_results.values()
+                ),
+                asset_results=asset_results,
+            )
+
+        try:
+            self.db.query(CommonFileMetadata).filter(
+                CommonFileMetadata.file_id == file_id
+            ).delete(synchronize_session=False)
+            self.db.query(CommonFileTag).filter(
+                CommonFileTag.file_id == file_id
+            ).delete(synchronize_session=False)
+            self.db.query(CommonVisionJob).filter(
+                CommonVisionJob.file_id == file_id
+            ).update({CommonVisionJob.deleted: True}, synchronize_session=False)
+            self.db.query(CommonFileService).filter(
+                CommonFileService.file_id == file_id,
+                CommonFileService.service_name == self.SERVICE_NAME,
+            ).delete(synchronize_session=False)
+
+            # The row remains as a tombstone because soft-deleted ObservationRecord
+            # rows retain their non-null FK and change-event history must stay valid.
+            common_file.original_path = None
+            common_file.preview_path = None
+            common_file.thumb_path = None
+            common_file.deleted = True
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            logger.exception(
+                "AstroJournal CommonFile database cleanup failed: common_file_id=%s",
+                file_id,
+            )
+            return FileCleanupResult(
+                file_id=file_id,
+                status=FileCleanupStatus.DATABASE_CLEANUP_FAILED,
+                physical_file_deleted=any(
+                    result == AssetDeleteStatus.DELETED
+                    for result in asset_results.values()
+                ),
+                asset_results=asset_results,
+            )
+
+        return FileCleanupResult(
+            file_id=file_id,
+            status=FileCleanupStatus.CLEANED,
+            physical_file_deleted=any(
+                result == AssetDeleteStatus.DELETED
+                for result in asset_results.values()
+            ),
+            asset_results=asset_results,
+        )

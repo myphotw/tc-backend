@@ -155,6 +155,22 @@ stale revision returns:
 returns `record_id`, `deleted`, `revision`, and `deleted_at`. The first delete
 increments revision; subsequent requests return the existing deletion result.
 
+After that soft delete and its change tombstone are committed, AstroJournal
+applies a separate physical cleanup policy. The FileAsset is preserved while
+another active Astro record, any non-Astro service link (including
+MemoryKeeper), or an active Vision processing job references it. Otherwise the
+Backend validates and deletes only the exact `original`, `preview`, and `thumb`
+paths below `PHOTO_PLATFORM_ROOT`, removes Astro's domain link and non-history
+derived data, and marks the `common_files` row deleted with cleared asset paths.
+The row remains as an FK tombstone for deleted records and can be restored by a
+later upload of the same SHA-256.
+
+Missing asset files count as already cleaned. Unsafe/out-of-root paths and
+partial I/O failures are logged for retry and do not roll back record deletion.
+The DELETE response schema is unchanged; clients continue to rely only on
+`record_id`, `deleted`, `revision`, and `deleted_at`. MemoryKeeper retains its
+physical-file preservation policy.
+
 ## Changes Cursor API (B6-01)
 
 `GET /api/common/changes` returns changes whose event cursor is strictly greater

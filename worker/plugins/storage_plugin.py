@@ -47,6 +47,58 @@ class StoragePlugin(BasePlugin):
         context.storage_path = context.original_path
         context.log("MOVE_STORAGE_COMPLETE")
 
+        if context.restore_deleted_common_file:
+            common_file = context.common_file
+            if common_file is None:
+                raise ValueError("deleted CommonFile is required for restore")
+            common_file.original_name = context.original_name or context.incoming_path.name
+            common_file.extension = context.extension
+            common_file.mime_type = context.mime_type
+            common_file.file_size = context.file_size
+            common_file.width = context.width
+            common_file.height = context.height
+            common_file.original_path = context.storage_service.to_relative_path(
+                context.original_path
+            )
+            common_file.preview_path = (
+                context.storage_service.to_relative_path(context.preview_path)
+                if context.preview_path is not None
+                else None
+            )
+            common_file.thumb_path = (
+                context.storage_service.to_relative_path(context.thumb_path)
+                if context.thumb_path is not None
+                else None
+            )
+            common_file.service_name = context.service_name or "MemoryKeeper"
+            common_file.deleted = False
+            try:
+                context.db.commit()
+                context.db.refresh(common_file)
+            except Exception:
+                context.db.rollback()
+                raise
+            _, link_created = FileServiceRepository(context.db).ensure_link(
+                file_id=common_file.id,
+                service_name=context.service_name or "MemoryKeeper",
+            )
+            context.common_file = common_file
+            context.log("COMMON_FILE_RESTORED")
+            context.log("LINK_CREATED" if link_created else "LINK_EXISTS")
+            log_perf(
+                "storage_plugin",
+                rule_build_ms=rule_build_ms,
+                path_resolve_ms=move_timings.get("path_resolve_ms"),
+                mkdir_ms=move_timings.get("mkdir_ms"),
+                file_move_ms=move_timings.get("file_move_ms"),
+                common_file_insert_ms=0,
+                commit_ms=0,
+                restored=True,
+                elapsed_ms=elapsed_ms(total_started),
+                job_id=getattr(context.job, "job_id", None),
+            )
+            return
+
         common_file = CommonFile(
             file_id=context.file_id,
             original_name=context.original_name or context.incoming_path.name,

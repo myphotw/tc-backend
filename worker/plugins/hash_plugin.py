@@ -34,6 +34,13 @@ class HashPlugin(BasePlugin):
 
         if existing is not None:
             context.common_file = existing
+            if existing.deleted:
+                # Physical cleanup keeps a CommonFile tombstone because deleted
+                # ObservationRecords retain its FK. Re-upload restores that row
+                # instead of treating the now-absent asset as a valid duplicate.
+                context.restore_deleted_common_file = True
+                context.log("DELETED_FILE_REUPLOAD")
+                return
             _, link_created = FileServiceRepository(context.db).ensure_link(
                 file_id=existing.id,
                 service_name=context.service_name or "MemoryKeeper",

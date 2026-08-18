@@ -27,6 +27,16 @@ IMAGE_EXTENSIONS: set[str] = {
     ".tiff",
 }
 
+
+class AssetDeleteStatus:
+    """Per-asset result values for safe CommonFile cleanup."""
+
+    DELETED = "DELETED"
+    ALREADY_ABSENT = "ALREADY_ABSENT"
+    UNSAFE_PATH = "UNSAFE_PATH"
+    FAILED = "FAILED"
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
+
 _MAX_INCOMING_FILENAME_BYTES = 180
 _WINDOWS_RESERVED_FILENAMES = {
     "CON",
@@ -536,6 +546,98 @@ class StorageService:
         }
         logger.info("Deleted files for file_id=%s: %s", file_id, result)
         return result
+
+    def delete_common_file_assets(self, common_file: Any) -> dict[str, str]:
+        """Delete only the exact original/preview/thumb paths stored for a file.
+
+        Every configured path is validated before the first unlink. A path must
+        resolve below both ``PHOTO_PLATFORM_ROOT`` and its expected asset root;
+        this also rejects symlinks that resolve outside storage. Missing files
+        are successful, idempotent cleanup results.
+        """
+        specifications = {
+            "original": (getattr(common_file, "original_path", None), self.original_root),
+            "preview": (getattr(common_file, "preview_path", None), self.preview_root),
+            "thumb": (getattr(common_file, "thumb_path", None), self.thumb_root),
+        }
+        results: dict[str, str] = {}
+        targets: dict[str, Path] = {}
+        unsafe = False
+
+        for kind, (stored_path, expected_root) in specifications.items():
+            if not stored_path:
+                results[kind] = AssetDeleteStatus.ALREADY_ABSENT
+                continue
+            try:
+                targets[kind] = self._resolve_asset_delete_path(
+                    stored_path,
+                    expected_root=expected_root,
+                )
+            except (OSError, ValueError):
+                unsafe = True
+                results[kind] = AssetDeleteStatus.UNSAFE_PATH
+                logger.exception(
+                    "Rejected unsafe CommonFile asset path: file_id=%s kind=%s",
+                    getattr(common_file, "file_id", None),
+                    kind,
+                )
+
+        if unsafe:
+            for kind in specifications:
+                results.setdefault(kind, AssetDeleteStatus.NOT_ATTEMPTED)
+            return results
+
+        for kind, target in targets.items():
+            if not target.exists() and not target.is_symlink():
+                results[kind] = AssetDeleteStatus.ALREADY_ABSENT
+                continue
+            if target.is_dir():
+                results[kind] = AssetDeleteStatus.FAILED
+                logger.error(
+                    "Refused to delete asset directory: file_id=%s kind=%s",
+                    getattr(common_file, "file_id", None),
+                    kind,
+                )
+                continue
+            try:
+                target.unlink()
+                results[kind] = AssetDeleteStatus.DELETED
+            except OSError:
+                results[kind] = AssetDeleteStatus.FAILED
+                logger.exception(
+                    "Failed to delete CommonFile asset: file_id=%s kind=%s",
+                    getattr(common_file, "file_id", None),
+                    kind,
+                )
+
+        logger.info(
+            "CommonFile asset cleanup finished: file_id=%s results=%s",
+            getattr(common_file, "file_id", None),
+            results,
+        )
+        return results
+
+    def _resolve_asset_delete_path(
+        self,
+        stored_path: str | Path,
+        *,
+        expected_root: Path,
+    ) -> Path:
+        """Resolve and contain one DB path before destructive access."""
+        storage_root = self.storage_root.resolve()
+        asset_root = expected_root.resolve()
+        try:
+            asset_root.relative_to(storage_root)
+        except ValueError as exc:
+            raise ValueError("asset root is outside PHOTO_PLATFORM_ROOT") from exc
+
+        target = self.resolve_storage_path(stored_path).resolve(strict=False)
+        try:
+            target.relative_to(storage_root)
+            target.relative_to(asset_root)
+        except ValueError as exc:
+            raise ValueError("asset path is outside its configured storage root") from exc
+        return target
 
     def _build_path(self, root_dir: Path, sha256: str, extension: str) -> Path:
         """
