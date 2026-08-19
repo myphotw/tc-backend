@@ -19,10 +19,11 @@ x-app-base: &app-base
     CACHE_DIR: /data/PhotoPlatform/cache
     TEMP_DIR: /data/PhotoPlatform/temp
 
-    GOOGLE_VISION_CREDENTIAL: ""
+    GOOGLE_VISION_CREDENTIAL: /run/secrets/google-vision-service-account.json
 
   volumes:
     - "${PHOTO_PLATFORM_HOST_PATH}:/data/PhotoPlatform"
+    - "${GOOGLE_VISION_CREDENTIAL_HOST}:/run/secrets/google-vision-service-account.json:ro"
 
   network_mode: host
   restart: unless-stopped
@@ -59,6 +60,19 @@ services:
       - python
       - -m
       - worker.background_worker
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  vision-worker:
+    <<: *app-base
+    profiles: ["vision"]
+
+    command:
+      - python
+      - -m
+      - worker.vision_worker
 
     depends_on:
       backend:
