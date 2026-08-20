@@ -48,27 +48,89 @@ class ExifReader:
 
     def _read_basic_fields(self, exif: Image.Exif) -> dict[str, Any]:
         """일반 EXIF 필드를 Metadata 컬럼명으로 변환한다."""
+        exif_ifd = self._get_exif_info(exif)
         metadata: dict[str, Any] = {
-            "camera_make": self._as_text(exif.get(271)),
-            "camera_model": self._as_text(exif.get(272)),
-            "lens": self._as_text(exif.get(42036)),
-            "datetime_original": self._parse_datetime(
-                exif.get(36867) or exif.get(36868) or exif.get(306)
+            "camera_make": self._as_text(
+                self._first_value(exif.get(271), exif_ifd.get(271))
             ),
-            "iso": self._as_int(exif.get(34855) or exif.get(34867)),
-            "f_number": self._format_rational(exif.get(33437)),
-            "exposure_time": self._format_rational(exif.get(33434)),
-            "focal_length": self._format_rational(exif.get(37386)),
-            "orientation": self._as_int(exif.get(274)),
+            "camera_model": self._as_text(
+                self._first_value(exif.get(272), exif_ifd.get(272))
+            ),
+            "lens": self._as_text(
+                self._first_value(exif_ifd.get(42036), exif.get(42036))
+            ),
+            "datetime_original": self._read_capture_datetime(exif, exif_ifd),
+            "iso": self._as_int(
+                self._first_value(
+                    exif_ifd.get(34855),
+                    exif_ifd.get(34867),
+                    exif.get(34855),
+                    exif.get(34867),
+                )
+            ),
+            "f_number": self._format_rational(
+                self._first_value(exif_ifd.get(33437), exif.get(33437))
+            ),
+            "exposure_time": self._format_rational(
+                self._first_value(exif_ifd.get(33434), exif.get(33434))
+            ),
+            "focal_length": self._format_rational(
+                self._first_value(exif_ifd.get(37386), exif.get(37386))
+            ),
+            "orientation": self._as_int(
+                self._first_value(exif.get(274), exif_ifd.get(274))
+            ),
         }
 
-        width = self._as_int(exif.get(40962))
-        height = self._as_int(exif.get(40963))
+        width = self._as_int(
+            self._first_value(exif_ifd.get(40962), exif.get(40962))
+        )
+        height = self._as_int(
+            self._first_value(exif_ifd.get(40963), exif.get(40963))
+        )
         if width is not None:
             metadata["image_width"] = width
         if height is not None:
             metadata["image_height"] = height
         return metadata
+
+    def _get_exif_info(self, exif: Image.Exif) -> dict[int, Any]:
+        """Pillow 버전에 따라 nested Exif IFD를 안전하게 읽는다."""
+        ifd_type = getattr(ExifTags, "IFD", None)
+        exif_ifd_id = getattr(ifd_type, "Exif", 34665)
+        get_ifd = getattr(exif, "get_ifd", None)
+        if callable(get_ifd):
+            try:
+                nested = get_ifd(exif_ifd_id)
+                if nested:
+                    return dict(nested)
+            except Exception:
+                pass
+
+        raw_exif = exif.get(34665)
+        if isinstance(raw_exif, dict):
+            return raw_exif
+        return {}
+
+    def _read_capture_datetime(
+        self,
+        exif: Image.Exif,
+        exif_ifd: dict[int, Any],
+    ) -> datetime | None:
+        """우선순위에 따라 실제 촬영일을 선택한다."""
+        candidates = (
+            exif_ifd.get(36867),  # Exif IFD DateTimeOriginal
+            exif_ifd.get(36868),  # Exif IFD DateTimeDigitized
+            exif.get(306),  # top-level DateTime
+            exif.get(36867),  # older Pillow compatibility
+            exif.get(36868),
+            exif_ifd.get(306),
+        )
+        for value in candidates:
+            parsed = self._parse_datetime(value)
+            if parsed is not None:
+                return parsed
+        return None
 
     def _read_gps_fields(self, exif: Image.Exif) -> dict[str, Any]:
         """GPS 좌표를 decimal degree로 변환한다."""
@@ -188,6 +250,14 @@ class ExifReader:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _first_value(*values: Any) -> Any:
+        """None/empty 값을 건너뛰고 첫 EXIF 값을 반환한다."""
+        for value in values:
+            if value is not None and value != "" and value != b"":
+                return value
+        return None
 
     def _filter_empty(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """비어 있는 값을 제거한다."""

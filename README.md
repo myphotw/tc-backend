@@ -131,6 +131,27 @@ VisionWorker
   Vision Queue → VisionPlugin (Google Vision Labels → AI Tags)
 ```
 
+### EXIF metadata backfill
+
+`ExifReader` supports capture dates stored in the nested Exif IFD. Existing
+active files whose `common_file_metadata.datetime_original` is null can be
+inspected without changing DB or storage:
+
+```shell
+python scripts/backfill_exif_metadata.py --dry-run
+```
+
+After reviewing the aggregate result, explicitly apply null-only EXIF fields:
+
+```shell
+python scripts/backfill_exif_metadata.py --execute
+```
+
+The script reads existing originals in place, refuses paths outside the
+configured original root, preserves every non-null metadata value, records
+changes in metadata history, and does not alter assets, hashes, previews,
+thumbnails, tags, favorites, location names, or Vision jobs.
+
 자세한 내용: [docs/WORKER_GUIDE.md](docs/WORKER_GUIDE.md)
 
 ## Plugin 구조
