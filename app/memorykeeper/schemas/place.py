@@ -18,7 +18,7 @@ class PlaceFields(BaseModel):
     district: str | None = Field(default=None, max_length=100)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
-    radius_m: float = Field(default=100.0, gt=0)
+    radius_m: float = Field(default=200.0, gt=0)
     provider_place_id: str | None = Field(default=None, max_length=255)
     category: str | None = Field(default=None, max_length=100)
     active: bool = True
@@ -90,6 +90,7 @@ class PlaceResponse(BaseModel):
     radius_m: float
     provider_place_id: str | None
     category: str | None
+    creation_source: str
     active: bool
     favorite: bool
     usage_count: int

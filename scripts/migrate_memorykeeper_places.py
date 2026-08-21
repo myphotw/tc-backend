@@ -51,7 +51,7 @@ def migrate_rows(db: Session, rows: list[dict[str, object]], *, execute: bool = 
                 district=_value(row, "District", "district"),
                 latitude=_value(row, "Latitude", "latitude"),
                 longitude=_value(row, "Longitude", "longitude"),
-                radius_m=_value(row, "Radius", "radius_m") or 100.0,
+                radius_m=_value(row, "Radius", "radius_m") or 200.0,
                 provider_place_id=_value(row, "GooglePlaceId", "provider_place_id"),
                 category=_value(row, "Category", "category"),
                 active=_bool_value(row, "IsActive", "active", default=True),
@@ -62,6 +62,7 @@ def migrate_rows(db: Session, rows: list[dict[str, object]], *, execute: bool = 
                 place = MemoryKeeperPlace(
                     id=legacy_id,
                     **payload.model_dump(),
+                    creation_source="MIGRATION",
                     usage_count=int(_value(row, "UsageCount", "usage_count") or 0),
                     last_used_at=_datetime_value(row, "LastUsedAt", "last_used_at"),
                     created_at=_datetime_value(row, "CreatedAt", "created_at"),

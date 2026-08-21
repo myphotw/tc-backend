@@ -22,7 +22,16 @@ locking.
 Automatic matching considers active places in this order: provider place ID,
 canonical name, then the nearest center whose per-place radius contains the
 photo. Equal-distance candidates use ascending place UUID for deterministic
-selection. No place is automatically created.
+selection.
+
+If a MemoryKeeper-linked photo still has no match, the backend performs one
+Google Places Legacy Nearby Search within 1,500m. Candidate ranking favors
+meaningful place types (for example natural features, attractions, parks,
+campgrounds and museums), then uses distance and provider rating signals.
+Low-information generic establishments do not pass the POI threshold merely
+because they are closest. The fallback order is district/city/province, raw
+reverse-geocoded address, then a GPS label. Automatically created places use a
+200m radius, `creation_source=AUTO_*`, and a unique internal deduplication key.
 
 Raw EXIF GPS and reverse-geocoded fields remain unchanged. MemoryKeeper display
 name resolution is `memorykeeper_places.display_name`, then raw `place_name`,
@@ -35,6 +44,7 @@ by the upload worker's automatic matcher.
 ```text
 python scripts/migrate_memorykeeper_places.py --input tb_place.json --dry-run
 python scripts/backfill_memorykeeper_places.py --dry-run
+python scripts/backfill_memorykeeper_places.py --dry-run --create-missing
 ```
 
 Execution requires the explicit `--execute` switch. Legacy place GUIDs are

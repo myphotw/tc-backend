@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 
 from app.common.database import Base
@@ -25,6 +27,9 @@ from app.memorykeeper.schemas.place import (
     RadiusImpactRequest,
 )
 from app.memorykeeper.services.place_matcher import MemoryKeeperPlaceMatcher
+from app.memorykeeper.services.place_candidate_service import (
+    MemoryKeeperPlaceCandidateService,
+)
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from scripts.backfill_memorykeeper_places import backfill_memorykeeper_places
 from scripts.migrate_memorykeeper_places import migrate_rows
@@ -72,6 +77,13 @@ class MemoryKeeperPlaceTests(unittest.TestCase):
         self.db.add(metadata)
         self.db.commit()
         return common_file, metadata
+
+    def auto_service(self, nearby_items: list[dict[str, object]]) -> MemoryKeeperPlaceService:
+        candidates = MemoryKeeperPlaceCandidateService(
+            self.db,
+            nearby_lookup=lambda _lat, _lon, _radius: nearby_items,
+        )
+        return MemoryKeeperPlaceService(self.db, candidate_service=candidates)
 
     def test_crud_filters_sort_and_revision_conflict(self) -> None:
         first = self.place(favorite=False)
@@ -142,6 +154,149 @@ class MemoryKeeperPlaceTests(unittest.TestCase):
         self.assertEqual(mk_metadata.memorykeeper_place_id, place.id)
         self.assertIsNone(astro_metadata.memorykeeper_place_id)
         self.assertEqual(shared_metadata.memorykeeper_place_id, place.id)
+
+    def test_auto_create_prefers_meaningful_poi_over_nearest_generic_result(self) -> None:
+        common_file, metadata = self.file("m")
+        service = self.auto_service(
+            [
+                {
+                    "place_id": "bridge-1",
+                    "place_name": "원기교",
+                    "latitude": 35.2274227,
+                    "longitude": 127.5905236,
+                    "types": ["point_of_interest", "establishment"],
+                    "rating": 5,
+                    "user_ratings_total": 1000,
+                },
+                {
+                    "place_id": "valley-1",
+                    "place_name": "피아골",
+                    "latitude": 35.232,
+                    "longitude": 127.5905236,
+                    "types": ["natural_feature", "point_of_interest"],
+                },
+            ]
+        )
+        self.assertTrue(service.auto_match_file(file_id=common_file.id))
+        self.db.refresh(metadata)
+        place = self.db.get(MemoryKeeperPlace, metadata.memorykeeper_place_id)
+        self.assertEqual(place.display_name, "피아골")
+        self.assertEqual(place.address, "원시 역지오코딩 주소")
+        self.assertEqual(place.category, "NATURE")
+        self.assertEqual(place.radius_m, 200.0)
+        self.assertEqual(place.creation_source, "AUTO_POI")
+        self.assertEqual(metadata.place_match_source, "AUTO_CREATED")
+
+    def test_auto_create_falls_back_to_locality_and_preserves_raw_metadata(self) -> None:
+        common_file, metadata = self.file("n")
+        service = self.auto_service([])
+        self.assertTrue(service.auto_match_file(file_id=common_file.id))
+        self.db.refresh(metadata)
+        place = self.db.get(MemoryKeeperPlace, metadata.memorykeeper_place_id)
+        self.assertEqual(place.display_name, "구례군")
+        self.assertEqual(place.address, "원시 역지오코딩 주소")
+        self.assertEqual(place.creation_source, "AUTO_LOCALITY")
+        self.assertEqual(metadata.gps_lat, 35.2274227)
+        self.assertEqual(metadata.gps_lon, 127.5905236)
+        self.assertEqual(metadata.place_name, "원시 역지오코딩 주소")
+
+    def test_auto_candidate_reuses_existing_provider_and_canonical_places(self) -> None:
+        provider = self.place(
+            "기존 Provider",
+            provider_place_id="provider-same",
+            latitude=36.0,
+            longitude=128.0,
+            radius_m=10,
+        )
+        first_file, first_metadata = self.file("o")
+        provider_service = self.auto_service(
+            [{
+                "place_id": "provider-same",
+                "place_name": "새 Provider 이름",
+                "latitude": 35.2274227,
+                "longitude": 127.5905236,
+                "types": ["tourist_attraction"],
+            }]
+        )
+        before = self.db.query(MemoryKeeperPlace).count()
+        provider_service.auto_match_file(file_id=first_file.id)
+        self.db.refresh(first_metadata)
+        self.assertEqual(first_metadata.memorykeeper_place_id, provider.id)
+        self.assertEqual(first_metadata.place_match_source, "PROVIDER_PLACE_ID")
+        self.assertEqual(self.db.query(MemoryKeeperPlace).count(), before)
+
+        canonical = self.place(
+            "Canonical Place",
+            canonical_name="canonical-poi",
+            latitude=36.1,
+            longitude=128.1,
+            radius_m=10,
+        )
+        second_file, second_metadata = self.file("p")
+        canonical_service = self.auto_service(
+            [{
+                "place_id": "new-provider",
+                "place_name": "canonical-poi",
+                "latitude": 35.2274227,
+                "longitude": 127.5905236,
+                "types": ["park"],
+            }]
+        )
+        canonical_service.auto_match_file(file_id=second_file.id)
+        self.db.refresh(second_metadata)
+        self.assertEqual(second_metadata.memorykeeper_place_id, canonical.id)
+        self.assertEqual(second_metadata.place_match_source, "CANONICAL_NAME")
+        self.assertEqual(self.db.query(MemoryKeeperPlace).count(), before + 1)
+
+    def test_multiple_unmatched_files_create_one_place_and_unique_key_guards_race(self) -> None:
+        first, first_metadata = self.file("q")
+        second, second_metadata = self.file("r", lat=35.22745, lon=127.59055)
+        service = self.auto_service([])
+        service.auto_match_file(file_id=first.id)
+        service.auto_match_file(file_id=second.id)
+        self.db.refresh(first_metadata)
+        self.db.refresh(second_metadata)
+        self.assertEqual(first_metadata.memorykeeper_place_id, second_metadata.memorykeeper_place_id)
+        self.assertEqual(self.db.query(MemoryKeeperPlace).count(), 1)
+
+        self.db.add(
+            MemoryKeeperPlace(
+                display_name="Duplicate",
+                latitude=0,
+                longitude=0,
+                radius_m=200,
+                auto_dedup_key=self.db.query(MemoryKeeperPlace).one().auto_dedup_key,
+            )
+        )
+        with self.assertRaises(IntegrityError):
+            self.db.commit()
+        self.db.rollback()
+
+        existing = self.db.query(MemoryKeeperPlace).one()
+        candidate = service.build_auto_candidate(first_metadata)
+        with patch.object(
+            service,
+            "_candidate_duplicate",
+            return_value=(None, "NONE"),
+        ):
+            resolved, created, _ = service._resolve_or_create_candidate(
+                candidate,
+                photo_lat=float(first_metadata.gps_lat),
+                photo_lon=float(first_metadata.gps_lon),
+            )
+        self.assertFalse(created)
+        self.assertEqual(resolved.id, existing.id)
+
+    def test_astro_only_does_not_auto_create_but_shared_file_does(self) -> None:
+        astro, astro_metadata = self.file("s", services=("AstroJournal",))
+        shared, shared_metadata = self.file("t", services=("AstroJournal", "MemoryKeeper"))
+        service = self.auto_service([])
+        self.assertFalse(service.auto_match_file(file_id=astro.id))
+        self.assertTrue(service.auto_match_file(file_id=shared.id))
+        self.db.refresh(astro_metadata)
+        self.db.refresh(shared_metadata)
+        self.assertIsNone(astro_metadata.memorykeeper_place_id)
+        self.assertIsNotNone(shared_metadata.memorykeeper_place_id)
 
     def test_gps_plugin_runs_auto_match_after_raw_geocoding(self) -> None:
         place = self.place(canonical_name="원시 역지오코딩 주소")
@@ -259,6 +414,19 @@ class MemoryKeeperPlaceTests(unittest.TestCase):
         self.assertEqual(migration.created, 1)
         self.assertEqual(self.db.query(MemoryKeeperPlace).count(), before_places)
 
+    def test_create_missing_backfill_dry_run_does_not_write(self) -> None:
+        self.file("u")
+        before_places = self.db.query(MemoryKeeperPlace).count()
+        stats = backfill_memorykeeper_places(
+            self.db,
+            execute=False,
+            create_missing=True,
+        )
+        self.assertEqual(stats.would_create, 1)
+        self.assertEqual(self.db.query(MemoryKeeperPlace).count(), before_places)
+        metadata = self.db.query(CommonFileMetadata).one()
+        self.assertIsNone(metadata.memorykeeper_place_id)
+
     def test_schema_sync_contains_table_relation_and_indexes(self) -> None:
         second_engine = create_engine("sqlite:///:memory:")
         try:
@@ -273,6 +441,13 @@ class MemoryKeeperPlaceTests(unittest.TestCase):
             columns = {item["name"] for item in inspector.get_columns("common_file_metadata")}
             self.assertIn("memorykeeper_place_id", columns)
             self.assertIn("place_match_revision", columns)
+            place_indexes = {
+                item["name"]: item
+                for item in inspector.get_indexes("memorykeeper_places")
+            }
+            self.assertTrue(
+                place_indexes["uq_memorykeeper_places_auto_dedup_key"]["unique"]
+            )
         finally:
             second_engine.dispose()
 

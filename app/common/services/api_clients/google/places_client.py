@@ -118,6 +118,35 @@ class PlacesClient(BaseClient):
         self.track_usage(units=1)
         return items
 
+    def nearby(
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        radius_m: int = 1500,
+        language: str = "ko",
+    ) -> list[dict[str, Any]]:
+        """Return one prominence-ranked Legacy Nearby Search page."""
+        if radius_m < 1 or radius_m > 50_000:
+            raise ValueError("radius_m must be between 1 and 50000")
+        payload = self.get(
+            "/maps/api/place/nearbysearch/json",
+            params={
+                "location": f"{latitude},{longitude}",
+                "radius": str(radius_m),
+                "language": language,
+                "key": self.api_key,
+            },
+        )
+        self._validate_status(payload)
+        items = [
+            item
+            for raw in payload.get("results") or []
+            if (item := self._normalize_place(raw)) is not None
+        ]
+        self.track_usage(units=1)
+        return items
+
     @staticmethod
     def _validate_status(payload: dict[str, Any]) -> None:
         if payload.get("status") not in {"OK", "ZERO_RESULTS"}:
@@ -129,7 +158,7 @@ class PlacesClient(BaseClient):
         latitude = location.get("lat")
         longitude = location.get("lng")
         name = raw.get("name")
-        formatted = raw.get("formatted_address") or name
+        formatted = raw.get("formatted_address") or raw.get("vicinity") or name
         if latitude is None or longitude is None or not formatted:
             return None
         mapped = GeocodingClient._map_address_components(
@@ -142,5 +171,10 @@ class PlacesClient(BaseClient):
             "longitude": float(longitude),
             **mapped,
             "place_name": name,
+            "types": [str(value) for value in raw.get("types") or []],
+            "business_status": raw.get("business_status"),
+            "rating": raw.get("rating"),
+            "user_ratings_total": raw.get("user_ratings_total"),
+            "vicinity": raw.get("vicinity"),
             "provider": "google_places",
         }

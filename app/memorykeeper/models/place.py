@@ -16,6 +16,11 @@ class MemoryKeeperPlace(Base):
         Index("ix_memorykeeper_places_active_provider", "active", "provider_place_id"),
         Index("ix_memorykeeper_places_active_canonical", "active", "canonical_name"),
         Index("ix_memorykeeper_places_active_coordinates", "active", "latitude", "longitude"),
+        Index(
+            "uq_memorykeeper_places_auto_dedup_key",
+            "auto_dedup_key",
+            unique=True,
+        ),
     )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -29,9 +34,17 @@ class MemoryKeeperPlace(Base):
     district = Column(String(100), nullable=True)
     latitude = Column(Float, nullable=False)
     longitude = Column(Float, nullable=False)
-    radius_m = Column(Float, nullable=False, default=100.0, server_default=text("100"))
+    radius_m = Column(Float, nullable=False, default=200.0, server_default=text("200"))
     provider_place_id = Column(String(255), nullable=True, index=True)
     category = Column(String(100), nullable=True)
+    creation_source = Column(
+        String(50),
+        nullable=False,
+        default="USER",
+        server_default=text("'USER'"),
+        index=True,
+    )
+    auto_dedup_key = Column(String(500), nullable=True)
     active = Column(Boolean, nullable=False, default=True, server_default=text("true"), index=True)
     favorite = Column(Boolean, nullable=False, default=False, server_default=text("false"), index=True)
     usage_count = Column(Integer, nullable=False, default=0, server_default=text("0"))

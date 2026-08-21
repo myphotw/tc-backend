@@ -8,8 +8,12 @@ from dataclasses import asdict, dataclass
 from sqlalchemy.orm import Session
 
 from app.common.database import SessionLocal
+from app.memorykeeper.models.place import MemoryKeeperPlace
 from app.memorykeeper.repositories.place_repository import MemoryKeeperPlaceRepository
 from app.memorykeeper.services.place_matcher import MemoryKeeperPlaceMatcher
+from app.memorykeeper.services.place_candidate_service import (
+    MemoryKeeperPlaceCandidateService,
+)
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 
 
@@ -19,6 +23,8 @@ class BackfillStats:
     matched: int = 0
     unchanged: int = 0
     unmatched: int = 0
+    would_create: int = 0
+    created: int = 0
     failed: int = 0
 
 
@@ -26,12 +32,19 @@ def backfill_memorykeeper_places(
     db: Session,
     *,
     execute: bool = False,
+    create_missing: bool = False,
     limit: int | None = None,
 ) -> BackfillStats:
     stats = BackfillStats()
     repository = MemoryKeeperPlaceRepository(db)
     matcher = MemoryKeeperPlaceMatcher(db)
-    service = MemoryKeeperPlaceService(db)
+    service = MemoryKeeperPlaceService(
+        db,
+        candidate_service=MemoryKeeperPlaceCandidateService(
+            db,
+            record_usage=execute,
+        ),
+    )
     rows = repository.memorykeeper_files_with_gps()
     if limit is not None:
         rows = rows[:limit]
@@ -43,13 +56,34 @@ def backfill_memorykeeper_places(
                 gps_lon=float(metadata.gps_lon),
             )
             if not match.matched:
-                stats.unmatched += 1
+                if not create_missing:
+                    stats.unmatched += 1
+                elif execute:
+                    before = db.query(MemoryKeeperPlace).count()
+                    service.auto_match_file(
+                        file_id=common_file.id,
+                        create_missing=True,
+                    )
+                    after = db.query(MemoryKeeperPlace).count()
+                    if after > before:
+                        stats.created += 1
+                    else:
+                        stats.matched += 1
+                else:
+                    _, duplicate = service.preview_auto_candidate(metadata)
+                    if duplicate is None:
+                        stats.would_create += 1
+                    else:
+                        stats.matched += 1
             elif metadata.memorykeeper_place_id == match.place.id:
                 stats.unchanged += 1
             else:
                 stats.matched += 1
                 if execute:
-                    service.auto_match_file(file_id=common_file.id)
+                    service.auto_match_file(
+                        file_id=common_file.id,
+                        create_missing=False,
+                    )
         except Exception:
             if execute:
                 db.rollback()
@@ -63,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--dry-run", action="store_true", help="Report only (default)")
     mode.add_argument("--execute", action="store_true", help="Persist matched relations")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--create-missing",
+        action="store_true",
+        help="Also create a representative place for unmatched files",
+    )
     return parser
 
 
@@ -72,7 +111,12 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--limit must be at least 1")
     db = SessionLocal()
     try:
-        stats = backfill_memorykeeper_places(db, execute=bool(args.execute), limit=args.limit)
+        stats = backfill_memorykeeper_places(
+            db,
+            execute=bool(args.execute),
+            create_missing=bool(args.create_missing),
+            limit=args.limit,
+        )
     finally:
         db.close()
     summary = asdict(stats)

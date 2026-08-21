@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
+import unicodedata
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
@@ -26,6 +29,10 @@ from app.memorykeeper.schemas.place import (
     ReclassifyResponse,
 )
 from app.memorykeeper.services.place_matcher import MemoryKeeperPlaceMatcher, PlaceMatchSource
+from app.memorykeeper.services.place_candidate_service import (
+    AutoPlaceCandidate,
+    MemoryKeeperPlaceCandidateService,
+)
 
 
 class MemoryKeeperPlaceService:
@@ -33,10 +40,16 @@ class MemoryKeeperPlaceService:
     PLACE_RESOURCE = "MemoryKeeperPlace"
     FILE_PLACE_RESOURCE = "MemoryKeeperFilePlace"
 
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        candidate_service: MemoryKeeperPlaceCandidateService | None = None,
+    ) -> None:
         self.db = db
         self.repository = MemoryKeeperPlaceRepository(db)
         self.matcher = MemoryKeeperPlaceMatcher(db)
+        self.candidates = candidate_service or MemoryKeeperPlaceCandidateService(db)
         self.history = HistoryRepository(db)
         self.changes = ChangeEventRepository(db)
 
@@ -150,7 +163,12 @@ class MemoryKeeperPlaceService:
         self.db.refresh(metadata)
         return self.file_place_response(common_file, metadata)
 
-    def auto_match_file(self, *, file_id: int) -> bool:
+    def auto_match_file(
+        self,
+        *,
+        file_id: int,
+        create_missing: bool = True,
+    ) -> bool:
         if not self.repository.has_memorykeeper_link(file_id):
             return False
         metadata = self.db.query(CommonFileMetadata).filter(CommonFileMetadata.file_id == file_id).first()
@@ -165,6 +183,29 @@ class MemoryKeeperPlaceService:
             canonical_name=metadata.place_name,
         )
         if not match.matched:
+            if create_missing:
+                candidate = self.build_auto_candidate(metadata)
+                place, created, source = self._resolve_or_create_candidate(
+                    candidate,
+                    photo_lat=float(metadata.gps_lat),
+                    photo_lon=float(metadata.gps_lon),
+                )
+                # A unique-key race rolls the transaction back, so reload rows.
+                metadata = (
+                    self.db.query(CommonFileMetadata)
+                    .filter(CommonFileMetadata.file_id == file_id)
+                    .first()
+                )
+                common_file = self.db.get(CommonFile, file_id)
+                self._set_relation(
+                    metadata=metadata,
+                    common_file=common_file,
+                    place=place,
+                    source=(PlaceMatchSource.AUTO_CREATED if created else source),
+                    distance_m=self._distance(metadata, place),
+                )
+                self.db.commit()
+                return True
             if metadata.memorykeeper_place_id is not None:
                 common_file = self.db.get(CommonFile, file_id)
                 self._set_relation(
@@ -181,6 +222,24 @@ class MemoryKeeperPlaceService:
         self._set_relation(metadata=metadata, common_file=common_file, place=match.place, source=match.source, distance_m=match.distance_m)
         self.db.commit()
         return True
+
+    def build_auto_candidate(
+        self,
+        metadata: CommonFileMetadata,
+    ) -> AutoPlaceCandidate:
+        return self.candidates.choose(metadata)
+
+    def preview_auto_candidate(
+        self,
+        metadata: CommonFileMetadata,
+    ) -> tuple[AutoPlaceCandidate, MemoryKeeperPlace | None]:
+        candidate = self.build_auto_candidate(metadata)
+        duplicate, _ = self._candidate_duplicate(
+            candidate,
+            photo_lat=float(metadata.gps_lat),
+            photo_lon=float(metadata.gps_lon),
+        )
+        return candidate, duplicate
 
     def reclassify(self, place_id: str, *, reassign_from_other_places: bool) -> ReclassifyResponse:
         place = self.get(place_id)
@@ -290,6 +349,111 @@ class MemoryKeeperPlaceService:
         if place is None or metadata.gps_lat is None or metadata.gps_lon is None:
             return None
         return self.matcher.distance_m(float(metadata.gps_lat), float(metadata.gps_lon), place.latitude, place.longitude)
+
+    def _resolve_or_create_candidate(
+        self,
+        candidate: AutoPlaceCandidate,
+        *,
+        photo_lat: float,
+        photo_lon: float,
+    ) -> tuple[MemoryKeeperPlace, bool, str]:
+        duplicate, source = self._candidate_duplicate(
+            candidate,
+            photo_lat=photo_lat,
+            photo_lon=photo_lon,
+        )
+        if duplicate is not None:
+            return duplicate, False, source
+
+        dedup_key = self._auto_dedup_key(candidate)
+        place = MemoryKeeperPlace(
+            display_name=candidate.display_name,
+            canonical_name=candidate.canonical_name,
+            address=candidate.address,
+            country=candidate.country,
+            province=candidate.province,
+            city=candidate.city,
+            district=candidate.district,
+            latitude=candidate.latitude,
+            longitude=candidate.longitude,
+            radius_m=candidate.radius_m,
+            provider_place_id=candidate.provider_place_id,
+            category=candidate.category,
+            active=True,
+            favorite=False,
+            usage_count=0,
+            creation_source=candidate.creation_source,
+            auto_dedup_key=dedup_key,
+        )
+        try:
+            self.repository.create(place)
+            self._append_place_change(place, ChangeOperation.CREATE)
+            self.db.flush()
+            return place, True, PlaceMatchSource.AUTO_CREATED
+        except IntegrityError:
+            self.db.rollback()
+            existing = self.repository.get_by_auto_dedup_key(dedup_key)
+            if existing is None:
+                raise
+            return existing, False, self._duplicate_source(existing, candidate)
+
+    def _candidate_duplicate(
+        self,
+        candidate: AutoPlaceCandidate,
+        *,
+        photo_lat: float,
+        photo_lon: float,
+    ) -> tuple[MemoryKeeperPlace | None, str]:
+        exact = self.matcher.match(
+            gps_lat=photo_lat,
+            gps_lon=photo_lon,
+            provider_place_id=candidate.provider_place_id,
+            canonical_name=candidate.canonical_name,
+        )
+        if exact.place is not None:
+            return exact.place, exact.source
+        normalized_display = self._normalized_name(candidate.display_name)
+        for place in self.repository.active_places():
+            if self._normalized_name(place.display_name) != normalized_display:
+                continue
+            distance = self.matcher.distance_m(
+                candidate.latitude,
+                candidate.longitude,
+                place.latitude,
+                place.longitude,
+            )
+            if distance <= max(float(place.radius_m), candidate.radius_m):
+                return place, PlaceMatchSource.RADIUS
+        return None, PlaceMatchSource.NONE
+
+    @classmethod
+    def _auto_dedup_key(cls, candidate: AutoPlaceCandidate) -> str:
+        if candidate.provider_place_id:
+            return f"provider:{candidate.provider_place_id.strip()}"
+        return (
+            f"name:{cls._normalized_name(candidate.canonical_name)}:"
+            f"{candidate.latitude:.3f}:{candidate.longitude:.3f}"
+        )
+
+    @staticmethod
+    def _normalized_name(value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", value).casefold().strip()
+        return re.sub(r"\s+", " ", normalized)
+
+    @staticmethod
+    def _duplicate_source(
+        place: MemoryKeeperPlace,
+        candidate: AutoPlaceCandidate,
+    ) -> str:
+        if candidate.provider_place_id and place.provider_place_id == candidate.provider_place_id:
+            return PlaceMatchSource.PROVIDER_PLACE_ID
+        if (
+            place.canonical_name
+            and place.canonical_name.strip().casefold()
+            == candidate.canonical_name.strip().casefold()
+        ):
+            return PlaceMatchSource.CANONICAL_NAME
+        return PlaceMatchSource.RADIUS
 
     def _append_place_change(self, place: MemoryKeeperPlace, operation: str, *, tombstone: bool = False) -> None:
         self.changes.append(service_name=self.SERVICE_NAME, resource_type=self.PLACE_RESOURCE, resource_id=place.id, operation=operation, revision=place.revision, tombstone=tombstone)

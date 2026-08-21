@@ -72,6 +72,14 @@ class MemoryKeeperPlaceRepository:
             .all()
         )
 
+    def get_by_auto_dedup_key(self, key: str) -> MemoryKeeperPlace | None:
+        return (
+            self.db.query(MemoryKeeperPlace)
+            .filter(MemoryKeeperPlace.auto_dedup_key == key)
+            .filter(MemoryKeeperPlace.deleted_at.is_(None))
+            .first()
+        )
+
     def create(self, place: MemoryKeeperPlace) -> MemoryKeeperPlace:
         self.db.add(place)
         self.db.flush()

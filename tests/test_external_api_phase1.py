@@ -268,6 +268,44 @@ class ExternalApiPhase1Tests(unittest.TestCase):
         with self.assertRaises(ApiClientError):
             denied.search(query="Seoul")
 
+    def test_places_nearby_uses_legacy_endpoint_and_normalizes_types(self):
+        session = FakeHttpSession(
+            FakeResponse(
+                {
+                    "status": "OK",
+                    "results": [
+                        {
+                            "place_id": "valley-1",
+                            "name": "피아골",
+                            "vicinity": "전라남도 구례군 토지면",
+                            "geometry": {
+                                "location": {"lat": 35.23, "lng": 127.59}
+                            },
+                            "types": ["natural_feature", "point_of_interest"],
+                            "business_status": "OPERATIONAL",
+                        }
+                    ],
+                }
+            )
+        )
+        client = PlacesClient(
+            api_key="test-google-value",
+            db=self.db,
+            session=session,
+        )
+        item = client.nearby(
+            latitude=35.2274,
+            longitude=127.5905,
+            radius_m=1500,
+        )[0]
+        self.assertEqual(item["place_name"], "피아골")
+        self.assertEqual(item["types"], ["natural_feature", "point_of_interest"])
+        request = session.requests[0]
+        self.assertTrue(request["url"].endswith("/maps/api/place/nearbysearch/json"))
+        self.assertEqual(request["params"]["radius"], "1500")
+        usage = self.db.query(CommonApiUsage).filter_by(api_name=ApiName.PLACES).one()
+        self.assertEqual(usage.used_unit, 1)
+
     def test_weather_current_forecast_no_key_provider_error_and_usage(self):
         current_payload = {
             "dt": 1_700_000_000,
