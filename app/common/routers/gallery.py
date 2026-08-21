@@ -189,10 +189,11 @@ def gallery_original(
 )
 def gallery_detail(
     file_id: str,
+    service_name: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> GalleryDetailResponse:
     """사진 상세를 조회한다."""
-    return GalleryService(db).get_detail(file_id)
+    return GalleryService(db).get_detail(file_id, service_name=service_name)
 
 
 def _media_response(

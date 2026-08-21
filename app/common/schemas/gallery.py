@@ -19,8 +19,19 @@ class GalleryListItem(BaseModel):
     thumbnail_url: str | None = None
     capture_datetime: datetime | None = None
     country: str | None = None
+    province: str | None = None
     city: str | None = None
+    district: str | None = None
     place_name: str | None = None
+    geocoded_place_name: str | None = None
+    memorykeeper_place_id: str | None = None
+    place_display_name: str | None = None
+    place_canonical_name: str | None = None
+    place_match_source: str | None = None
+    place_match_distance_m: float | None = None
+    place_revision: int | None = None
+    gps_lat: float | None = None
+    gps_lon: float | None = None
     camera_model: str | None = None
     favorite: bool = False
     has_gps: bool = False
@@ -59,6 +70,13 @@ class GalleryDetailResponse(BaseModel):
     height: int | None = None
     favorite: bool = False
     service_name: str = "MemoryKeeper"
+    memorykeeper_place_id: str | None = None
+    place_display_name: str | None = None
+    place_canonical_name: str | None = None
+    geocoded_place_name: str | None = None
+    place_match_source: str | None = None
+    place_match_distance_m: float | None = None
+    place_revision: int | None = None
     storage_path: str | None = None
     preview_url: str | None = None
     thumbnail_url: str | None = None
@@ -82,6 +100,15 @@ class MapMarkerResponse(BaseModel):
     latitude: float
     longitude: float
     place_name: str | None = None
+    geocoded_place_name: str | None = None
+    memorykeeper_place_id: str | None = None
+    place_display_name: str | None = None
+    place_canonical_name: str | None = None
+    place_match_source: str | None = None
+    place_match_distance_m: float | None = None
+    place_revision: int | None = None
+    province: str | None = None
+    district: str | None = None
     thumbnail: str | None = None
     year: int | None = None
     service_name: str = "MemoryKeeper"

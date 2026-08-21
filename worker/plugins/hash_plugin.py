@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.common.models.file import CommonFile
 from app.common.repositories.file_service_repository import FileServiceRepository
+from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from worker.plugins.base import BasePlugin, PluginContext
 
 
@@ -54,3 +55,8 @@ class HashPlugin(BasePlugin):
                 f"requested_service={context.service_name}"
             )
             context.log("LINK_CREATED" if link_created else "LINK_EXISTS")
+            if (context.service_name or "MemoryKeeper").casefold() == "memorykeeper":
+                if MemoryKeeperPlaceService(context.db).auto_match_file(
+                    file_id=existing.id
+                ):
+                    context.log("MEMORYKEEPER_PLACE_MATCHED")

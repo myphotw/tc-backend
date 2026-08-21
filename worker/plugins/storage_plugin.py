@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.common.models.file import CommonFile
 from app.common.repositories.file_service_repository import FileServiceRepository
+from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from app.common.services.storage import StorageRuleEngine
 from app.common.utils.perf import elapsed_ms, log_perf
 from worker.plugins.base import BasePlugin, PluginContext
@@ -153,6 +154,11 @@ class StoragePlugin(BasePlugin):
             context.stop_pipeline = True
             context.log("DUPLICATE_FOUND")
             context.log("LINK_CREATED" if link_created else "LINK_EXISTS")
+            if (context.service_name or "MemoryKeeper").casefold() == "memorykeeper":
+                if MemoryKeeperPlaceService(context.db).auto_match_file(
+                    file_id=existing.id
+                ):
+                    context.log("MEMORYKEEPER_PLACE_MATCHED")
             log_perf(
                 "storage_plugin",
                 rule_build_ms=rule_build_ms,

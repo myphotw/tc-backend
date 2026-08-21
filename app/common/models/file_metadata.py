@@ -113,6 +113,20 @@ class CommonFileMetadata(Base):
         String(200),
         nullable=True,
     )
+    memorykeeper_place_id = Column(
+        String(36),
+        ForeignKey("memorykeeper_places.id"),
+        nullable=True,
+        index=True,
+    )
+    place_match_source = Column(String(50), nullable=True)
+    place_match_distance_m = Column(Float, nullable=True)
+    place_match_revision = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     reserved = Column(
         String(500),
         nullable=True,

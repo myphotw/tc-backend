@@ -17,6 +17,7 @@ from app.common.models.file_tag import CommonFileTag
 from app.common.repositories.gallery_repository import GalleryRepository
 from app.common.services.gallery_media import build_gallery_media_url
 from app.common.repositories.tag_repository import TagSource
+from app.common.repositories.file_service_repository import FileServiceRepository
 from app.common.schemas.gallery import (
     CountItem,
     GalleryDetailResponse,
@@ -32,6 +33,7 @@ from app.common.schemas.gallery import (
 )
 from app.common.services.storage_service import StorageService
 from app.common.utils.perf import QueryCounter, Stopwatch, log_perf
+from app.memorykeeper.models.place import MemoryKeeperPlace
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +173,12 @@ class GalleryService:
             service_name=service_name,
         )
 
-    def get_detail(self, file_id: str) -> GalleryDetailResponse:
+    def get_detail(
+        self,
+        file_id: str,
+        *,
+        service_name: str | None = None,
+    ) -> GalleryDetailResponse:
         watch = Stopwatch()
         bind = self.repository.db.get_bind()
         with QueryCounter(bind) as counter:  # type: ignore[arg-type]
@@ -185,6 +192,21 @@ class GalleryService:
             common_file: CommonFile = detail["file"]
             metadata: CommonFileMetadata | None = detail["metadata"]
             tags: list[CommonFileTag] = detail["tags"]
+            effective_service = service_name or common_file.service_name or "MemoryKeeper"
+            if (
+                service_name is not None
+                and FileServiceRepository(self.repository.db).get(
+                    file_id=common_file.id,
+                    service_name=service_name,
+                )
+                is None
+            ):
+                raise HTTPException(status_code=404, detail="File not found")
+            place_fields = self._place_fields(
+                common_file=common_file,
+                metadata=metadata,
+                service_name=effective_service,
+            )
 
             ai_tags = [
                 self._to_tag_item(tag)
@@ -206,7 +228,8 @@ class GalleryService:
                 width=common_file.width,
                 height=common_file.height,
                 favorite=bool(common_file.favorite),
-                service_name=common_file.service_name or "MemoryKeeper",
+                service_name=effective_service,
+                **place_fields,
                 storage_path=common_file.original_path,
                 preview_url=self._to_media_url(common_file.file_id, "preview", common_file.preview_path),
                 thumbnail_url=self._to_media_url(common_file.file_id, "thumbnail", common_file.thumb_path),
@@ -289,11 +312,14 @@ class GalleryService:
                     continue
                 capture = metadata.datetime_original
                 items.append(
+                    # Raw GPS/place_name remain unchanged; display name is projected.
                     MapMarkerResponse(
                         file_id=common_file.file_id,
                         latitude=float(metadata.gps_lat),
                         longitude=float(metadata.gps_lon),
                         place_name=metadata.place_name,
+                        province=metadata.province,
+                        district=metadata.district,
                         thumbnail=self._to_media_url(
                             common_file.file_id,
                             "thumbnail",
@@ -301,6 +327,11 @@ class GalleryService:
                         ),
                         year=capture.year if capture is not None else None,
                         service_name=service_name or common_file.service_name or "MemoryKeeper",
+                        **self._place_fields(
+                            common_file=common_file,
+                            metadata=metadata,
+                            service_name=service_name,
+                        ),
                     )
                 )
             response = MapMarkerListResponse(items=items, total=len(items))
@@ -436,8 +467,12 @@ class GalleryService:
             ),
             capture_datetime=metadata.datetime_original if metadata else None,
             country=metadata.country if metadata else None,
+            province=metadata.province if metadata else None,
             city=metadata.city if metadata else None,
+            district=metadata.district if metadata else None,
             place_name=metadata.place_name if metadata else None,
+            gps_lat=metadata.gps_lat if metadata else None,
+            gps_lon=metadata.gps_lon if metadata else None,
             camera_model=metadata.camera_model if metadata else None,
             favorite=bool(common_file.favorite),
             has_gps=bool(
@@ -447,7 +482,52 @@ class GalleryService:
             ),
             has_ai_tag=has_ai_tag,
             service_name=service_name or common_file.service_name or "MemoryKeeper",
+            **self._place_fields(
+                common_file=common_file,
+                metadata=metadata,
+                service_name=service_name,
+            ),
         )
+
+    def _place_fields(
+        self,
+        *,
+        common_file: CommonFile,
+        metadata: CommonFileMetadata | None,
+        service_name: str | None,
+    ) -> dict[str, Any]:
+        if (
+            metadata is None
+            or (service_name or common_file.service_name or "").casefold()
+            != "memorykeeper"
+        ):
+            return {
+                "memorykeeper_place_id": None,
+                "place_display_name": None,
+                "place_canonical_name": None,
+                "geocoded_place_name": None,
+                "place_match_source": None,
+                "place_match_distance_m": None,
+                "place_revision": None,
+            }
+        place = None
+        if metadata.memorykeeper_place_id:
+            place = self.repository.db.get(
+                MemoryKeeperPlace,
+                metadata.memorykeeper_place_id,
+            )
+            if place is not None and place.deleted_at is not None:
+                place = None
+        raw_name = metadata.place_name
+        return {
+            "memorykeeper_place_id": metadata.memorykeeper_place_id if place else None,
+            "place_display_name": place.display_name if place else (raw_name or "미분류"),
+            "place_canonical_name": place.canonical_name if place else None,
+            "geocoded_place_name": raw_name,
+            "place_match_source": metadata.place_match_source,
+            "place_match_distance_m": metadata.place_match_distance_m,
+            "place_revision": int(metadata.place_match_revision or 0),
+        }
 
     @staticmethod
     def _to_tag_item(tag: CommonFileTag) -> GalleryTagItem:

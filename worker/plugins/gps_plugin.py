@@ -10,6 +10,7 @@ from app.common.repositories.metadata_repository import (
 from app.common.services.api_clients.google import GeocodingClient
 from app.common.services.key_resolver import ExternalServiceName, KeyResolver
 from app.common.utils.perf import elapsed_ms, log_perf
+from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from worker.plugins.base import BasePlugin, PluginContext
 
 
@@ -104,6 +105,14 @@ class GpsPlugin(BasePlugin):
                 source=MetadataSource.GPS,
                 modified_by="GpsPlugin",
             )
+
+            # The relation is MemoryKeeper-only and never alters raw GPS/address.
+            if MemoryKeeperPlaceService(context.db).auto_match_file(
+                file_id=context.common_file.id
+            ):
+                context.log("MEMORYKEEPER_PLACE_MATCHED")
+            else:
+                context.log("MEMORYKEEPER_PLACE_UNMATCHED")
 
             context.resolved_country = metadata.get("country")
             context.resolved_province = metadata.get("province")

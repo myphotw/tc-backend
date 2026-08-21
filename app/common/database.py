@@ -53,6 +53,7 @@ from app.common.models import worker_status
 from app.memorykeeper.models import photo
 from app.memorykeeper.models import tag
 from app.memorykeeper.models import photo_tag
+from app.memorykeeper.models import place
 
 from app.astrojournal.models import observation_record
 
