@@ -12,10 +12,17 @@ locations.
 - `POST /api/memorykeeper/places/radius-impact`
 - `POST /api/memorykeeper/places/{id}/reclassify`
 - `PATCH /api/memorykeeper/files/{file_id}/place`
+- `GET /api/memorykeeper/pending`
+- `POST /api/memorykeeper/pending/assign-place`
 
 All routes use the backend Bearer authentication inherited from the protected
 API router. Place updates and file assignment use revision-based optimistic
 locking.
+
+Pending is a derived state: a MemoryKeeper-linked file is incomplete whenever
+`memorykeeper_place_id` is null, even when raw GPS/address metadata exists.
+Batch assignment validates every file and expected Place revision before any
+relation is changed, then commits all assignments in one transaction.
 
 ## Matching and display
 

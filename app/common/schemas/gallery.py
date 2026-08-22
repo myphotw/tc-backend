@@ -34,6 +34,9 @@ class GalleryListItem(BaseModel):
     gps_lon: float | None = None
     camera_model: str | None = None
     favorite: bool = False
+    memo: str | None = None
+    metadata_revision: int = 0
+    incomplete: bool = False
     has_gps: bool = False
     has_ai_tag: bool = False
     service_name: str = "MemoryKeeper"
@@ -56,6 +59,7 @@ class GalleryTagItem(BaseModel):
     source: str
     tag_type: str
     confidence: float | None = None
+    tag_id: int | None = None
 
 
 class GalleryDetailResponse(BaseModel):
@@ -69,6 +73,9 @@ class GalleryDetailResponse(BaseModel):
     width: int | None = None
     height: int | None = None
     favorite: bool = False
+    memo: str | None = None
+    metadata_revision: int = 0
+    incomplete: bool = False
     service_name: str = "MemoryKeeper"
     memorykeeper_place_id: str | None = None
     place_display_name: str | None = None

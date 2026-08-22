@@ -121,15 +121,21 @@ class TagRepository:
         return item
 
     def exists_user_tag(self, *, file_id: int, tag: str) -> bool:
-        """동일 의미의 활성 USER Tag 존재 여부를 반환한다."""
-        return (
-            self._find_active_tag(
-                file_id=file_id,
-                tag=tag,
-                source=TagSource.USER,
-            )
-            is not None
+        """Return whether the user has made a decision for this tag.
+
+        Deleted USER relations remain tombstones so a Vision retry does not
+        immediately recreate a tag that the user explicitly removed.
+        """
+        normalized = self._normalize_tag(tag)
+        if not normalized:
+            return False
+        candidates = (
+            self.db.query(CommonFileTag)
+            .filter(CommonFileTag.file_id == file_id)
+            .filter(CommonFileTag.source == TagSource.USER)
+            .all()
         )
+        return any(self._normalize_tag(item.tag) == normalized for item in candidates)
 
     def remove_ai_tag(self, *, file_id: int, tag: str) -> bool:
         """동일 의미의 활성 AI Tag를 soft delete한다."""

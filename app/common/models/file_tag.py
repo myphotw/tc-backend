@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Enum, Float, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Column, DateTime, Enum, Float, ForeignKey, Index, Integer, String
 from sqlalchemy.sql import func
 
 from app.common.database import Base
@@ -8,6 +8,14 @@ class CommonFileTag(Base):
     """AI / User 태그. 승인(approved) 없이 현재 상태만 관리한다."""
 
     __tablename__ = "common_file_tags"
+    __table_args__ = (
+        Index(
+            "uq_common_file_tags_memorykeeper_relation",
+            "file_id",
+            "memorykeeper_tag_id",
+            unique=True,
+        ),
+    )
 
     id = Column(
         Integer,
@@ -19,6 +27,13 @@ class CommonFileTag(Base):
         Integer,
         ForeignKey("common_files.id"),
         nullable=False,
+        index=True,
+    )
+
+    memorykeeper_tag_id = Column(
+        Integer,
+        ForeignKey("mk_tags.id"),
+        nullable=True,
         index=True,
     )
 

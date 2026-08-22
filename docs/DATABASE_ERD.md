@@ -16,6 +16,8 @@ erDiagram
     common_files ||--o{ common_vision_jobs : queues
     common_files ||--o{ common_file_services : linked_to
     common_files ||--o{ astro_observation_records : observed_as
+    common_files ||--o| memorykeeper_file_states : has_memorykeeper_state
+    mk_tags ||--o{ common_file_tags : catalogs
 
     common_files {
         int id PK
@@ -40,6 +42,28 @@ erDiagram
         int id PK
         int file_id FK
         string service_name
+        datetime created_at
+        datetime updated_at
+    }
+
+    memorykeeper_file_states {
+        int file_id PK_FK
+        bool favorite
+        text memo
+        int revision
+        datetime created_at
+        datetime updated_at
+    }
+
+    mk_tags {
+        int id PK
+        string tag_name UK
+        string normalized_name UK
+        string tag_type
+        string source
+        bool favorite
+        int revision
+        bool deleted
         datetime created_at
         datetime updated_at
     }
@@ -96,6 +120,7 @@ erDiagram
     common_file_tags {
         int id PK
         int file_id FK
+        int memorykeeper_tag_id FK
         string tag
         enum tag_type
         enum source

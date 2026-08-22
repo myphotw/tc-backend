@@ -41,6 +41,7 @@ def list_gallery(
     page_size: int = Query(20, ge=1, le=200, description="페이지 크기"),
     sort: str = Query("capture_datetime_desc", description="정렬 키"),
     service_name: str = Query("MemoryKeeper", description="MemoryKeeper / AstroJournal"),
+    incomplete: bool | None = Query(None),
     db: Session = Depends(get_db),
 ) -> GalleryListResponse:
     """사진 목록을 조회한다."""
@@ -49,6 +50,7 @@ def list_gallery(
         page_size=page_size,
         sort=sort,
         service_name=service_name,
+        incomplete=incomplete,
     )
 
 
@@ -69,6 +71,7 @@ def search_gallery(
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
     keyword: str | None = Query(None),
+    incomplete: bool | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=200),
     sort: str = Query("capture_datetime_desc"),
@@ -86,6 +89,7 @@ def search_gallery(
         date_from=date_from,
         date_to=date_to,
         keyword=keyword,
+        incomplete=incomplete,
         page=page,
         page_size=page_size,
         sort=sort,

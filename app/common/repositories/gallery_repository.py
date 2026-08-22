@@ -15,6 +15,7 @@ from app.common.models.file_tag import CommonFileTag
 from app.common.models.metadata_history import CommonMetadataHistory
 from app.common.repositories.tag_repository import TagSource
 from app.common.utils.perf import Stopwatch, log_perf
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
 
 
 class GalleryRepository:
@@ -31,10 +32,16 @@ class GalleryRepository:
         page_size: int = 20,
         sort: str = "capture_datetime_desc",
         service_name: str | None = None,
+        incomplete: bool | None = None,
     ) -> tuple[list[tuple[CommonFile, CommonFileMetadata | None, bool]], int]:
         """사진 목록을 조회한다."""
         watch = Stopwatch()
         query = self._base_query(service_name=service_name)
+        query = self._apply_incomplete(
+            query,
+            incomplete=incomplete,
+            service_name=service_name,
+        )
         watch.start("total_count_query")
         total = query.count()
         count_ms = watch.stop("total_count_query")
@@ -105,6 +112,7 @@ class GalleryRepository:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         keyword: str | None = None,
+        incomplete: bool | None = None,
         page: int = 1,
         page_size: int = 20,
         sort: str = "capture_datetime_desc",
@@ -123,6 +131,8 @@ class GalleryRepository:
             date_from=date_from,
             date_to=date_to,
             keyword=keyword,
+            incomplete=incomplete,
+            service_name=service_name,
         )
         watch.start("total_count_query")
         total = query.count()
@@ -265,6 +275,10 @@ class GalleryRepository:
                 CommonFileMetadata,
                 CommonFileMetadata.file_id == CommonFile.id,
             )
+            .outerjoin(
+                MemoryKeeperFileState,
+                MemoryKeeperFileState.file_id == CommonFile.id,
+            )
             .filter(CommonFile.deleted.is_(False))
         )
         return self._filter_by_service(query, service_name)
@@ -282,6 +296,8 @@ class GalleryRepository:
         date_from: datetime | None,
         date_to: datetime | None,
         keyword: str | None,
+        incomplete: bool | None,
+        service_name: str | None,
     ) -> Query:
         if year is not None:
             query = query.filter(
@@ -294,7 +310,15 @@ class GalleryRepository:
         if camera:
             query = query.filter(CommonFileMetadata.camera_model.ilike(f"%{camera}%"))
         if favorite is not None:
-            query = query.filter(CommonFile.favorite.is_(favorite))
+            if (service_name or "").casefold() == "memorykeeper":
+                query = query.filter(
+                    func.coalesce(
+                        MemoryKeeperFileState.favorite,
+                        CommonFile.favorite,
+                    ).is_(favorite)
+                )
+            else:
+                query = query.filter(CommonFile.favorite.is_(favorite))
         if date_from is not None:
             query = query.filter(CommonFileMetadata.datetime_original >= date_from)
         if date_to is not None:
@@ -327,7 +351,25 @@ class GalleryRepository:
                     tag_exists,
                 )
             )
-        return query
+        return self._apply_incomplete(
+            query,
+            incomplete=incomplete,
+            service_name=service_name,
+        )
+
+    @staticmethod
+    def _apply_incomplete(
+        query: Query,
+        *,
+        incomplete: bool | None,
+        service_name: str | None,
+    ) -> Query:
+        if incomplete is None:
+            return query
+        if (service_name or "").casefold() != "memorykeeper":
+            return query.filter(False) if incomplete else query
+        condition = CommonFileMetadata.memorykeeper_place_id.is_(None)
+        return query.filter(condition if incomplete else ~condition)
 
     def _apply_sort(self, query: Query, sort: str) -> Query:
         normalized = (sort or "capture_datetime_desc").lower()

@@ -33,6 +33,7 @@ from app.common.schemas.gallery import (
 )
 from app.common.services.storage_service import StorageService
 from app.common.utils.perf import QueryCounter, Stopwatch, log_perf
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.place import MemoryKeeperPlace
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,7 @@ class GalleryService:
         page_size: int = 20,
         sort: str = "capture_datetime_desc",
         service_name: str | None = "MemoryKeeper",
+        incomplete: bool | None = None,
     ) -> GalleryListResponse:
         return self._timed_list_like(
             endpoint="gallery_list",
@@ -165,6 +167,7 @@ class GalleryService:
                 page_size=page_size,
                 sort=sort,
                 service_name=service_name,
+                incomplete=incomplete,
             ),
             page=page,
             page_size=page_size,
@@ -207,6 +210,11 @@ class GalleryService:
                 metadata=metadata,
                 service_name=effective_service,
             )
+            state = (
+                self.repository.db.get(MemoryKeeperFileState, common_file.id)
+                if effective_service.casefold() == "memorykeeper"
+                else None
+            )
 
             ai_tags = [
                 self._to_tag_item(tag)
@@ -227,7 +235,13 @@ class GalleryService:
                 file_size=common_file.file_size,
                 width=common_file.width,
                 height=common_file.height,
-                favorite=bool(common_file.favorite),
+                favorite=(bool(state.favorite) if state is not None else bool(common_file.favorite)),
+                memo=state.memo if state is not None else None,
+                metadata_revision=int(state.revision or 0) if state is not None else 0,
+                incomplete=(
+                    effective_service.casefold() == "memorykeeper"
+                    and (metadata is None or metadata.memorykeeper_place_id is None)
+                ),
                 service_name=effective_service,
                 **place_fields,
                 storage_path=common_file.original_path,
@@ -265,6 +279,7 @@ class GalleryService:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         keyword: str | None = None,
+        incomplete: bool | None = None,
         page: int = 1,
         page_size: int = 20,
         sort: str = "capture_datetime_desc",
@@ -282,6 +297,7 @@ class GalleryService:
                 date_from=date_from,
                 date_to=date_to,
                 keyword=keyword,
+                incomplete=incomplete,
                 page=page,
                 page_size=page_size,
                 sort=sort,
@@ -414,8 +430,18 @@ class GalleryService:
             rows, total = fetch()
             db_ms = watch.stop("db_query")
             watch.start("dto_mapping")
+            states = self._file_states(
+                [file.id for file, _metadata, _has_ai_tag in rows],
+                service_name=service_name,
+            )
             items = [
-                self._to_list_item(file, metadata, has_ai_tag, service_name=service_name)
+                self._to_list_item(
+                    file,
+                    metadata,
+                    has_ai_tag,
+                    service_name=service_name,
+                    state=states.get(file.id),
+                )
                 for file, metadata, has_ai_tag in rows
             ]
             response = response_cls(
@@ -451,6 +477,7 @@ class GalleryService:
         has_ai_tag: bool,
         *,
         service_name: str | None = None,
+        state: MemoryKeeperFileState | None = None,
     ) -> GalleryListItem:
         return GalleryListItem(
             file_id=common_file.file_id,
@@ -474,7 +501,13 @@ class GalleryService:
             gps_lat=metadata.gps_lat if metadata else None,
             gps_lon=metadata.gps_lon if metadata else None,
             camera_model=metadata.camera_model if metadata else None,
-            favorite=bool(common_file.favorite),
+            favorite=(bool(state.favorite) if state is not None else bool(common_file.favorite)),
+            memo=state.memo if state is not None else None,
+            metadata_revision=int(state.revision or 0) if state is not None else 0,
+            incomplete=(
+                (service_name or common_file.service_name or "").casefold() == "memorykeeper"
+                and (metadata is None or metadata.memorykeeper_place_id is None)
+            ),
             has_gps=bool(
                 metadata
                 and metadata.gps_lat is not None
@@ -536,7 +569,23 @@ class GalleryService:
             source=tag.source,
             tag_type=tag.tag_type,
             confidence=tag.confidence,
+            tag_id=tag.memorykeeper_tag_id,
         )
+
+    def _file_states(
+        self,
+        file_ids: list[int],
+        *,
+        service_name: str | None,
+    ) -> dict[int, MemoryKeeperFileState]:
+        if not file_ids or (service_name or "").casefold() != "memorykeeper":
+            return {}
+        rows = (
+            self.repository.db.query(MemoryKeeperFileState)
+            .filter(MemoryKeeperFileState.file_id.in_(file_ids))
+            .all()
+        )
+        return {row.file_id: row for row in rows}
 
     @staticmethod
     def _to_media_url(

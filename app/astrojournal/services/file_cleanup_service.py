@@ -13,6 +13,7 @@ from app.common.models.file_tag import CommonFileTag
 from app.common.models.vision_job import CommonVisionJob
 from app.common.repositories.vision_job_repository import VisionJobStatus
 from app.common.services.storage_service import AssetDeleteStatus, StorageService
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class FileCleanupResult:
 
 
 class AstroJournalFileCleanupService:
-    """Apply AstroJournal's DELETE_IF_UNREFERENCED file policy.
+    """Apply the shared DELETE_IF_UNREFERENCED physical file policy.
 
     MemoryKeeper and every non-AstroJournal service link are preservation
     references. Soft-deleted ObservationRecords and append-only history rows do
@@ -55,9 +56,11 @@ class AstroJournalFileCleanupService:
         db: Session,
         *,
         storage_service: StorageService | None = None,
+        service_name: str | None = None,
     ) -> None:
         self.db = db
         self.storage_service = storage_service or StorageService()
+        self.service_name = service_name or self.SERVICE_NAME
 
     def cleanup_if_unreferenced(self, *, file_id: int) -> FileCleanupResult:
         common_file = (
@@ -69,14 +72,16 @@ class AstroJournalFileCleanupService:
         if common_file is None:
             return FileCleanupResult(file_id=file_id, status=FileCleanupStatus.FILE_NOT_FOUND)
 
-        active_record_exists = (
-            self.db.query(ObservationRecord.id)
-            .filter(ObservationRecord.file_id == file_id)
-            .filter(ObservationRecord.service_name == self.SERVICE_NAME)
-            .filter(ObservationRecord.deleted_at.is_(None))
-            .first()
-            is not None
-        )
+        active_record_exists = False
+        if self.service_name == self.SERVICE_NAME:
+            active_record_exists = (
+                self.db.query(ObservationRecord.id)
+                .filter(ObservationRecord.file_id == file_id)
+                .filter(ObservationRecord.service_name == self.SERVICE_NAME)
+                .filter(ObservationRecord.deleted_at.is_(None))
+                .first()
+                is not None
+            )
         if active_record_exists:
             return FileCleanupResult(
                 file_id=file_id,
@@ -86,7 +91,7 @@ class AstroJournalFileCleanupService:
         other_service_exists = (
             self.db.query(CommonFileService.id)
             .filter(CommonFileService.file_id == file_id)
-            .filter(CommonFileService.service_name != self.SERVICE_NAME)
+            .filter(CommonFileService.service_name != self.service_name)
             .first()
             is not None
         )
@@ -94,7 +99,7 @@ class AstroJournalFileCleanupService:
             try:
                 self.db.query(CommonFileService).filter(
                     CommonFileService.file_id == file_id,
-                    CommonFileService.service_name == self.SERVICE_NAME,
+                    CommonFileService.service_name == self.service_name,
                 ).delete(synchronize_session=False)
                 self.db.commit()
             except Exception:
@@ -161,12 +166,15 @@ class AstroJournalFileCleanupService:
             self.db.query(CommonFileTag).filter(
                 CommonFileTag.file_id == file_id
             ).delete(synchronize_session=False)
+            self.db.query(MemoryKeeperFileState).filter(
+                MemoryKeeperFileState.file_id == file_id
+            ).delete(synchronize_session=False)
             self.db.query(CommonVisionJob).filter(
                 CommonVisionJob.file_id == file_id
             ).update({CommonVisionJob.deleted: True}, synchronize_session=False)
             self.db.query(CommonFileService).filter(
                 CommonFileService.file_id == file_id,
-                CommonFileService.service_name == self.SERVICE_NAME,
+                CommonFileService.service_name == self.service_name,
             ).delete(synchronize_session=False)
 
             # The row remains as a tombstone because soft-deleted ObservationRecord

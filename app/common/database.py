@@ -54,6 +54,7 @@ from app.memorykeeper.models import photo
 from app.memorykeeper.models import tag
 from app.memorykeeper.models import photo_tag
 from app.memorykeeper.models import place
+from app.memorykeeper.models import file_state
 
 from app.astrojournal.models import observation_record
 

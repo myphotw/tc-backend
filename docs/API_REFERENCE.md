@@ -304,6 +304,36 @@ available after the worker creates or resolves the shared `CommonFile`.
 
 ---
 
+## MemoryKeeper file writes, tags and pending
+
+All endpoints below use the protected Bearer-authenticated API router.
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| DELETE | `/api/memorykeeper/files/{file_id}` | Unlink MemoryKeeper and clean an unreferenced physical file |
+| PATCH | `/api/memorykeeper/files/{file_id}/metadata` | Update favorite, memo and raw geography with optimistic locking |
+| GET/POST | `/api/memorykeeper/tags` | List/create the user tag catalog |
+| PATCH/DELETE | `/api/memorykeeper/tags/{tag_id}` | Rename, favorite or delete a tag |
+| POST | `/api/memorykeeper/tags/{tag_id}/merge` | Merge a source tag into a target tag |
+| POST/DELETE | `/api/memorykeeper/files/{file_id}/tags/{tag_id}` | Assign/remove a user tag |
+| GET | `/api/memorykeeper/pending` | List files without a registered MemoryKeeper Place |
+| POST | `/api/memorykeeper/pending/assign-place` | Assign one Place to multiple pending files atomically |
+
+`MemoryKeeperFileMetadataUpdate.expected_revision` protects favorite, memo and
+raw geography writes. Blank memo/address strings are normalized to `null`.
+`gps_lat` and `gps_lon` must be supplied together. Raw geography remains common
+photo metadata, while favorite/memo are stored in the MemoryKeeper-only file
+state so shared AstroJournal records are not changed.
+
+Pending is derived from `common_file_metadata.memorykeeper_place_id IS NULL`;
+GPS and reverse-geocoded address values do not make a file complete. Gallery
+list/search accept `incomplete=true|false` for the same projection.
+Pending suggestions are optional (`include_suggestions=true`) and reuse only
+the existing registered Place matcher; the default list performs no provider
+lookup and no automatic Place creation.
+
+---
+
 ## Gallery
 
 Legacy Gallery list/search/map/timeline/statistics endpoints default to
@@ -325,14 +355,15 @@ Legacy Gallery list/search/map/timeline/statistics endpoints default to
 - `page_size` (default 20, max 200)
 - `sort` (default `capture_datetime_desc`)
 - `service_name` (optional)
+- `incomplete` (optional; MemoryKeeper derived Place state)
 
 ### List Item Schema
 
-`file_id`, `filename`, `preview_url`, `thumbnail_url`, `capture_datetime`, `country`, `city`, `place_name`, `camera_model`, `favorite`, `has_gps`, `has_ai_tag`, `service_name`
+`file_id`, `filename`, `preview_url`, `thumbnail_url`, `capture_datetime`, `country`, `city`, `place_name`, `camera_model`, `favorite`, `memo`, `metadata_revision`, `incomplete`, `has_gps`, `has_ai_tag`, `service_name`
 
 ### Search Query
 
-`year`, `country`, `city`, `camera`, `tag`, `favorite`, `service_name`, `date_from`, `date_to`, `keyword`, `page`, `page_size`, `sort`
+`year`, `country`, `city`, `camera`, `tag`, `favorite`, `incomplete`, `service_name`, `date_from`, `date_to`, `keyword`, `page`, `page_size`, `sort`
 
 ### Detail Schema
 
