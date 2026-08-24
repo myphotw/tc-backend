@@ -55,6 +55,8 @@ from app.memorykeeper.models import tag
 from app.memorykeeper.models import photo_tag
 from app.memorykeeper.models import place
 from app.memorykeeper.models import file_state
+from app.memorykeeper.models import tag_canonical_override
+from app.memorykeeper.models import file_tag_suppression
 
 from app.astrojournal.models import observation_record
 

@@ -63,3 +63,31 @@ class TagResponse(BaseModel):
 class TagListResponse(BaseModel):
     items: list[TagResponse]
     total: int
+
+
+class UnifiedTagCatalogItem(BaseModel):
+    identity: str
+    display_name: str
+    usage_count: int
+    favorite: bool = False
+    revision: int
+    editable: bool = True
+    canonical_references: list[str] = Field(default_factory=list)
+
+
+class UnifiedTagCatalogResponse(BaseModel):
+    items: list[UnifiedTagCatalogItem]
+    total: int
+
+
+class UnifiedTagRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    revision: int = Field(ge=1)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        value = " ".join(value.strip().split())
+        if not value:
+            raise ValueError("name cannot be blank")
+        return value

@@ -5,6 +5,7 @@ from app.common.database import get_db
 from app.memorykeeper.schemas.file import (
     FileTagMutationRequest,
     FileTagMutationResponse,
+    FileTagVisibilityMutationResponse,
 )
 from app.memorykeeper.schemas.tag import (
     TagCreate,
@@ -12,8 +13,17 @@ from app.memorykeeper.schemas.tag import (
     TagMergeRequest,
     TagResponse,
     TagUpdate,
+    UnifiedTagCatalogItem,
+    UnifiedTagCatalogResponse,
+    UnifiedTagRenameRequest,
+)
+from app.memorykeeper.services.tag_catalog_service import (
+    MemoryKeeperTagCatalogService,
 )
 from app.memorykeeper.services.tag_service import MemoryKeeperTagService
+from app.memorykeeper.services.file_tag_visibility_service import (
+    MemoryKeeperFileTagVisibilityService,
+)
 
 
 router = APIRouter(prefix="/api/memorykeeper", tags=["MemoryKeeper Tags"])
@@ -33,6 +43,45 @@ def list_tags(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/tags/catalog", response_model=UnifiedTagCatalogResponse)
+def list_unified_tag_catalog(
+    query: str | None = Query(None, max_length=100),
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+) -> UnifiedTagCatalogResponse:
+    """USER tags and curated AI identities as one consumer-facing catalog."""
+    return MemoryKeeperTagCatalogService(db).list(
+        query=query,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.patch("/tags/catalog/{identity}", response_model=UnifiedTagCatalogItem)
+def rename_or_merge_unified_tag(
+    identity: str,
+    payload: UnifiedTagRenameRequest,
+    db: Session = Depends(get_db),
+) -> UnifiedTagCatalogItem:
+    """Rename a tag identity, implicitly merging when the name already exists."""
+    return MemoryKeeperTagCatalogService(db).rename_or_merge(identity, payload)
+
+
+@router.delete("/tags/catalog/{identity}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_unified_tag(
+    identity: str,
+    expected_revision: int = Query(..., ge=1),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Suppress an AI identity or delete a USER-managed identity."""
+    MemoryKeeperTagCatalogService(db).delete(
+        identity,
+        expected_revision=expected_revision,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/tags", response_model=TagResponse, status_code=status.HTTP_201_CREATED)
@@ -75,6 +124,42 @@ def assign_file_tag(
         file_id,
         tag_id,
         expected_revision=payload.expected_revision,
+    )
+
+
+@router.post(
+    "/files/{file_id}/tags/catalog/{identity}",
+    response_model=FileTagVisibilityMutationResponse,
+)
+def restore_file_catalog_tag(
+    file_id: str,
+    identity: str,
+    payload: FileTagMutationRequest,
+    db: Session = Depends(get_db),
+) -> FileTagVisibilityMutationResponse:
+    """Restore or assign one unified catalog identity on one file."""
+    return MemoryKeeperFileTagVisibilityService(db).restore(
+        file_id,
+        identity,
+        expected_revision=payload.expected_revision,
+    )
+
+
+@router.delete(
+    "/files/{file_id}/tags/catalog/{identity}",
+    response_model=FileTagVisibilityMutationResponse,
+)
+def hide_file_catalog_tag(
+    file_id: str,
+    identity: str,
+    expected_revision: int = Query(..., ge=0),
+    db: Session = Depends(get_db),
+) -> FileTagVisibilityMutationResponse:
+    """Hide one unified catalog identity on one MemoryKeeper file."""
+    return MemoryKeeperFileTagVisibilityService(db).hide(
+        file_id,
+        identity,
+        expected_revision=expected_revision,
     )
 
 

@@ -38,17 +38,15 @@ class TagRepository:
         """
         AI Tag를 저장한다.
 
-        USER Tag가 동일 의미로 존재하면 생성하지 않는다.
-        기존 AI Tag가 있으면 confidence만 갱신한다.
+        USER Tag와 독립적으로 raw Vision 결과를 보존한다.
+        기존 AI Tag가 있으면 confidence만 갱신한다. USER 우선순위는 조회
+        projection에서 적용하며 raw row를 삭제하거나 생략하지 않는다.
         """
         normalized = self._normalize_tag(tag)
         if not normalized:
             raise ValueError("tag is required")
         if confidence is not None and not 0 <= confidence <= 100:
             raise ValueError("confidence must be between 0 and 100")
-        if self.exists_user_tag(file_id=file_id, tag=normalized):
-            return None
-
         existing = self._find_active_tag(
             file_id=file_id,
             tag=normalized,
@@ -84,16 +82,12 @@ class TagRepository:
         """
         USER Tag를 저장한다.
 
-        기존 AI Tag는 soft delete 후 source=USER Tag를 생성한다.
+        raw AI Tag는 그대로 보존하고 source=USER Tag를 생성한다.
         confidence는 NULL이다.
         """
         normalized = self._normalize_tag(tag)
         if not normalized:
             raise ValueError("tag is required")
-
-        if replaces:
-            self.remove_ai_tag(file_id=file_id, tag=replaces)
-        self.remove_ai_tag(file_id=file_id, tag=normalized)
 
         existing = self._find_active_tag(
             file_id=file_id,

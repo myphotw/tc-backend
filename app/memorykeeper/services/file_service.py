@@ -20,6 +20,9 @@ from app.common.repositories.history_repository import HistoryRepository
 from app.common.repositories.metadata_priority import MetadataPriority
 from app.common.repositories.tag_repository import TagSource
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
+from app.memorykeeper.models.file_tag_suppression import (
+    MemoryKeeperFileTagSuppression,
+)
 from app.memorykeeper.schemas.file import (
     MemoryKeeperFileDeleteResponse,
     MemoryKeeperFileMetadataResponse,
@@ -157,6 +160,16 @@ class MemoryKeeperFileService:
                 revision=revision,
                 tombstone=True,
             )
+        file_suppressions = (
+            self.db.query(MemoryKeeperFileTagSuppression)
+            .filter(MemoryKeeperFileTagSuppression.file_id == common_file.id)
+            .filter(MemoryKeeperFileTagSuppression.deleted.is_(False))
+            .all()
+        )
+        for suppression in file_suppressions:
+            suppression.deleted = True
+            suppression.revision = int(suppression.revision or 0) + 1
+            suppression.updated_at = datetime.now(timezone.utc)
         if state is not None:
             self.db.delete(state)
         self.changes.append(

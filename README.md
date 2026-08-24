@@ -205,6 +205,27 @@ PHOTO_PLATFORM_ROOT/
 
 주요 테이블: `common_files`, `common_file_metadata`, `common_file_tags`, `common_upload_jobs`, `common_vision_jobs`, `common_api_usage`, `common_geocode_cache`, `common_metadata_history`, `common_worker_status`
 
+## MemoryKeeper 자동 태그
+
+Google Vision 영어 label/confidence는 `common_file_tags`에 raw로 보존한다.
+MemoryKeeper Gallery는 versioned curation policy로 최대 5개의 한국어 자동 태그와
+USER 우선 통합 `tags` projection을 반환한다. AstroJournal의 raw tag 응답은
+변경하지 않는다. 정책, read-only dry-run, FK 준비 절차는
+[docs/MEMORYKEEPER_TAG_CURATION.md](docs/MEMORYKEEPER_TAG_CURATION.md)를 참고한다.
+
+MemoryKeeper 태그 관리 UI는 `GET /api/memorykeeper/tags/catalog`의 통합
+catalog만 사용한다. AI/USER를 구분하지 않고 `identity`, `display_name`,
+`usage_count`, `revision`을 받으며, 같은 identity의 PATCH는 rename-or-merge,
+DELETE는 USER relation 제거 또는 AI canonical suppression으로 처리된다.
+
+사진 한 장에서 통합 태그를 숨길 때는 전역 Catalog DELETE가 아니라
+`DELETE /api/memorykeeper/files/{file_id}/tags/catalog/{identity}`를 사용한다.
+`expected_revision`은 파일의 `metadata_revision`이며, 성공 응답은 증가한
+`revision`을 반환한다. 다시 추가할 때는 같은 경로의 POST를 사용한다. 파일별
+suppression은 `mk_file_tag_suppressions`에 stable canonical key로 남으므로 Catalog
+rename/merge 또는 Vision 재처리 후에도 유지되며 AstroJournal projection에는
+적용되지 않는다.
+
 ## 환경변수
 
 `.env` 예시 (값은 환경에 맞게 설정).

@@ -16,6 +16,9 @@ from app.common.models.metadata_history import CommonMetadataHistory
 from app.common.repositories.tag_repository import TagSource
 from app.common.utils.perf import Stopwatch, log_perf
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
+from app.memorykeeper.services.tag_catalog_service import (
+    MemoryKeeperTagCatalogService,
+)
 
 
 class GalleryRepository:
@@ -86,6 +89,12 @@ class GalleryRepository:
             .order_by(CommonFileTag.created_at.desc())
             .all()
         )
+        user_decisions = (
+            self.db.query(CommonFileTag.tag)
+            .filter(CommonFileTag.file_id == common_file.id)
+            .filter(CommonFileTag.source == TagSource.USER)
+            .all()
+        )
         history_count = (
             self.db.query(func.count(CommonMetadataHistory.id))
             .filter(CommonMetadataHistory.file_id == common_file.id)
@@ -96,6 +105,7 @@ class GalleryRepository:
             "file": common_file,
             "metadata": metadata,
             "tags": tags,
+            "user_decisions": [row[0] for row in user_decisions],
             "history_count": int(history_count),
         }
 
@@ -324,23 +334,26 @@ class GalleryRepository:
         if date_to is not None:
             query = query.filter(CommonFileMetadata.datetime_original <= date_to)
         if tag:
-            tag_exists = (
-                self.db.query(CommonFileTag.id)
-                .filter(CommonFileTag.file_id == CommonFile.id)
-                .filter(CommonFileTag.deleted.is_(False))
-                .filter(CommonFileTag.tag.ilike(f"%{tag}%"))
-                .exists()
+            query = self._apply_tag_filter(
+                query,
+                value=tag,
+                service_name=service_name,
             )
-            query = query.filter(tag_exists)
         if keyword:
             like = f"%{keyword}%"
-            tag_exists = (
-                self.db.query(CommonFileTag.id)
-                .filter(CommonFileTag.file_id == CommonFile.id)
-                .filter(CommonFileTag.deleted.is_(False))
-                .filter(CommonFileTag.tag.ilike(like))
-                .exists()
-            )
+            if (service_name or "").casefold() == "memorykeeper":
+                tag_ids = MemoryKeeperTagCatalogService(self.db).file_ids_for_query(
+                    keyword
+                )
+                tag_condition = CommonFile.id.in_(tag_ids) if tag_ids else False
+            else:
+                tag_condition = (
+                    self.db.query(CommonFileTag.id)
+                    .filter(CommonFileTag.file_id == CommonFile.id)
+                    .filter(CommonFileTag.deleted.is_(False))
+                    .filter(CommonFileTag.tag.ilike(like))
+                    .exists()
+                )
             query = query.filter(
                 or_(
                     CommonFile.original_name.ilike(like),
@@ -348,7 +361,7 @@ class GalleryRepository:
                     CommonFileMetadata.city.ilike(like),
                     CommonFileMetadata.place_name.ilike(like),
                     CommonFileMetadata.camera_model.ilike(like),
-                    tag_exists,
+                    tag_condition,
                 )
             )
         return self._apply_incomplete(
@@ -356,6 +369,25 @@ class GalleryRepository:
             incomplete=incomplete,
             service_name=service_name,
         )
+
+    def _apply_tag_filter(
+        self,
+        query: Query,
+        *,
+        value: str,
+        service_name: str | None,
+    ) -> Query:
+        if (service_name or "").casefold() == "memorykeeper":
+            file_ids = MemoryKeeperTagCatalogService(self.db).file_ids_for_query(value)
+            return query.filter(CommonFile.id.in_(file_ids) if file_ids else False)
+        tag_exists = (
+            self.db.query(CommonFileTag.id)
+            .filter(CommonFileTag.file_id == CommonFile.id)
+            .filter(CommonFileTag.deleted.is_(False))
+            .filter(CommonFileTag.tag.ilike(f"%{value}%"))
+            .exists()
+        )
+        return query.filter(tag_exists)
 
     @staticmethod
     def _apply_incomplete(

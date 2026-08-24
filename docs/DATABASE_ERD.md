@@ -17,7 +17,9 @@ erDiagram
     common_files ||--o{ common_file_services : linked_to
     common_files ||--o{ astro_observation_records : observed_as
     common_files ||--o| memorykeeper_file_states : has_memorykeeper_state
+    common_files ||--o{ mk_file_tag_suppressions : suppresses_for_memorykeeper
     mk_tags ||--o{ common_file_tags : catalogs
+    mk_tags ||--o{ mk_tag_canonical_overrides : overrides
 
     common_files {
         int id PK
@@ -62,6 +64,26 @@ erDiagram
         string tag_type
         string source
         bool favorite
+        int revision
+        bool deleted
+        datetime created_at
+        datetime updated_at
+    }
+
+    mk_tag_canonical_overrides {
+        int id PK
+        string canonical_key UK
+        int memorykeeper_tag_id FK
+        bool suppressed
+        int revision
+        datetime created_at
+        datetime updated_at
+    }
+
+    mk_file_tag_suppressions {
+        int id PK
+        int file_id FK
+        string canonical_key
         int revision
         bool deleted
         datetime created_at
@@ -215,10 +237,38 @@ erDiagram
 |--------|-------------|
 | id | PK |
 | file_id | FK → common_files.id, index |
+| memorykeeper_tag_id | nullable FK 모델 → mk_tags.id, index; 운영 실제 constraint는 별도 검증 필요 |
 | tag | NOT NULL, index |
 | tag_type | Enum AI/ASTRO/USER/SYSTEM |
 | source | Enum AI/USER |
 | deleted | NOT NULL, index |
+
+### mk_tag_canonical_overrides
+| Column | Constraints |
+|--------|-------------|
+| id | PK |
+| canonical_key | UNIQUE, stable curated AI identity |
+| memorykeeper_tag_id | nullable FK → mk_tags.id, index |
+| suppressed | NOT NULL default false, index |
+| revision | NOT NULL default 1 |
+
+`canonical_key → memorykeeper_tag_id`는 AI tag rename/merge의 USER override이고,
+`memorykeeper_tag_id=NULL, suppressed=true`는 raw Vision row를 보존한 suppression이다.
+
+### mk_file_tag_suppressions
+| Column | Constraints |
+|--------|-------------|
+| id | PK |
+| file_id | FK → common_files.id, index |
+| canonical_key | stable curated semantic identity, index |
+| revision | NOT NULL default 1 |
+| deleted | NOT NULL default false, index; true는 restore/file-delete tombstone |
+
+`UNIQUE(file_id, canonical_key)`는 같은 파일/semantic identity의 중복 suppression을
+막는다. 이 테이블은 MemoryKeeper read projection에만 적용된다. 전역 정책인
+`mk_tag_canonical_overrides.suppressed`와 독립적이고 raw `common_file_tags` AI row를
+수정하지 않는다. 신규 테이블이므로 schema sync의 `create_all`에서 생성되며 기존
+데이터 backfill은 필요 없다.
 
 ### common_upload_jobs
 | Column | Constraints |

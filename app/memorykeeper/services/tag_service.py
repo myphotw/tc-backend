@@ -16,6 +16,12 @@ from app.common.repositories.change_event_repository import ChangeEventRepositor
 from app.common.repositories.tag_repository import TagSource, TagType
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.tag import Tag
+from app.memorykeeper.models.tag_canonical_override import (
+    MemoryKeeperTagCanonicalOverride,
+)
+from app.memorykeeper.models.file_tag_suppression import (
+    MemoryKeeperFileTagSuppression,
+)
 from app.memorykeeper.schemas.file import FileTagMutationResponse
 from app.memorykeeper.schemas.tag import (
     TagCreate,
@@ -25,6 +31,9 @@ from app.memorykeeper.schemas.tag import (
     TagUpdate,
 )
 from app.memorykeeper.services.file_service import MemoryKeeperFileService
+from app.memorykeeper.services.tag_curation_service import (
+    MemoryKeeperTagCurationService,
+)
 
 
 class MemoryKeeperTagService:
@@ -145,6 +154,15 @@ class MemoryKeeperTagService:
                 revision=revision,
                 tombstone=True,
             )
+        for override in (
+            self.db.query(MemoryKeeperTagCanonicalOverride)
+            .filter(MemoryKeeperTagCanonicalOverride.memorykeeper_tag_id == tag.id)
+            .all()
+        ):
+            override.memorykeeper_tag_id = None
+            override.suppressed = True
+            override.revision += 1
+            override.updated_at = datetime.now(timezone.utc)
         tag.deleted = True
         tag.revision += 1
         tag.updated_at = datetime.now(timezone.utc)
@@ -214,6 +232,15 @@ class MemoryKeeperTagService:
         source.updated_at = datetime.now(timezone.utc)
         target.revision += 1
         target.updated_at = datetime.now(timezone.utc)
+        for override in (
+            self.db.query(MemoryKeeperTagCanonicalOverride)
+            .filter(MemoryKeeperTagCanonicalOverride.memorykeeper_tag_id == source.id)
+            .all()
+        ):
+            override.memorykeeper_tag_id = target.id
+            override.suppressed = False
+            override.revision += 1
+            override.updated_at = datetime.now(timezone.utc)
         self._append_tag_change(source, ChangeOperation.DELETE, tombstone=True)
         self._append_tag_change(target, ChangeOperation.UPDATE)
         self.db.commit()
@@ -231,17 +258,7 @@ class MemoryKeeperTagService:
         state = self.files.get_state(common_file, create=True)
         self._check_file_revision(common_file, state, expected_revision)
         tag = self.get(tag_id)
-
-        normalized = self._normalize(tag.tag_name)
-        for ai_tag in (
-            self.db.query(CommonFileTag)
-            .filter(CommonFileTag.file_id == common_file.id)
-            .filter(CommonFileTag.source == TagSource.AI)
-            .filter(CommonFileTag.deleted.is_(False))
-            .all()
-        ):
-            if self._normalize(ai_tag.tag) == normalized:
-                ai_tag.deleted = True
+        self._restore_file_suppressions(common_file.id, tag)
 
         relation = (
             self.db.query(CommonFileTag)
@@ -328,6 +345,33 @@ class MemoryKeeperTagService:
             if self._normalize(tag.tag_name) == normalized:
                 return tag
         return None
+
+    def _restore_file_suppressions(self, file_id: int, tag: Tag) -> None:
+        curation = MemoryKeeperTagCurationService()
+        canonicals = {
+            override.canonical_key
+            for override in (
+                self.db.query(MemoryKeeperTagCanonicalOverride)
+                .filter(MemoryKeeperTagCanonicalOverride.memorykeeper_tag_id == tag.id)
+                .filter(MemoryKeeperTagCanonicalOverride.suppressed.is_(False))
+                .all()
+            )
+        }
+        rule = curation.rule_for(tag.tag_name)
+        if rule is not None:
+            canonicals.add(rule.canonical)
+        if not canonicals:
+            return
+        for suppression in (
+            self.db.query(MemoryKeeperFileTagSuppression)
+            .filter(MemoryKeeperFileTagSuppression.file_id == file_id)
+            .filter(MemoryKeeperFileTagSuppression.canonical_key.in_(canonicals))
+            .filter(MemoryKeeperFileTagSuppression.deleted.is_(False))
+            .all()
+        ):
+            suppression.deleted = True
+            suppression.revision += 1
+            suppression.updated_at = datetime.now(timezone.utc)
 
     def _usage_counts(self, tag_ids: list[int]) -> dict[int, int]:
         if not tag_ids:

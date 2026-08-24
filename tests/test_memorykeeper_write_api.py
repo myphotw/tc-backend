@@ -355,7 +355,7 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
         assigned = self.tags.assign(common_file.file_id, tag.id, expected_revision=0)
         self.assertTrue(assigned.assigned)
         self.db.refresh(ai)
-        self.assertTrue(ai.deleted)
+        self.assertFalse(ai.deleted)
         self.assertEqual(self.tags.list(query=None, favorite=None, limit=10, offset=0).items[0].usage_count, 1)
         detail = GalleryService(self.db).get_detail(common_file.file_id, service_name="MemoryKeeper")
         self.assertEqual(detail.user_tags[0].tag_id, tag.id)
@@ -365,7 +365,12 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
         removed = self.tags.remove(common_file.file_id, tag.id, expected_revision=1)
         self.assertFalse(removed.assigned)
         self.assertEqual(removed.revision, 2)
-        self.assertIsNone(TagRepository(self.db).save_ai_tag(file_id=common_file.id, tag="푸른 바다"))
+        preserved_raw = TagRepository(self.db).save_ai_tag(
+            file_id=common_file.id,
+            tag="푸른 바다",
+        )
+        self.assertIsNotNone(preserved_raw)
+        self.assertEqual(preserved_raw.source, "AI")
         self.assertEqual(self.tags.list(query=None, favorite=None, limit=10, offset=0).items[0].usage_count, 0)
         resource_types = {
             event.resource_type for event in self.db.query(CommonChangeEvent).all()

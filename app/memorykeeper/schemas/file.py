@@ -77,3 +77,10 @@ class FileTagMutationResponse(BaseModel):
     tag_id: int
     assigned: bool
     revision: int
+
+
+class FileTagVisibilityMutationResponse(BaseModel):
+    file_id: str
+    identity: str
+    hidden: bool
+    revision: int

@@ -316,6 +316,7 @@ All endpoints below use the protected Bearer-authenticated API router.
 | PATCH/DELETE | `/api/memorykeeper/tags/{tag_id}` | Rename, favorite or delete a tag |
 | POST | `/api/memorykeeper/tags/{tag_id}/merge` | Merge a source tag into a target tag |
 | POST/DELETE | `/api/memorykeeper/files/{file_id}/tags/{tag_id}` | Assign/remove a user tag |
+| POST/DELETE | `/api/memorykeeper/files/{file_id}/tags/catalog/{identity}` | Restore/hide one unified tag on one file |
 | GET | `/api/memorykeeper/pending` | List files without a registered MemoryKeeper Place |
 | POST | `/api/memorykeeper/pending/assign-place` | Assign one Place to multiple pending files atomically |
 
@@ -367,7 +368,55 @@ Legacy Gallery list/search/map/timeline/statistics endpoints default to
 
 ### Detail Schema
 
-Metadata 전체, `ai_tags`, `user_tags`, `storage_path`, preview/thumbnail/original URL, `history_count`
+Metadata 전체, `ai_tags`, `user_tags`, 통합 `tags`, `storage_path`, preview/thumbnail/original URL, `history_count`
+
+- `service_name=MemoryKeeper`: `ai_tags`는 curation V1의 한국어 자동 태그이며
+  `tags`는 USER 우선 사용자-facing 통합 목록이다. 자동 태그에는
+  `canonical`, `display_name`, `aliases`, `curation_version`이 포함된다.
+- `service_name=AstroJournal`: 기존 `ai_tags` raw label 의미를 유지한다.
+- MemoryKeeper의 `tag`/`keyword` 검색은 한국어 display/alias 및 영어
+  canonical/raw alias를 같은 의미 cluster로 검색한다.
+
+### MemoryKeeper Unified Tag Catalog
+
+기존 `/api/memorykeeper/tags` USER CRUD는 호환용으로 유지한다. 일반 UI는
+source를 노출하지 않는 다음 additive API를 사용한다.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/memorykeeper/tags/catalog` | USER + curated AI 통합 목록 |
+| PATCH | `/api/memorykeeper/tags/catalog/{identity}` | rename, 동일 이름이면 자동 merge |
+| DELETE | `/api/memorykeeper/tags/catalog/{identity}` | USER 삭제 또는 AI canonical suppression |
+
+Catalog item은 `identity`, `display_name`, `usage_count`, `favorite`, `revision`,
+`editable`, `canonical_references`를 반환하며 `source`는 consumer contract에 없다.
+PATCH body는 `name`, `revision`이다. AI identity는 `ai:{canonical}`, USER-managed
+identity는 `tag:{id}`이며 mutation 결과가 USER-managed identity로 승격될 수 있다.
+
+### MemoryKeeper file-level tag visibility
+
+Catalog DELETE는 모든 MemoryKeeper 파일에 적용되는 전역 정책이다. 사진 한 장의
+표시 태그를 제거할 때는 반드시 아래 file-level API를 사용한다.
+
+| Method | Endpoint | Input | Result |
+|--------|----------|-------|--------|
+| DELETE | `/api/memorykeeper/files/{file_id}/tags/catalog/{identity}` | query `expected_revision` | 해당 파일에서 identity 숨김 |
+| POST | `/api/memorykeeper/files/{file_id}/tags/catalog/{identity}` | JSON `{ "expected_revision": n }` | suppression 해제 및 identity 복원/할당 |
+
+두 응답은 `file_id`, 요청한 `identity`, `hidden`, 새 `revision`을 반환한다.
+`expected_revision`은 Gallery의 `metadata_revision`과 같은 optimistic-lock 영역이며
+불일치하면 기존 `REVISION_CONFLICT` 409를 반환한다. USER relation과 같은 의미의
+AI canonical이 함께 있으면 DELETE는 USER relation을 tombstone 처리하는 동시에
+canonical을 파일 단위로 숨겨 refresh 시 AI가 다시 나타나지 않게 한다.
+
+처리 순서는 raw Vision → curation → global canonical override → USER projection →
+file suppression → 최종 `tags`이다. raw Vision row/confidence/Vision job은 변경하지
+않는다. Gallery detail, PhotoDetail이 사용하는 detail projection, `tag`/`keyword`
+검색 및 Catalog `usage_count`가 같은 suppression을 사용한다. POST restore 또는
+기존 numeric USER-tag assign은 연결 가능한 canonical suppression을 해제한다.
+mutation은 `MemoryKeeperFileTag` change event를 생성하며 DELETE는 tombstone이다.
+MemoryKeeper service link가 없으면 404이고, shared file의 AstroJournal raw
+projection에는 영향을 주지 않는다.
 
 ### Map Item Schema
 

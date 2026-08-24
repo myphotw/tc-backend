@@ -60,6 +60,13 @@ class GalleryTagItem(BaseModel):
     tag_type: str
     confidence: float | None = None
     tag_id: int | None = None
+    canonical: str | None = None
+    display_name: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    curation_version: int | None = None
+    identity: str | None = None
+    editable: bool = True
+    revision: int | None = None
 
 
 class GalleryDetailResponse(BaseModel):
@@ -91,6 +98,10 @@ class GalleryDetailResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     ai_tags: list[GalleryTagItem] = Field(default_factory=list)
     user_tags: list[GalleryTagItem] = Field(default_factory=list)
+    tags: list[GalleryTagItem] = Field(
+        default_factory=list,
+        description="User-facing unified tags; USER tags take precedence.",
+    )
     history_count: int = 0
     created_at: datetime | None = None
     updated_at: datetime | None = None

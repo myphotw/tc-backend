@@ -35,6 +35,14 @@ from app.common.services.storage_service import StorageService
 from app.common.utils.perf import QueryCounter, Stopwatch, log_perf
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.place import MemoryKeeperPlace
+from app.memorykeeper.services.tag_curation_service import (
+    MemoryKeeperTagCurationService,
+    RawTagInput,
+)
+from app.memorykeeper.services.tag_catalog_service import (
+    MemoryKeeperTagCatalogService,
+    ProjectedCuratedTag,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -216,16 +224,37 @@ class GalleryService:
                 else None
             )
 
-            ai_tags = [
-                self._to_tag_item(tag)
-                for tag in tags
-                if tag.source == TagSource.AI
+            catalog_service = MemoryKeeperTagCatalogService(self.repository.db)
+            active_user_relations = [
+                tag for tag in tags if tag.source == TagSource.USER
             ]
+            if effective_service.casefold() == "memorykeeper":
+                active_user_relations = catalog_service.visible_user_relations(
+                    common_file.id,
+                    active_user_relations,
+                )
             user_tags = [
                 self._to_tag_item(tag)
-                for tag in tags
-                if tag.source == TagSource.USER
+                for tag in active_user_relations
             ]
+            raw_ai_tags = [tag for tag in tags if tag.source == TagSource.AI]
+            if effective_service.casefold() == "memorykeeper":
+                curation = MemoryKeeperTagCurationService().curate(
+                    [
+                        RawTagInput(name=tag.tag, confidence=tag.confidence)
+                        for tag in raw_ai_tags
+                    ],
+                    user_tags=detail["user_decisions"],
+                    structured_terms=self._structured_terms(metadata),
+                )
+                projected = catalog_service.project_curated_tags(
+                    curation.tags,
+                    file_id=common_file.id,
+                )
+                ai_tags = [self._to_curated_tag_item(tag) for tag in projected]
+            else:
+                ai_tags = [self._to_tag_item(tag) for tag in raw_ai_tags]
+            projected_tags = self._unified_tags(user_tags, ai_tags)
 
             response = GalleryDetailResponse(
                 file_id=common_file.file_id,
@@ -251,6 +280,7 @@ class GalleryService:
                 metadata=self._metadata_dict(metadata),
                 ai_tags=ai_tags,
                 user_tags=user_tags,
+                tags=projected_tags,
                 history_count=int(detail["history_count"]),
                 created_at=common_file.created_at,
                 updated_at=common_file.updated_at,
@@ -570,7 +600,66 @@ class GalleryService:
             tag_type=tag.tag_type,
             confidence=tag.confidence,
             tag_id=tag.memorykeeper_tag_id,
+            display_name=tag.tag,
+            aliases=[tag.tag],
+            identity=(
+                f"tag:{tag.memorykeeper_tag_id}"
+                if tag.memorykeeper_tag_id is not None
+                else None
+            ),
         )
+
+    @staticmethod
+    def _to_curated_tag_item(tag: ProjectedCuratedTag) -> GalleryTagItem:
+        return GalleryTagItem(
+            tag=tag.display_name,
+            source=TagSource.AI,
+            tag_type="AI",
+            confidence=tag.confidence,
+            canonical=tag.canonical,
+            display_name=tag.display_name,
+            aliases=list(tag.aliases),
+            curation_version=tag.curation_version,
+            identity=tag.identity,
+            revision=tag.revision,
+            tag_id=tag.tag_id,
+        )
+
+    @staticmethod
+    def _unified_tags(
+        user_tags: list[GalleryTagItem],
+        ai_tags: list[GalleryTagItem],
+    ) -> list[GalleryTagItem]:
+        result = list(user_tags)
+        seen = {
+            tag.identity
+            or MemoryKeeperTagCurationService.normalize(tag.display_name or tag.tag)
+            for tag in user_tags
+        }
+        for tag in ai_tags:
+            key = tag.identity or MemoryKeeperTagCurationService.normalize(
+                tag.display_name or tag.tag
+            )
+            if key not in seen:
+                result.append(tag)
+                seen.add(key)
+        return result
+
+    @staticmethod
+    def _structured_terms(metadata: CommonFileMetadata | None) -> list[str]:
+        if metadata is None:
+            return []
+        values = (
+            metadata.country,
+            metadata.province,
+            metadata.city,
+            metadata.district,
+            metadata.place_name,
+        )
+        terms = [str(value) for value in values if value]
+        if metadata.datetime_original is not None:
+            terms.append(str(metadata.datetime_original.year))
+        return terms
 
     def _file_states(
         self,

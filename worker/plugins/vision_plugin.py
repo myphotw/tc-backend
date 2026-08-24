@@ -23,7 +23,8 @@ class VisionPlugin(BasePlugin):
     Vision Queue 기반 AI 태그 생성 Plugin.
 
     Google Vision Label Detection 결과를 AI Tag로 자동 저장한다.
-    USER Tag가 있으면 동일 의미 AI Tag는 만들지 않는다.
+    Google raw label은 USER Tag와 독립적으로 보존한다. USER 우선순위는
+    MemoryKeeper Gallery curation projection에서 적용한다.
     """
 
     plugin_name = "VisionPlugin"
@@ -72,12 +73,6 @@ class VisionPlugin(BasePlugin):
         tag_repository = TagRepository(context.db)
         saved_tags: list[dict[str, object]] = []
         for label in labels:
-            if tag_repository.exists_user_tag(
-                file_id=context.common_file.id,
-                tag=label.name,
-            ):
-                continue
-
             tag = tag_repository.save_ai_tag(
                 file_id=context.common_file.id,
                 tag=label.name,
