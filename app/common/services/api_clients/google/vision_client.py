@@ -10,8 +10,16 @@ from google.oauth2 import service_account
 from sqlalchemy.orm import Session
 
 from app.common.config import settings
-from app.common.repositories.api_usage_repository import ApiName, ApiProvider
-from app.common.services.api_clients.base_client import ApiClientError, BaseClient
+from app.common.repositories.api_usage_repository import (
+    ApiName,
+    ApiProvider,
+    ApiUsageLimitExceeded,
+    ApiUsageRepository,
+)
+from app.common.services.api_clients.base_client import (
+    ApiClientError,
+    BaseClient,
+)
 
 
 @dataclass(frozen=True)
@@ -66,11 +74,6 @@ class VisionClient(BaseClient):
         Returns:
             list[VisionLabel]: name / confidence(0~100) 목록
         """
-        if not self.can_use(units=1):
-            raise ApiClientError(
-                "API usage limit exceeded: provider=GOOGLE api_name=VISION"
-            )
-
         path = Path(image_path)
         if not path.is_file():
             raise ApiClientError(f"Vision image file not found: {image_path}")
@@ -79,8 +82,18 @@ class VisionClient(BaseClient):
             content = path.read_bytes()
         image = vision.Image(content=content)
 
+        client = self._get_client()
+        if self.db is None:
+            raise ApiClientError("Vision usage reservation database is required")
+        if not ApiUsageRepository(self.db).reserve_usage(
+            provider=ApiProvider.GOOGLE,
+            api_name=ApiName.VISION,
+            units=1,
+        ):
+            raise ApiUsageLimitExceeded("VISION monthly safe limit reached")
+
         try:
-            response = self._get_client().label_detection(image=image)
+            response = client.label_detection(image=image)
         except Exception as exc:
             self.logger.exception(
                 "VisionClient.analyze failed image_path=%s",
@@ -102,7 +115,6 @@ class VisionClient(BaseClient):
             if annotation.description
         ]
 
-        self.track_usage(units=1)
         self.logger.info(
             "VisionClient.analyze success image_path=%s labels=%s",
             image_path,

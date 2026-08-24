@@ -10,15 +10,22 @@ from sqlalchemy.orm import Session
 
 from app.common.database import SessionLocal, initialize_database
 from app.common.models.file import CommonFile
+from app.common.models.file_service import CommonFileService
 from app.common.models.vision_job import CommonVisionJob
+from app.common.repositories.change_event_repository import (
+    ChangeEventRepository,
+    ChangeOperation,
+)
 from app.common.repositories.api_usage_repository import (
     ApiName,
     ApiProvider,
     ApiUsageRepository,
+    ApiUsageLimitExceeded,
 )
 from app.common.repositories.vision_job_repository import VisionJobRepository
 from app.common.services.storage_service import StorageService
 from app.common.utils.perf import Stopwatch, log_perf
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from worker.plugins.base import PluginContext
 from worker.plugins.plugin_manager import PluginManager
 from worker.worker_monitor import WorkerMonitor
@@ -96,12 +103,29 @@ def process_next_vision_job(
     if monitor is not None:
         monitor.maybe_heartbeat(current_job_id=str(job.id))
 
-    repository.mark_processing(job)
+    claimed = repository.mark_processing(job)
+    if claimed is None:
+        logger.info("Vision job claim skipped: job_id=%s", job.id)
+        return True
+    job = claimed
     try:
         process_vision_job(db, job)
         repository.mark_completed(job)
         if monitor is not None:
             monitor.mark_processed()
+    except ApiUsageLimitExceeded:
+        db.rollback()
+        db.refresh(job)
+        repository.mark_waiting(job)
+        logger.info(
+            "Vision job deferred by monthly safe limit: job_id=%s",
+            job.id,
+        )
+        _wait_with_heartbeat(
+            monitor,
+            seconds=USAGE_RETRY_INTERVAL,
+            current_job_id=str(job.id),
+        )
     except Exception as exc:
         logger.exception("Vision job failed: job_id=%s", job.id)
         db.rollback()
@@ -158,7 +182,20 @@ def process_vision_job(db: Session, job: CommonVisionJob) -> None:
     try:
         watch.start("plugins")
         PluginManager.load_plugins(worker_scope="vision").run(context)
+        _append_memorykeeper_tag_change(db, common_file)
         plugins_ms = watch.stop("plugins")
+    except ApiUsageLimitExceeded:
+        if "VISION_DEFERRED:MONTHLY_SAFE_LIMIT" not in context.processing_log:
+            context.log("VISION_DEFERRED:MONTHLY_SAFE_LIMIT")
+        log_perf(
+            "vision_worker_job",
+            stage="quota_deferred",
+            pipeline="VISION_SEPARATE_FROM_UPLOAD",
+            vision_job_id=job.id,
+            queue_wait_ms=queue_wait_ms,
+            elapsed_ms=watch.total_ms(),
+        )
+        raise
     except Exception:
         if "VISION_FAILED" not in context.processing_log:
             context.log("VISION_FAILED")
@@ -193,6 +230,26 @@ def process_vision_job(db: Session, job: CommonVisionJob) -> None:
         job.id,
         job.file_id,
         context.processing_log,
+    )
+
+
+def _append_memorykeeper_tag_change(db: Session, common_file: CommonFile) -> None:
+    """Notify MemoryKeeper clients after a successful Vision projection update."""
+    linked = (
+        db.query(CommonFileService.id)
+        .filter(CommonFileService.file_id == common_file.id)
+        .filter(CommonFileService.service_name == "MemoryKeeper")
+        .first()
+    )
+    if linked is None:
+        return
+    state = db.get(MemoryKeeperFileState, common_file.id)
+    ChangeEventRepository(db).append(
+        service_name="MemoryKeeper",
+        resource_type="MemoryKeeperFileTag",
+        resource_id=f"{common_file.file_id}:auto-tags",
+        operation=ChangeOperation.UPDATE,
+        revision=int(state.revision or 0) if state is not None else None,
     )
 
 

@@ -32,12 +32,18 @@ Entry: `python -m worker.vision_worker`
 ```
 common_vision_jobs WAITING
   → priority DESC, requested_at DESC
-  → ApiUsageRepository.can_use(VISION)
+  → ApiUsageRepository.can_use(VISION)  # advisory pre-check
       초과: WAITING 유지 + 30분 재시도 (종료하지 않음)
   → PROCESSING
-  → VisionPlugin
+  → VisionPlugin → provider 호출 직전 reserve_usage(VISION)
+      예약 실패/동시 경합: WAITING 복귀, retry_count 유지
   → COMPLETED / FAILED (+ retry_count)
 ```
+
+Vision 유효 월 상한은 최대 900 unit이다. Google 무료 1000 unit 중 100 unit을
+보호 버퍼로 남기며 설정값이 더 작으면 그 값을 사용한다. 사용량은
+MemoryKeeper/AstroJournal 공통이고 UTC 월 변경 시 자동으로 새 월 행을 사용한다.
+현재 `LABEL_DETECTION` 한 번을 1 unit으로 예약한다.
 
 실패 로그: `VISION_FAILED`  
 성공 로그: `VISION_COMPLETE`

@@ -4,6 +4,7 @@ import logging
 import time
 
 from app.common.repositories.history_repository import HistoryRepository
+from app.common.repositories.api_usage_repository import ApiUsageLimitExceeded
 from app.common.repositories.metadata_priority import MetadataPriority
 from app.common.repositories.metadata_repository import MetadataSource
 from app.common.utils.perf import elapsed_ms, log_perf
@@ -71,22 +72,29 @@ class PluginManager:
             except Exception as exc:
                 ms = elapsed_ms(started)
                 plugin_timings[plugin_name] = ms
-                context.error_message = str(exc)
-                context.log(
-                    f"PLUGIN_FAILED {plugin_name} v{plugin_version}:{exc}"
-                )
-                self._save_failure_history(
-                    context,
-                    plugin_name=plugin_name,
-                    error=exc,
-                )
+                quota_deferred = isinstance(exc, ApiUsageLimitExceeded)
+                if quota_deferred:
+                    context.log(f"PLUGIN_DEFERRED {plugin_name} v{plugin_version}")
+                else:
+                    context.error_message = str(exc)
+                    context.log(
+                        f"PLUGIN_FAILED {plugin_name} v{plugin_version}:{exc}"
+                    )
+                    self._save_failure_history(
+                        context,
+                        plugin_name=plugin_name,
+                        error=exc,
+                    )
                 log_perf(
-                    "worker_plugin_failed",
+                    "worker_plugin_deferred" if quota_deferred else "worker_plugin_failed",
                     plugin=plugin_name,
                     elapsed_ms=ms,
                     job_id=getattr(context.job, "job_id", None),
                 )
-                logger.exception("Worker plugin failed: %s", plugin_name)
+                if quota_deferred:
+                    logger.info("Worker plugin deferred: %s", plugin_name)
+                else:
+                    logger.exception("Worker plugin failed: %s", plugin_name)
                 raise
 
         log_perf(

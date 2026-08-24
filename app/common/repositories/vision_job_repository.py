@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlalchemy.orm import Session
 
 from app.common.models.vision_job import CommonVisionJob
@@ -128,19 +128,42 @@ class VisionJobRepository:
             return None
         return jobs[0]
 
-    def mark_processing(self, job: CommonVisionJob) -> CommonVisionJob:
-        """Vision Queue를 PROCESSING으로 변경한다."""
-        job.status = VisionJobStatus.PROCESSING
-        job.started_at = datetime.now(timezone.utc)
-        job.last_error = None
+    def mark_processing(self, job: CommonVisionJob) -> CommonVisionJob | None:
+        """WAITING/active row만 원자적으로 claim한다."""
+        result = self.db.execute(
+            update(CommonVisionJob)
+            .where(CommonVisionJob.id == job.id)
+            .where(CommonVisionJob.status == VisionJobStatus.WAITING)
+            .where(CommonVisionJob.deleted.is_(False))
+            .values(
+                status=VisionJobStatus.PROCESSING,
+                started_at=datetime.now(timezone.utc),
+                completed_at=None,
+                last_error=None,
+            )
+        )
+        if result.rowcount != 1:
+            self.db.rollback()
+            return None
         with self._commit_keep_state():
             pass
+        self.db.refresh(job)
         return job
 
     def mark_completed(self, job: CommonVisionJob) -> CommonVisionJob:
         """Vision Queue를 COMPLETED로 변경한다."""
         job.status = VisionJobStatus.COMPLETED
         job.completed_at = datetime.now(timezone.utc)
+        job.last_error = None
+        with self._commit_keep_state():
+            pass
+        return job
+
+    def mark_waiting(self, job: CommonVisionJob) -> CommonVisionJob:
+        """Return a quota-deferred job to WAITING without recording failure."""
+        job.status = VisionJobStatus.WAITING
+        job.started_at = None
+        job.completed_at = None
         job.last_error = None
         with self._commit_keep_state():
             pass

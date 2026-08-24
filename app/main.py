@@ -15,6 +15,8 @@ from app.memorykeeper.routers import places as memorykeeper_places
 from app.memorykeeper.routers import files as memorykeeper_files
 from app.memorykeeper.routers import pending as memorykeeper_pending
 from app.memorykeeper.routers import tags as memorykeeper_tags
+from app.memorykeeper.routers import auto_tags as memorykeeper_auto_tags
+from app.memorykeeper.routers import reset as memorykeeper_reset
 import logging
 import time
 
@@ -104,6 +106,8 @@ protected_api_router.include_router(plate_solve.router)
 protected_api_router.include_router(memorykeeper_places.router)
 protected_api_router.include_router(memorykeeper_files.router)
 protected_api_router.include_router(memorykeeper_tags.router)
+protected_api_router.include_router(memorykeeper_auto_tags.router)
+protected_api_router.include_router(memorykeeper_reset.router)
 protected_api_router.include_router(memorykeeper_pending.router)
 app.include_router(protected_api_router)
 

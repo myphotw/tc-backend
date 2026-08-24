@@ -418,6 +418,135 @@ mutation은 `MemoryKeeperFileTag` change event를 생성하며 DELETE는 tombsto
 MemoryKeeper service link가 없으면 404이고, shared file의 AstroJournal raw
 projection에는 영향을 주지 않는다.
 
+### MemoryKeeper automatic-tag operations
+
+설정 화면은 공통 운영 Dashboard의 DB 용어를 해석하지 않고 다음 Bearer 보호 API를
+사용한다. 모든 집계와 retry 대상은 현재 `MemoryKeeper` service link가 있는 파일로
+제한되며 AstroJournal-only job은 제외된다.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/memorykeeper/auto-tags/status` | credential, worker, queue, 월 사용량과 curation 상태 |
+| GET | `/api/memorykeeper/auto-tags/failed` | 안전하게 redaction된 실패 목록; `page`, `page_size` |
+| POST | `/api/memorykeeper/auto-tags/retry-failed` | retry 가능한 FAILED를 WAITING으로 재큐잉; `limit` 기본 100, 최대 500 |
+| POST | `/api/memorykeeper/auto-tags/jobs/{job_id}/retry` | 같은 내부 정책으로 한 job 재시도 |
+| GET | `/api/memorykeeper/auto-tags/curation-preview` | raw label을 변경하지 않는 제한형 preview; `sample_limit` 기본 200, 최대 500 |
+
+Status 필드 의미:
+
+- `credential_ready`: 설정된 Google Vision credential 파일이 존재한다.
+- `worker_online`: `VisionWorker` heartbeat가 기존 60초 online 기준을 만족한다.
+- `service_available`: credential과 worker가 준비되었는지를 뜻한다. quota 고갈은
+  서비스 장애로 취급하지 않으며 이 값 대신 아래 quota 필드로 구분한다. 일부
+  FAILED job의 존재만으로 false가 되지도 않는다.
+- `quota_available`: 현재 월에 예약 가능한 Vision unit이 1 이상인지 나타낸다.
+- `monthly_limit_reached`: 유효 월 상한에 도달했으면 true다.
+- `quota_waiting_count`: 상한 도달 중인 MemoryKeeper 범위 WAITING job 수다.
+- `waiting_count`, `processing_count`, `failed_count`: MemoryKeeper 범위의 활성 job 수.
+- `today_completed_count`, `last_processed_at`, `last_failure_at`: UTC 기준 처리 상태.
+- `monthly_usage`: 현재 월 `common_api_usage`의 실제 Vision 호출 unit.
+- `monthly_limit`: 서버 설정과 무관하게 900을 넘지 않는 유효 상한. 현재 Google
+  Vision 무료 1000 unit 중 100 unit은 결제 방지용 보호 버퍼다. UI는 이 값을
+  하드코딩하지 않는다.
+- `monthly_remaining`: `max(0, monthly_limit - monthly_usage)`.
+- `curation_version`: 현재 read-time curation 정책 버전.
+
+Failed 목록은 public SHA-256 `file_id`, numeric `job_id`, `failed_at`,
+`retry_count`, `safe_error_code`, `retryable`만 반환한다. exception stack, provider
+response, credential path/token과 원본 `last_error`는 반환하지 않는다. retry는 최대
+실패 3회이며 성공/PROCESSING/WAITING job은 skip한다. usage limit pre-check에 걸린
+job은 FAILED가 되지 않고 WAITING과 기존 retry count를 그대로 유지한다. retry는
+raw AI tag와 성공 결과를 먼저 지우지 않는다.
+
+현재 Vision 기능은 Google Cloud Vision `LABEL_DETECTION`만 호출하며 사진 한 장의
+한 번 분석을 1 unit으로 예약한다. `common_api_usage`는 service별로 나뉘지 않은
+`GOOGLE/VISION/year/month` 행이므로 MemoryKeeper와 AstroJournal 호출을 합산한다.
+Worker의 사전 잔여량 검사는 빠른 대기 판단용이며, 실제 provider 호출 직전 DB의
+조건부 UPDATE로 unit을 원자적으로 예약한다. 동시 worker가 마지막 한 unit을
+관찰해도 하나만 900번째 unit을 예약할 수 있다. 예약에 실패한 job은 FAILED로
+바뀌지 않고 WAITING, 기존 `retry_count`, raw tag를 유지한다. 월 키가 UTC
+`year/month`이므로 다음 달에는 별도 reset 작업 없이 새 월 사용량으로 자동
+재개한다. provider가 예약 후 실패한 경우에는 안전을 위해 예약 unit을 반환하지
+않는다.
+
+Curation V1은 raw Vision row에서 매 조회 시 계산되므로 별도의 재정리 mutation은
+없다. Preview는 전체 raw file/tag count를 가벼운 aggregate로 계산하고 최대
+`sample_limit` 파일만 현재 규칙으로 평가한다. `evaluated_file_count`, `has_more`로
+sample 범위를 표시하며 `projected_curated_tag_count`, `zero_tag_file_count`,
+`mapped_percentage`는 평가 sample 기준이다. Catalog override/file suppression을
+변경하지 않는 순수 read-only curation-stage preview다.
+따라서 preview는 Vision quota가 소진되어도 호출 가능하고 외부 API unit을
+소비하지 않는다.
+
+Vision 성공 시 MemoryKeeper service link가 있으면 기존 `MemoryKeeperFileTag`
+UPDATE change event를 생성하여 Gallery/PhotoDetail/Catalog 캐시를 갱신할 수 있다.
+이번 계약은 MemoryKeeper 전용 ON/OFF나 적게/보통/많이 정책을 추가하지 않는다.
+공통 Vision queue가 AstroJournal에도 사용되므로 global OFF는 허용하지 않으며,
+현재 0~5개 유용한 태그 정책을 설정 개수를 위해 확장하지 않는다.
+
+### MemoryKeeper semantic reset
+
+Reset은 MemoryKeeper PC의 "처음부터 다시 구성"을 위한 MemoryKeeper-only semantic
+초기화다. **원본 사진 삭제 기능이 아니다.** 두 endpoint 모두 기존 Bearer 인증을
+요구한다.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/memorykeeper/reset/preview` | 현재 영향과 보존 범위를 read-only로 계산 |
+| POST | `/api/memorykeeper/reset/execute` | 명시적 확인 후 하나의 DB transaction으로 실행 |
+
+Preview body는 없으며 다음 필드를 반환한다.
+
+- 초기화 규모: `memorykeeper_file_count`, `place_count`, `user_tag_count`,
+  `favorite_count`, `memo_count`, `file_tag_relation_count`,
+  `file_tag_suppression_count`, `pending_count`, `upload_job_count`.
+- 보존 규모: `preserved_common_file_count`, `preserved_raw_vision_count`,
+  `shared_with_other_service_count`.
+- 실행 차단: `active_upload_job_count`, `processing_vision_job_count`,
+  `reset_blocked`.
+
+`preserved_raw_vision_count`는 raw AI label이 있거나 COMPLETED 분석 이력이 있는
+MemoryKeeper 파일 수다. 정상적인 zero-label 완료 결과도 재사용 대상으로 포함한다.
+
+Execute request:
+
+```json
+{ "confirmation": "RESET_MEMORYKEEPER" }
+```
+
+다른 값이나 필드 누락은 `422`다. 성공 응답은 `reset_completed`,
+`affected_file_count`, `removed_place_count`, `removed_user_tag_count`,
+`cleared_state_count`, `preserved_common_file_count`,
+`preserved_raw_vision_count`, `reset_event_cursor`를 반환한다.
+
+MemoryKeeper `WAITING`/`PROCESSING` upload job 또는 다른 service link가 없는
+MemoryKeeper-only `PROCESSING` Vision job이 있으면 실행하지 않고 다음 `409`를
+반환한다.
+
+```json
+{
+  "detail": {
+    "code": "MEMORYKEEPER_RESET_BLOCKED",
+    "active_upload_job_count": 1,
+    "processing_vision_job_count": 0
+  }
+}
+```
+
+실행은 MemoryKeeper service link, per-file favorite/memo, Place relation/master,
+USER tag relation/master, file suppression, canonical override, MemoryKeeper semantic
+history와 이전 MemoryKeeper upload idempotency job을 제거한다. 기존 upload job을
+제거하는 이유는 의도적인 재등록이 이전 `client_file_id` replay에 가로막히지 않게
+하기 위해서다. CommonFile, SHA-256, raw metadata, raw AI label/confidence, 완료된
+Vision 결과, 물리 asset, AstroJournal link/ObservationRecord는 보존한다.
+
+다른 service 소비자가 없는 MemoryKeeper-only WAITING/FAILED Vision job은 reset 후
+불필요한 Google 호출을 막기 위해 비활성화한다. shared/Astro job과 COMPLETED 결과는
+보존한다. 동일 SHA 재등록 시 완료/raw 결과가 있으면 재사용하고, 결과가 전혀 없을
+때만 새 WAITING job을 만든다. 모든 변경은 단일 transaction이며 마지막에
+`MemoryKeeperReset` high-level change event 하나를 기록한다. 클라이언트는 이 event로
+Gallery/Home/Visit/Travel/Tags/Pending/Places cache 전체를 invalidate해야 한다.
+
 ### Map Item Schema
 
 `file_id`, `latitude`, `longitude`, `place_name`, `thumbnail`, `year`, `service_name`

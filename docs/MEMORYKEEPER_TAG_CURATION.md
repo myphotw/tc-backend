@@ -62,6 +62,53 @@ detail/PhotoDetail projection, tag/keyword/alias 검색과 Catalog distinct-file
 suppression은 물리 asset cleanup과 분리된 tombstone으로 남는다. AstroJournal-only
 파일은 404이고 shared file의 AstroJournal raw projection은 영향을 받지 않는다.
 
+## Operation status and retry
+
+MemoryKeeper 설정 화면은 `/api/memorykeeper/auto-tags/status`에서 credential 준비,
+VisionWorker heartbeat, MemoryKeeper 범위 queue, 현재 월 Google Vision 사용량과
+`CURATION_VERSION`을 한 번에 조회한다. Status 조회는 usage row를 생성하거나 limit을
+보정하지 않는 read-only query다. `monthly_limit`은 설정값과 900 중 작은 유효
+상한을 응답한다. Google Vision 무료 1000 unit 중 100 unit은 보호 버퍼로 남긴다.
+`service_available`은 credential/worker 준비 상태만 표현하며 quota 고갈이나 개별
+FAILED job은 전체 availability를 내리지 않는다. quota는 `quota_available`,
+`monthly_limit_reached`, `quota_waiting_count`로 별도 표현한다.
+
+`/failed`는 원본 `last_error` 대신 제한된 `safe_error_code`만 제공한다. bulk와 개별
+retry는 하나의 service 정책을 사용하여 FAILED job만 WAITING으로 돌리고 raw tag,
+confidence, 기존 성공 결과를 삭제하지 않는다. `retry_count`는 processing 실패
+횟수이며 최대 3회다. Vision worker의 usage-limit pre-check는 job을 WAITING으로
+유지하므로 실패 retry count에 포함되지 않는다. AstroJournal-only file은 목록과
+retry 대상에서 제외된다.
+
+현재 외부 호출은 Google Vision `LABEL_DETECTION` 하나뿐이며 한 사진 분석을 1
+unit으로 취급한다. 사용량 행은 service별이 아닌 프로젝트 공통
+`GOOGLE/VISION/year/month` 키이므로 AstroJournal의 향후 호출도 같은 900 unit
+상한을 공유한다. Worker pre-check 뒤 실제 provider 호출 직전에 조건부 DB UPDATE로
+unit을 예약하여 동시 worker도 상한을 넘을 수 없다. 경합에서 예약하지 못한 job은
+FAILED가 아닌 WAITING으로 돌아가고 `retry_count`와 raw tag를 유지한다. UTC 월이
+바뀌면 새 월 행을 사용하므로 별도 reset 없이 자동 재개한다. provider 호출이 예약
+후 실패하면 결제 방지를 우선하여 그 unit은 보수적으로 소비된 것으로 유지한다.
+
+재시도 후 Vision 처리가 성공하면 MemoryKeeper link가 있는 파일에 기존
+`MemoryKeeperFileTag` UPDATE change event를 남긴다. 이는 raw row를 event payload에
+노출하지 않고 클라이언트가 Gallery, PhotoDetail과 Catalog usage를 refresh하기 위한
+신호다.
+
+## Curation preview and settings policy
+
+Curation V1은 DB에 curated 결과를 materialize하지 않는 read-time projection이므로
+“현재 규칙으로 재정리” write API는 필요하지 않다. read-only
+`/api/memorykeeper/auto-tags/curation-preview`가 전체 raw aggregate와 최대 500개
+sample의 예상 curated/zero/mapped 요약을 반환한다. 실행은 Vision API를 호출하지
+않고 raw tag, Catalog override, file suppression을 변경하지 않는다.
+따라서 월 상한 도달 중에도 preview는 계속 사용할 수 있다.
+
+MemoryKeeper 전용 자동 태그 ON/OFF는 이번 단계에서 구현하지 않는다. UploadWorker가
+현재 공통 Vision queue를 생성하므로 global toggle은 AstroJournal까지 끌 위험이
+있다. 후속 구현은 queue 생성 시 `service_name=MemoryKeeper`만 건너뛰는 명시적
+service-scoped 설정과 이미 대기 중인 job 정책을 먼저 설계해야 한다. 적게/보통/많이
+설정도 현재 제품 원칙인 유용한 0~5개 태그보다 품질을 낮출 수 있어 추가하지 않는다.
+
 Gallery detail의 MemoryKeeper 요청은 `ai_tags`를 curated 한국어로 반환하고,
 `tags`에 USER 우선 통합 목록을 추가한다. 기존 `user_tags`는 유지한다.
 AstroJournal 요청의 기존 raw `ai_tags` 의미는 변경하지 않는다. MemoryKeeper

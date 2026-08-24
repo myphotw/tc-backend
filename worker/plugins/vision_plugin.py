@@ -3,9 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.common.repositories.api_usage_repository import (
-    ApiName,
-    ApiProvider,
-    ApiUsageRepository,
+    ApiUsageLimitExceeded,
 )
 from app.common.repositories.metadata_repository import (
     MetadataRepository,
@@ -37,14 +35,6 @@ class VisionPlugin(BasePlugin):
             raise ValueError("common_file is required before vision analysis")
 
         watch = Stopwatch()
-        usage_repository = ApiUsageRepository(context.db)
-        if not usage_repository.can_use(
-            provider=ApiProvider.GOOGLE,
-            api_name=ApiName.VISION,
-            units=1,
-        ):
-            raise RuntimeError("VISION usage limit exceeded")
-
         watch.start("image_read")
         image_path = self._resolve_image_path(context)
         content = Path(image_path).read_bytes()
@@ -55,6 +45,9 @@ class VisionPlugin(BasePlugin):
             watch.start("vision_api")
             labels = client.analyze(image_path=str(image_path), content=content)
             vision_api_ms = watch.stop("vision_api")
+        except ApiUsageLimitExceeded:
+            context.log("VISION_DEFERRED:MONTHLY_SAFE_LIMIT")
+            raise
         except ApiClientError:
             context.log("VISION_FAILED")
             log_perf(

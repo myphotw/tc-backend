@@ -8,6 +8,12 @@ The Astro Gallery read model joins `astro_observation_records.file_id` to
 `common_files.id` and requires an `AstroJournal` row in `common_file_services`.
 It is a query projection only and introduces no additional table.
 
+MemoryKeeper semantic reset also introduces no table or column. It deletes the
+`MemoryKeeper` edges and MemoryKeeper-owned projection rows shown below while
+preserving the `common_files` node, common raw metadata/tag rows and every
+AstroJournal edge/record. A single `MemoryKeeperReset` row is appended to the
+existing `common_change_events` feed.
+
 ```mermaid
 erDiagram
     common_files ||--o| common_file_metadata : has
@@ -315,3 +321,21 @@ erDiagram
 | status | index |
 | last_heartbeat | index |
 | version | nullable (Worker VERSION) |
+
+## MemoryKeeper Reset Boundary
+
+Reset delete/clear order follows existing FK direction:
+
+1. Block active MemoryKeeper upload and MemoryKeeper-only PROCESSING Vision jobs.
+2. Disable non-completed MemoryKeeper-only Vision jobs; preserve completed/shared jobs.
+3. Clear only `common_file_metadata.memorykeeper_place_*` projection columns.
+4. Delete `mk_file_tag_suppressions` and `mk_tag_canonical_overrides`.
+5. Delete MemoryKeeper USER `common_file_tags`, legacy `mk_photo_tags`, then `mk_tags`.
+6. Delete `memorykeeper_file_states` and `memorykeeper_places`.
+7. Delete MemoryKeeper upload idempotency history and `common_file_services` links.
+8. Append one `MemoryKeeperReset` event and commit.
+
+The transaction never updates `common_files.deleted`, never deletes
+`common_file_metadata`, raw AI `common_file_tags`, `common_vision_jobs` COMPLETED
+results, `astro_observation_records`, or AstroJournal/other service links. No
+filesystem path is resolved or removed by Reset.

@@ -11,6 +11,7 @@ MemoryKeeper & AstroJournal 공통 Backend (**Version 1.0.0 Freeze**).
 | Database ERD | [docs/DATABASE_ERD.md](docs/DATABASE_ERD.md) |
 | Plugin Guide | [docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md) |
 | Worker Guide | [docs/WORKER_GUIDE.md](docs/WORKER_GUIDE.md) |
+| MemoryKeeper Reset | [docs/MEMORYKEEPER_RESET.md](docs/MEMORYKEEPER_RESET.md) |
 | Changelog | [CHANGELOG.md](CHANGELOG.md) |
 
 Swagger UI: `/docs`  
@@ -90,6 +91,17 @@ monotonic cursor. Query parameters are `cursor` (exclusive, default `0`),
 UPDATE, and soft DELETE write events in the same transaction as the mutation.
 DELETE events set `tombstone=true`; clients advance using `next_cursor` while
 `has_more` is true.
+
+## MemoryKeeper Semantic Reset
+
+`POST /api/memorykeeper/reset/preview` and `/execute` support the PC client's
+"start organization again" flow. Reset removes only MemoryKeeper service links,
+places, user tags, suppressions, per-file favorite/memo and related projection
+state. It never deletes `common_files` or original/preview/thumbnail assets and
+does not alter AstroJournal records or links. Execute requires the literal
+confirmation `RESET_MEMORYKEEPER` and is blocked while a MemoryKeeper upload or
+MemoryKeeper-only Vision job is processing. See
+`docs/MEMORYKEEPER_RESET.md` for the complete preservation and retry policy.
 
 ## External API Centralization (Phase 1)
 
@@ -256,7 +268,7 @@ rename/merge 또는 Vision 재처리 후에도 유지되며 AstroJournal project
 | `ASTROMETRY_API_KEY` | none | Platesolve |
 | `API_CLIENT_TIMEOUT` | `30` | HTTP timeout(sec) |
 | `API_CLIENT_RETRY_COUNT` | `3` | HTTP retry |
-| `VISION_MONTHLY_LIMIT` | `1000` | Vision 월간 unit |
+| `VISION_MONTHLY_LIMIT` | `900` | Vision 월간 요청 상한. 무료 1000 unit 중 100 unit을 보호 버퍼로 남기며 900을 초과해 설정해도 유효 상한은 900 |
 | `GEOCODING_MONTHLY_LIMIT` | `100000` | Geocoding 월간 unit |
 | `WEATHER_MONTHLY_LIMIT` | `100000` | Weather 월간 unit |
 | `PLATESOLVE_MONTHLY_LIMIT` | `100000` | Platesolve 월간 unit |

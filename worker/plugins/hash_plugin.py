@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from app.common.models.file import CommonFile
+from app.common.models.file_tag import CommonFileTag
 from app.common.repositories.file_service_repository import FileServiceRepository
+from app.common.repositories.vision_job_repository import (
+    VisionJobRepository,
+    VisionJobStatus,
+)
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from worker.plugins.base import BasePlugin, PluginContext
 
@@ -56,7 +62,61 @@ class HashPlugin(BasePlugin):
             )
             context.log("LINK_CREATED" if link_created else "LINK_EXISTS")
             if (context.service_name or "MemoryKeeper").casefold() == "memorykeeper":
+                if link_created:
+                    self._ensure_blank_memorykeeper_state(context, existing)
+                    self._reuse_or_enqueue_vision(context, existing)
                 if MemoryKeeperPlaceService(context.db).auto_match_file(
                     file_id=existing.id
                 ):
                     context.log("MEMORYKEEPER_PLACE_MATCHED")
+
+    @staticmethod
+    def _ensure_blank_memorykeeper_state(
+        context: PluginContext,
+        common_file: CommonFile,
+    ) -> None:
+        if context.db.get(MemoryKeeperFileState, common_file.id) is not None:
+            return
+        context.db.add(
+            MemoryKeeperFileState(
+                file_id=common_file.id,
+                favorite=False,
+                memo=None,
+                revision=0,
+            )
+        )
+        context.db.flush()
+
+    @staticmethod
+    def _reuse_or_enqueue_vision(
+        context: PluginContext,
+        common_file: CommonFile,
+    ) -> None:
+        repository = VisionJobRepository(context.db)
+        blocking_status = repository.get_blocking_status(file_id=common_file.id)
+        if blocking_status == VisionJobStatus.COMPLETED:
+            context.log("VISION_RAW_REUSED:COMPLETED")
+            return
+        if blocking_status in {
+            VisionJobStatus.WAITING,
+            VisionJobStatus.PROCESSING,
+        }:
+            context.log("VISION_QUEUE_SKIPPED:ALREADY_EXISTS")
+            return
+        raw_exists = (
+            context.db.query(CommonFileTag.id)
+            .filter(CommonFileTag.file_id == common_file.id)
+            .filter(CommonFileTag.source == "AI")
+            .filter(CommonFileTag.deleted.is_(False))
+            .first()
+            is not None
+        )
+        if raw_exists:
+            context.log("VISION_RAW_REUSED:LABELS")
+            return
+        repository.create(
+            file_id=common_file.id,
+            priority=0,
+            skip_duplicate_check=True,
+        )
+        context.log("VISION_QUEUE_CREATED:RESET_REIMPORT")
