@@ -179,16 +179,30 @@ class SprintB2Tests(unittest.TestCase):
         self.assertEqual(memory.total, 2)
 
     def test_schema_sync_backfills_legacy_service_link_idempotently(self) -> None:
-        legacy = self._file("6" * 64, service_name="MemoryKeeper")
-        self.session.commit()
+        legacy_engine = create_engine("sqlite:///:memory:")
+        try:
+            CommonFile.__table__.create(legacy_engine)
+            with legacy_engine.begin() as connection:
+                connection.execute(
+                    CommonFile.__table__.insert().values(
+                        file_id="6" * 64,
+                        original_name="legacy.jpg",
+                        service_name="MemoryKeeper",
+                    )
+                )
 
-        changes = initialize_database(self.engine)
-        self.assertIn("backfill:common_file_services=1", changes)
-        self.assertEqual(
-            self.session.query(CommonFileService)
-            .filter(CommonFileService.file_id == legacy.id)
-            .filter(CommonFileService.service_name == "MemoryKeeper")
-            .count(),
-            1,
-        )
-        self.assertEqual(initialize_database(self.engine), [])
+            changes = initialize_database(legacy_engine)
+            legacy_session = sessionmaker(bind=legacy_engine)()
+            try:
+                self.assertIn("backfill:common_file_services=1", changes)
+                self.assertEqual(
+                    legacy_session.query(CommonFileService)
+                    .filter(CommonFileService.service_name == "MemoryKeeper")
+                    .count(),
+                    1,
+                )
+                self.assertEqual(initialize_database(legacy_engine), [])
+            finally:
+                legacy_session.close()
+        finally:
+            legacy_engine.dispose()

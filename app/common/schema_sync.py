@@ -10,6 +10,8 @@ from sqlalchemy.schema import CreateColumn
 
 logger = logging.getLogger(__name__)
 
+SERVICE_LINK_BACKFILL_MARKER = "common_file_services_legacy_backfill_v1"
+
 
 def initialize_database(bind: Engine | None = None) -> list[str]:
     """
@@ -24,10 +26,20 @@ def initialize_database(bind: Engine | None = None) -> list[str]:
     from app.common.database import Base, engine as default_engine
 
     engine = bind or default_engine
+    before_create = inspect(engine)
+    common_files_existed = before_create.has_table("common_files")
+    service_links_existed = before_create.has_table("common_file_services")
     Base.metadata.create_all(bind=engine)
     changes = sync_missing_columns(engine)
     changes.extend(sync_missing_indexes(engine))
-    changes.extend(sync_file_service_links(engine))
+    changes.extend(
+        sync_file_service_links(
+            engine,
+            allow_legacy_backfill=(
+                common_files_existed and not service_links_existed
+            ),
+        )
+    )
     if changes:
         logger.info("Database schema synced: %s", changes)
     else:
@@ -35,32 +47,96 @@ def initialize_database(bind: Engine | None = None) -> list[str]:
     return changes
 
 
-def sync_file_service_links(engine: Engine) -> list[str]:
-    """Backfill one legacy service link for common files created before B2."""
+def sync_file_service_links(
+    engine: Engine,
+    *,
+    allow_legacy_backfill: bool = False,
+) -> list[str]:
+    """Run the pre-B2 service-link migration at most once.
+
+    ``common_files.service_name`` is legacy compatibility data, not current
+    ownership. It may be copied only when startup observed a pre-B2 database:
+    ``common_files`` existed before ``create_all`` while
+    ``common_file_services`` did not. If the link table already existed, an
+    absent link can be an intentional Reset/delete and is never reconstructed.
+    """
     inspector = inspect(engine)
     if not (
         inspector.has_table("common_files")
         and inspector.has_table("common_file_services")
+        and inspector.has_table("common_settings")
     ):
         return []
 
     with engine.begin() as connection:
-        result = connection.execute(
+        if engine.dialect.name == "postgresql":
+            connection.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:migration_key))"),
+                {"migration_key": SERVICE_LINK_BACKFILL_MARKER},
+            )
+        completed = connection.execute(
             text(
                 """
-                INSERT INTO common_file_services (file_id, service_name)
-                SELECT files.id, files.service_name
-                FROM common_files AS files
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM common_file_services AS links
-                    WHERE links.file_id = files.id
-                      AND links.service_name = files.service_name
+                SELECT 1
+                FROM common_settings
+                WHERE setting_key = :migration_key
+                """
+            ),
+            {"migration_key": SERVICE_LINK_BACKFILL_MARKER},
+        ).first()
+        if completed is not None:
+            logger.debug("Legacy service-link migration already completed")
+            return []
+
+        inserted = 0
+        if allow_legacy_backfill:
+            result = connection.execute(
+                text(
+                    """
+                    INSERT INTO common_file_services (file_id, service_name)
+                    SELECT files.id, files.service_name
+                    FROM common_files AS files
+                    WHERE files.service_name IS NOT NULL
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM common_file_services AS links
+                        WHERE links.file_id = files.id
+                          AND links.service_name = files.service_name
+                    )
+                    """
+                )
+            )
+            inserted = result.rowcount or 0
+
+        connection.execute(
+            text(
+                """
+                INSERT INTO common_settings (
+                    category,
+                    setting_key,
+                    setting_value,
+                    description
+                ) VALUES (
+                    'MIGRATION',
+                    :migration_key,
+                    'COMPLETED',
+                    :description
                 )
                 """
-            )
+            ),
+            {
+                "migration_key": SERVICE_LINK_BACKFILL_MARKER,
+                "description": (
+                    "One-time pre-B2 common_file_services legacy backfill"
+                ),
+            },
         )
-    inserted = result.rowcount or 0
+
+    if not allow_legacy_backfill:
+        logger.info(
+            "Marked legacy service-link migration complete without backfill; "
+            "common_file_services already existed"
+        )
     return [f"backfill:common_file_services={inserted}"] if inserted else []
 
 
