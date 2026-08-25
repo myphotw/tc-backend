@@ -12,6 +12,7 @@ MemoryKeeper & AstroJournal 공통 Backend (**Version 1.0.0 Freeze**).
 | Plugin Guide | [docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md) |
 | Worker Guide | [docs/WORKER_GUIDE.md](docs/WORKER_GUIDE.md) |
 | MemoryKeeper Reset | [docs/MEMORYKEEPER_RESET.md](docs/MEMORYKEEPER_RESET.md) |
+| AstroJournal Reset | [docs/ASTROJOURNAL_RESET.md](docs/ASTROJOURNAL_RESET.md) |
 | Changelog | [CHANGELOG.md](CHANGELOG.md) |
 
 Swagger UI: `/docs`  
@@ -82,6 +83,15 @@ deleted records retain its FK; a later identical upload safely restores that
 row and its media. MemoryKeeper uses `PRESERVE_PHYSICAL_FILE`, so a shared
 MemoryKeeper link always prevents physical deletion. Storage cleanup failures
 are logged and never roll back the ObservationRecord delete or its sync event.
+
+## AstroJournal Capture Data Reset
+
+`POST /api/astro/reset/preview` reports the read-only Reset impact, and
+`POST /api/astro/reset/execute` requires `RESET_ASTROJOURNAL`. Astro-only
+FileAssets delete original/preview/thumb and become restorable tombstones;
+shared FileAssets preserve media and other-service state while only the Astro
+link is removed. Processing uploads or Astro-only Vision jobs block execution
+with `409`. See [docs/ASTROJOURNAL_RESET.md](docs/ASTROJOURNAL_RESET.md).
 
 ## Changes Cursor API (B6-01)
 

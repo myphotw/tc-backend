@@ -19,6 +19,7 @@ from app.common.services.storage_service import StorageService
 from app.common.services.upload_metadata import encode_upload_metadata
 from app.common.utils.perf import Stopwatch, log_perf
 from app.memorykeeper.services.reset_guard import acquire_memorykeeper_reset_lock
+from app.astrojournal.services.reset_guard import acquire_astrojournal_reset_lock
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,8 @@ def upload_file(
     service_name = _validate_service_name(service_name)
     if service_name == "MemoryKeeper":
         acquire_memorykeeper_reset_lock(db, exclusive=False)
+    elif service_name == "AstroJournal":
+        acquire_astrojournal_reset_lock(db, exclusive=False)
     client_file_id = _normalize_client_file_id(client_file_id)
     client_content_sha256 = _normalize_client_content_sha256(client_content_sha256)
     canonical_target_id = _normalize_optional_metadata(

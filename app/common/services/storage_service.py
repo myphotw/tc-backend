@@ -393,6 +393,27 @@ class StorageService:
         """
         self.resolve_storage_path(incoming_path).unlink(missing_ok=True)
 
+    def delete_incoming_asset(self, incoming_path: str | Path) -> str:
+        """Safely delete one persisted UploadJob incoming path."""
+        try:
+            target = self._resolve_asset_delete_path(
+                incoming_path,
+                expected_root=self.incoming_root,
+            )
+        except (OSError, ValueError):
+            logger.exception("Rejected unsafe upload incoming path")
+            return AssetDeleteStatus.UNSAFE_PATH
+        if not target.exists() and not target.is_symlink():
+            return AssetDeleteStatus.ALREADY_ABSENT
+        if target.is_dir():
+            return AssetDeleteStatus.FAILED
+        try:
+            target.unlink()
+        except OSError:
+            logger.exception("Failed to delete upload incoming asset")
+            return AssetDeleteStatus.FAILED
+        return AssetDeleteStatus.DELETED
+
     def to_relative_path(self, path: Path) -> str:
         """
         PHOTO_PLATFORM_ROOT 기준 상대 경로를 POSIX 문자열로 반환한다.

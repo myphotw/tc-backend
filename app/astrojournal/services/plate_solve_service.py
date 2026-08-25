@@ -16,6 +16,7 @@ from app.common.services.api_clients.base_client import (
 )
 from app.common.services.key_resolver import ExternalServiceName, KeyResolver
 from app.common.services.storage_service import StorageService
+from app.astrojournal.services.reset_guard import acquire_astrojournal_reset_lock
 
 
 class PlateSolveService:
@@ -96,6 +97,7 @@ class PlateSolveService:
         }
 
     def _get_astro_file(self, common_file_id: int) -> CommonFile:
+        acquire_astrojournal_reset_lock(self.db, exclusive=False)
         common_file = (
             self.db.query(CommonFile)
             .filter(CommonFile.id == common_file_id)
@@ -127,4 +129,3 @@ class PlateSolveService:
                 "Plate solve job_id is invalid",
                 code=ExternalApiErrorCode.INVALID_REQUEST,
             ) from exc
-

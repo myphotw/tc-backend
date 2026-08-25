@@ -14,6 +14,7 @@ from app.astrojournal.services.file_cleanup_service import (
     AstroJournalFileCleanupService,
     FileCleanupResult,
 )
+from app.astrojournal.services.reset_guard import acquire_astrojournal_reset_lock
 from app.astrojournal.schemas.observation_record import (
     ObservationRecordCreate,
     ObservationRecordUpdate,
@@ -45,6 +46,7 @@ class ObservationRecordService:
         self.last_cleanup_result: FileCleanupResult | None = None
 
     def create(self, payload: ObservationRecordCreate) -> ObservationRecord:
+        acquire_astrojournal_reset_lock(self.db, exclusive=False)
         client_record_id = (
             str(payload.client_record_id) if payload.client_record_id is not None else None
         )
@@ -120,6 +122,7 @@ class ObservationRecordService:
         )
 
     def update(self, record_id: str, payload: ObservationRecordUpdate) -> ObservationRecord:
+        acquire_astrojournal_reset_lock(self.db, exclusive=False)
         record = self.get(record_id)
         if record.revision != payload.revision:
             self._raise_revision_conflict(record, payload.revision)
@@ -172,6 +175,7 @@ class ObservationRecordService:
         return updated
 
     def soft_delete(self, record_id: str) -> ObservationRecord:
+        acquire_astrojournal_reset_lock(self.db, exclusive=False)
         record = self.repository.get(record_id, include_deleted=True)
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
@@ -190,6 +194,7 @@ class ObservationRecordService:
         # Cleanup is intentionally a second transaction. A storage or dependent
         # data failure must never roll back the user's record deletion/tombstone.
         try:
+            acquire_astrojournal_reset_lock(self.db, exclusive=False)
             self.last_cleanup_result = self.cleanup_service.cleanup_if_unreferenced(
                 file_id=record.file_id
             )

@@ -13,7 +13,6 @@ from app.common.models.file_tag import CommonFileTag
 from app.common.models.vision_job import CommonVisionJob
 from app.common.repositories.vision_job_repository import VisionJobStatus
 from app.common.services.storage_service import AssetDeleteStatus, StorageService
-from app.memorykeeper.models.file_state import MemoryKeeperFileState
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +34,15 @@ class FileCleanupResult:
     status: str
     physical_file_deleted: bool = False
     asset_results: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ResetAssetCleanupResult:
+    succeeded: bool
+    deleted_original_count: int = 0
+    deleted_preview_count: int = 0
+    deleted_thumbnail_count: int = 0
+    failed_file_id: int | None = None
 
 
 class AstroJournalFileCleanupService:
@@ -63,6 +71,20 @@ class AstroJournalFileCleanupService:
         self.service_name = service_name or self.SERVICE_NAME
 
     def cleanup_if_unreferenced(self, *, file_id: int) -> FileCleanupResult:
+        return self.cleanup_for_reset(file_id=file_id, commit=True)
+
+    def cleanup_for_reset(
+        self,
+        *,
+        file_id: int,
+        commit: bool = False,
+    ) -> FileCleanupResult:
+        """Stage Reset cleanup while reusing the established asset policy.
+
+        With ``commit=False`` the caller owns the enclosing database
+        transaction. Physical deletion still happens before DB cleanup, as in
+        the single-record cleanup path, so a retry can reconcile missing files.
+        """
         common_file = (
             self.db.query(CommonFile)
             .filter(CommonFile.id == file_id)
@@ -101,7 +123,10 @@ class AstroJournalFileCleanupService:
                     CommonFileService.file_id == file_id,
                     CommonFileService.service_name == self.service_name,
                 ).delete(synchronize_session=False)
-                self.db.commit()
+                if commit:
+                    self.db.commit()
+                else:
+                    self.db.flush()
             except Exception:
                 self.db.rollback()
                 logger.exception(
@@ -166,9 +191,6 @@ class AstroJournalFileCleanupService:
             self.db.query(CommonFileTag).filter(
                 CommonFileTag.file_id == file_id
             ).delete(synchronize_session=False)
-            self.db.query(MemoryKeeperFileState).filter(
-                MemoryKeeperFileState.file_id == file_id
-            ).delete(synchronize_session=False)
             self.db.query(CommonVisionJob).filter(
                 CommonVisionJob.file_id == file_id
             ).update({CommonVisionJob.deleted: True}, synchronize_session=False)
@@ -183,7 +205,10 @@ class AstroJournalFileCleanupService:
             common_file.preview_path = None
             common_file.thumb_path = None
             common_file.deleted = True
-            self.db.commit()
+            if commit:
+                self.db.commit()
+            else:
+                self.db.flush()
         except Exception:
             self.db.rollback()
             logger.exception(
@@ -209,3 +234,72 @@ class AstroJournalFileCleanupService:
             ),
             asset_results=asset_results,
         )
+
+    def delete_reset_assets(
+        self,
+        common_files: list[CommonFile],
+    ) -> ResetAssetCleanupResult:
+        """Delete Astro-only media before the caller's bulk DB transaction."""
+        deleted = {"original": 0, "preview": 0, "thumb": 0}
+        for common_file in common_files:
+            results = self.storage_service.delete_common_file_assets(common_file)
+            if any(
+                result not in self.SUCCESSFUL_ASSET_RESULTS
+                for result in results.values()
+            ):
+                return ResetAssetCleanupResult(
+                    succeeded=False,
+                    deleted_original_count=deleted["original"],
+                    deleted_preview_count=deleted["preview"],
+                    deleted_thumbnail_count=deleted["thumb"],
+                    failed_file_id=common_file.id,
+                )
+            for kind in deleted:
+                if results.get(kind) == AssetDeleteStatus.DELETED:
+                    deleted[kind] += 1
+        return ResetAssetCleanupResult(
+            succeeded=True,
+            deleted_original_count=deleted["original"],
+            deleted_preview_count=deleted["preview"],
+            deleted_thumbnail_count=deleted["thumb"],
+        )
+
+    def stage_reset_database_cleanup(
+        self,
+        *,
+        astro_only_file_ids: list[int],
+        target_file_ids: list[int],
+    ) -> int:
+        """Bulk-stage CommonFile cleanup without touching MemoryKeeper state."""
+        if astro_only_file_ids:
+            self.db.query(CommonFileMetadata).filter(
+                CommonFileMetadata.file_id.in_(astro_only_file_ids)
+            ).delete(synchronize_session=False)
+            self.db.query(CommonFileTag).filter(
+                CommonFileTag.file_id.in_(astro_only_file_ids)
+            ).delete(synchronize_session=False)
+            self.db.query(CommonVisionJob).filter(
+                CommonVisionJob.file_id.in_(astro_only_file_ids)
+            ).update(
+                {CommonVisionJob.deleted: True},
+                synchronize_session=False,
+            )
+            self.db.query(CommonFile).filter(
+                CommonFile.id.in_(astro_only_file_ids)
+            ).update(
+                {
+                    CommonFile.original_path: None,
+                    CommonFile.preview_path: None,
+                    CommonFile.thumb_path: None,
+                    CommonFile.deleted: True,
+                },
+                synchronize_session=False,
+            )
+        removed_links = 0
+        if target_file_ids:
+            removed_links = self.db.query(CommonFileService).filter(
+                CommonFileService.file_id.in_(target_file_ids),
+                CommonFileService.service_name == self.service_name,
+            ).delete(synchronize_session=False)
+        self.db.flush()
+        return int(removed_links or 0)

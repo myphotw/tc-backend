@@ -200,6 +200,27 @@ The DELETE response schema is unchanged; clients continue to rely only on
 `record_id`, `deleted`, `revision`, and `deleted_at`. MemoryKeeper retains its
 physical-file preservation policy.
 
+## AstroJournal Capture Data Reset
+
+Both endpoints use the common Bearer authentication dependency.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/astro/reset/preview` | Read-only ownership, job guard and physical-delete impact. |
+| POST | `/api/astro/reset/execute` | Execute full AstroJournal capture-data Reset. |
+
+Execute requires `{"confirmation":"RESET_ASTROJOURNAL"}`. Invalid
+confirmation returns `422`. A PROCESSING Astro upload or Astro-only Vision job
+returns `409 ASTROJOURNAL_RESET_BLOCKED`. Astro-only media is removed and its
+CommonFile becomes a tombstone. Shared media, metadata, MemoryKeeper state and
+other links are preserved. Astro upload/idempotency rows are removed, allowing
+same-ID and byte-identical re-registration.
+
+One `AstroJournalReset` change event invalidates the complete capture
+projection. Plate Solve has no persisted Backend result row and PhotoObject is
+not implemented, so their current preview/delete counts are zero. See
+[ASTROJOURNAL_RESET.md](ASTROJOURNAL_RESET.md).
+
 ## Changes Cursor API (B6-01)
 
 `GET /api/common/changes` returns changes whose event cursor is strictly greater

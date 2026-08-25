@@ -339,3 +339,14 @@ The transaction never updates `common_files.deleted`, never deletes
 `common_file_metadata`, raw AI `common_file_tags`, `common_vision_jobs` COMPLETED
 results, `astro_observation_records`, or AstroJournal/other service links. No
 filesystem path is resolved or removed by Reset.
+
+## AstroJournal Reset Boundary
+
+AstroJournal Reset bulk-deletes `astro_observation_records`, removes only
+AstroJournal `common_file_services` links, and deletes AstroJournal
+`common_upload_jobs`. For files without another service link, the existing
+physical cleanup policy removes original/preview/thumb, deletes dead common
+metadata/tags, soft-deletes Vision jobs, and retains `common_files` as a
+restorable tombstone. Shared FileAssets and all MemoryKeeper-owned rows remain.
+One append-only `AstroJournalReset` event invalidates the client projection. No
+additional table or migration is introduced.
