@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.common.database import SessionLocal
@@ -57,7 +58,7 @@ def backfill_exif_metadata(
     execute: bool = False,
     limit: int | None = None,
 ) -> BackfillStats:
-    """Read candidate originals and fill only currently-null EXIF fields."""
+    """Read candidate originals and fill only currently blank EXIF fields."""
     reader = exif_reader or ExifReader()
     stats = BackfillStats()
     query = (
@@ -66,7 +67,20 @@ def backfill_exif_metadata(
         .filter(CommonFile.deleted.is_(False))
         .filter(CommonFile.original_path.isnot(None))
         .filter(CommonFile.original_path != "")
-        .filter(CommonFileMetadata.datetime_original.is_(None))
+        .filter(
+            or_(
+                *(
+                    getattr(CommonFileMetadata, field).is_(None)
+                    for field in EXIF_DERIVED_FIELDS
+                ),
+                CommonFileMetadata.camera_make == "",
+                CommonFileMetadata.camera_model == "",
+                CommonFileMetadata.lens == "",
+                CommonFileMetadata.f_number == "",
+                CommonFileMetadata.exposure_time == "",
+                CommonFileMetadata.focal_length == "",
+            )
+        )
         .order_by(CommonFile.id.asc())
     )
     if limit is not None:
@@ -126,14 +140,14 @@ def _missing_exif_values(
     metadata: CommonFileMetadata | None,
     extracted: dict[str, Any],
 ) -> dict[str, Any]:
-    """Select only EXIF-derived values whose current DB column is null."""
+    """Select only EXIF-derived values whose current DB column is blank."""
     values: dict[str, Any] = {}
     for field_name in EXIF_DERIVED_FIELDS:
         new_value = extracted.get(field_name)
         if new_value is None or new_value == "":
             continue
         current_value = getattr(metadata, field_name, None) if metadata else None
-        if current_value is None:
+        if _is_blank(current_value):
             values[field_name] = new_value
     return values
 
@@ -143,8 +157,11 @@ def _apply_missing_values(
     *,
     common_file_id: int,
     values: dict[str, Any],
+    source: str = "EXIF",
+    priority: MetadataPriority = MetadataPriority.EXIF,
+    modified_by: str = "backfill_exif_metadata.py",
 ) -> bool:
-    """Persist one file's null-only patch and its metadata history atomically."""
+    """Persist one file's blank-only patch and its metadata history atomically."""
     item = (
         db.query(CommonFileMetadata)
         .filter(CommonFileMetadata.file_id == common_file_id)
@@ -159,18 +176,19 @@ def _apply_missing_values(
 
     history_items: list[dict[str, Any]] = []
     for field_name, new_value in values.items():
-        if getattr(item, field_name) is not None:
+        old_value = getattr(item, field_name)
+        if not _is_blank(old_value):
             continue
         setattr(item, field_name, new_value)
         history_items.append(
             {
                 "file_id": common_file_id,
                 "field_name": field_name,
-                "old_value": None,
+                "old_value": old_value,
                 "new_value": new_value,
-                "source": "EXIF",
-                "priority": MetadataPriority.EXIF,
-                "modified_by": "backfill_exif_metadata.py",
+                "source": source,
+                "priority": priority,
+                "modified_by": modified_by,
                 "approved": False,
             }
         )
@@ -184,9 +202,14 @@ def _apply_missing_values(
     return True
 
 
+def _is_blank(value: Any) -> bool:
+    """Treat null and whitespace-only strings as maintenance backfill gaps."""
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Backfill null EXIF metadata from existing original assets",
+        description="Backfill blank EXIF metadata from existing original assets",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(

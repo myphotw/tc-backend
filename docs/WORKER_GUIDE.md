@@ -59,6 +59,26 @@ MemoryKeeper/AstroJournal 공통이고 UTC 월 변경 시 자동으로 새 월 �
 
 Upload API는 Queue를 만들지 않는다. UploadWorker가 Metadata/EXIF/GPS 후 enqueue.
 
+## EXIF / GPS persistence and maintenance
+
+신규 업로드는 `MetadataPlugin → ExifPlugin → GpsPlugin` 순서로 처리한다.
+`ExifPlugin`은 EXIF 결과를 `common_file_metadata`에 commit하고, `GpsPlugin`은
+기존 `common_geocode_cache`, `KeyResolver`, `GeocodingClient`를 재사용하여
+`country/province/city/district/place_name`을 저장한다. Gallery와 PhotoDetail은
+같은 metadata row를 projection한다.
+
+기존 파일의 누락값은 기본 dry-run 관리 스크립트로 점검한다.
+
+```shell
+python -m scripts.backfill_photo_metadata --service MemoryKeeper --dry-run
+python -m scripts.backfill_photo_metadata --service MemoryKeeper --execute
+```
+
+`--filename`과 `--limit`으로 범위를 제한할 수 있다. Dry-run은 provider를
+호출하지 않으며 DB/스토리지/Vision 상태를 변경하지 않는다. Execute도
+null/empty 필드만 채우고 raw GPS와 MemoryKeeper Place relation은 변경하지
+않는다. Google의 formatted address는 현재 schema의 `place_name`에 저장한다.
+
 ## Folder Watcher (PC)
 
 Entry: `python -m watcher.folder_watcher`

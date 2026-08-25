@@ -143,26 +143,41 @@ VisionWorker
   Vision Queue → VisionPlugin (Google Vision Labels → AI Tags)
 ```
 
-### EXIF metadata backfill
+### Photo metadata maintenance backfill
 
-`ExifReader` supports capture dates stored in the nested Exif IFD. Existing
-active files whose `common_file_metadata.datetime_original` is null can be
-inspected without changing DB or storage:
+`ExifReader` supports capture dates stored in the nested Exif IFD. The common
+metadata schema intentionally normalizes EXIF names: `DateTimeOriginal`, then
+`DateTimeDigitized`, then `DateTime` become `datetime_original`; `Make`,
+`Model`, and `LensModel` become `camera_make`, `camera_model`, and `lens`.
+Reverse-geocoded formatted address is stored as `place_name`.
 
-```shell
-python scripts/backfill_exif_metadata.py --dry-run
-```
-
-After reviewing the aggregate result, explicitly apply null-only EXIF fields:
+Inspect MemoryKeeper files without changing DB, storage, or external API usage:
 
 ```shell
-python scripts/backfill_exif_metadata.py --execute
+python -m scripts.backfill_photo_metadata --service MemoryKeeper --dry-run
 ```
 
-The script reads existing originals in place, refuses paths outside the
-configured original root, preserves every non-null metadata value, records
-changes in metadata history, and does not alter assets, hashes, previews,
-thumbnails, tags, favorites, location names, or Vision jobs.
+Inspect one operating file by its original filename:
+
+```shell
+python -m scripts.backfill_photo_metadata --service MemoryKeeper --filename 20260815_140628.jpg --dry-run
+```
+
+After reviewing the aggregate result, explicitly apply blank-only EXIF and
+geography fields:
+
+```shell
+python -m scripts.backfill_photo_metadata --service MemoryKeeper --execute
+```
+
+Dry-run reads originals and the current geocode cache only; it does not call a
+provider. Execute mode reuses the cache first and uses the configured Google
+Geocoding resolver only for cache misses. The script refuses paths outside the
+configured original root, records changes in metadata history, and does not
+alter assets, hashes, raw GPS, registered Place relations, previews,
+thumbnails, tags, favorites, Vision usage, or Vision jobs. The EXIF-only
+`scripts/backfill_exif_metadata.py` entry point remains available for backward
+compatibility.
 
 자세한 내용: [docs/WORKER_GUIDE.md](docs/WORKER_GUIDE.md)
 
