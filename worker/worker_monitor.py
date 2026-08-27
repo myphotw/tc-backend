@@ -119,11 +119,14 @@ class WorkerMonitor:
             db.close()
 
     def on_plugin_boundary(self, *, current_job_id: str | None) -> None:
-        """Plugin 시작/완료 경계에서 throttled heartbeat + job lease 갱신."""
-        self.maybe_heartbeat(
-            current_job_id=current_job_id,
-            touch_job_lease=current_job_id is not None,
-        )
+        """Plugin 경계에서는 WorkerStatus heartbeat만 갱신한다.
+
+        Plugin processing transaction이 UploadJob row를 보유할 수 있으므로 별도
+        Session에서 같은 row의 lease를 갱신하면 self-deadlock이 발생할 수 있다.
+        P1: Multi-worker stale recovery는 live WorkerStatus의 heartbeat와
+        current_job_id를 함께 보는 방식으로 재설계해야 한다.
+        """
+        self.maybe_heartbeat(current_job_id=current_job_id)
 
     def _touch_job_lease(self, job_id: str) -> None:
         db = SessionLocal()
