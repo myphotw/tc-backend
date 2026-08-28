@@ -256,14 +256,7 @@ class ApiUsageRepository:
 
     def _default_limit(self, api_name: str) -> int:
         """Config 기반 월간 limit을 반환한다."""
-        mapping = {
-            ApiName.VISION: settings.VISION_MONTHLY_LIMIT,
-            ApiName.GEOCODING: settings.GEOCODING_MONTHLY_LIMIT,
-            ApiName.PLACES: settings.GEOCODING_MONTHLY_LIMIT,
-            ApiName.WEATHER: settings.WEATHER_MONTHLY_LIMIT,
-            ApiName.PLATESOLVE: settings.PLATESOLVE_MONTHLY_LIMIT,
-        }
-        return self.effective_limit(api_name, configured=mapping.get(api_name, 0))
+        return self.effective_limit(api_name)
 
     @classmethod
     def effective_limit(
@@ -272,11 +265,15 @@ class ApiUsageRepository:
         *,
         configured: int | None = None,
     ) -> int:
-        configured_limit = (
-            int(settings.VISION_MONTHLY_LIMIT)
-            if configured is None and api_name == ApiName.VISION
-            else int(configured or 0)
-        )
+        if configured is None:
+            configured = {
+                ApiName.VISION: settings.VISION_MONTHLY_LIMIT,
+                ApiName.GEOCODING: settings.GEOCODING_MONTHLY_LIMIT,
+                ApiName.PLACES: settings.GEOCODING_MONTHLY_LIMIT,
+                ApiName.WEATHER: settings.WEATHER_MONTHLY_LIMIT,
+                ApiName.PLATESOLVE: settings.PLATESOLVE_MONTHLY_LIMIT,
+            }.get(api_name, 0)
+        configured_limit = int(configured or 0)
         configured_limit = max(0, configured_limit)
         if api_name == ApiName.VISION:
             return min(configured_limit, cls.VISION_SAFE_MONTHLY_LIMIT)
