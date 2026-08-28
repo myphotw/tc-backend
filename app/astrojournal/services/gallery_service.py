@@ -9,7 +9,12 @@ from app.astrojournal.repositories.gallery_repository import (
     AstroGalleryRepository,
     AstroGalleryRow,
 )
-from app.astrojournal.schemas.gallery import AstroGalleryItem, AstroGalleryListResponse
+from app.astrojournal.schemas.gallery import (
+    AstroGalleryDetailItem,
+    AstroGalleryItem,
+    AstroGalleryListResponse,
+)
+from app.astrojournal.services.plate_solve_read_service import PlateSolveReadService
 from app.common.services.gallery_media import build_gallery_media_url
 
 
@@ -42,16 +47,25 @@ class AstroGalleryService:
             total=total,
         )
 
-    def get_detail(self, record_id: str) -> AstroGalleryItem:
+    def get_detail(self, record_id: str) -> AstroGalleryDetailItem:
         row = self.repository.get(record_id)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
-        return self._to_item(row)
+        return self._to_item(row, detail=True)
 
     @staticmethod
-    def _to_item(row: AstroGalleryRow) -> AstroGalleryItem:
-        record, common_file, metadata = row
-        return AstroGalleryItem(
+    def _to_item(
+        row: AstroGalleryRow,
+        *,
+        detail: bool = False,
+    ) -> AstroGalleryItem | AstroGalleryDetailItem:
+        record, common_file, metadata, plate_solve_job = row
+        projection = PlateSolveReadService.from_job(
+            plate_solve_job,
+            fallback_status=record.plate_solve_status,
+            include_result=detail,
+        )
+        item_data = dict(
             record_id=record.id,
             revision=record.revision,
             catalog_object_id=record.catalog_object_id,
@@ -82,4 +96,12 @@ class AstroGalleryService:
                 common_file.original_path,
             ),
             capture_datetime=metadata.datetime_original if metadata is not None else None,
+            plate_solve_status=projection.plate_solve_status,
+            plate_solve_job_id=projection.plate_solve_job_id,
         )
+        if detail:
+            return AstroGalleryDetailItem(
+                **item_data,
+                plate_solve_result=projection.plate_solve_result,
+            )
+        return AstroGalleryItem(**item_data)

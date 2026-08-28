@@ -38,13 +38,17 @@ worker status are outside the Reset boundary.
 `POST /api/astro/reset/preview` is read-only. Its response includes ownership,
 upload/processing guard, and planned physical deletion counts.
 `pending_upload_count` counts AstroJournal `WAITING` uploads.
-`processing_job_count` combines AstroJournal upload processing and Astro-only
-Vision processing.
+`processing_job_count` combines AstroJournal upload processing, Astro-only
+Vision processing, and Plate Solve processing.
 
-Plate Solve currently has no Backend job/result table: it is a stateless,
-encrypted Astrometry submission token. `plate_solve_result_count` is therefore
-zero. Removing the Astro service link makes old tokens unusable through the
-Backend. `PhotoObject` is not implemented, so `photo_object_count` is also zero.
+Plate Solve now has a persistent queue/result table in addition to legacy
+encrypted submission tokens. Reset integration is intentionally deferred:
+`plate_solve_result_count` and `deleted_plate_solve_result_count` remain zero,
+and queue/result rows are preserved. `PROCESSING` Plate Solve jobs block Reset;
+WAITING jobs become `FAILED` so they cannot process tombstoned media after
+Reset. This avoids silently destroying solve history until an explicit
+retention policy is approved. `PhotoObject` is not
+implemented, so `photo_object_count` is also zero.
 
 ## Execute
 

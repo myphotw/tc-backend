@@ -15,10 +15,14 @@ from app.astrojournal.services.file_cleanup_service import (
     FileCleanupResult,
 )
 from app.astrojournal.services.reset_guard import acquire_astrojournal_reset_lock
+from app.astrojournal.services.plate_solve_queue_service import PlateSolveQueueService
 from app.astrojournal.schemas.observation_record import (
     ObservationRecordCreate,
+    ObservationRecordDetailResponse,
+    ObservationRecordResponse,
     ObservationRecordUpdate,
 )
+from app.astrojournal.services.plate_solve_read_service import PlateSolveReadService
 from app.common.models.file import CommonFile
 from app.common.repositories.change_event_repository import (
     ChangeEventRepository,
@@ -42,6 +46,7 @@ class ObservationRecordService:
         self.db = db
         self.repository = ObservationRecordRepository(db)
         self.change_repository = ChangeEventRepository(db)
+        self.plate_solve_queue = PlateSolveQueueService(db)
         self.cleanup_service = cleanup_service or AstroJournalFileCleanupService(db)
         self.last_cleanup_result: FileCleanupResult | None = None
 
@@ -53,6 +58,10 @@ class ObservationRecordService:
         if client_record_id is not None:
             existing = self.repository.get_by_client_record_id(client_record_id)
             if existing is not None:
+                self.plate_solve_queue.enqueue(
+                    common_file_id=existing.file_id,
+                    observation_record_id=existing.id,
+                )
                 return existing
 
         self._require_file(payload.file_id)
@@ -80,6 +89,12 @@ class ObservationRecordService:
         )
         try:
             self.repository.create(record, commit=False)
+            plate_solve_job, _ = self.plate_solve_queue.enqueue(
+                common_file_id=record.file_id,
+                observation_record_id=record.id,
+                commit=False,
+            )
+            record.plate_solve_status = plate_solve_job.status
             for demoted in demoted_records:
                 self._append_change(demoted, ChangeOperation.UPDATE)
             self._append_change(record, ChangeOperation.CREATE)
@@ -107,6 +122,23 @@ class ObservationRecordService:
         if record is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Record not found")
         return record
+
+    def get_detail(self, record_id: str) -> ObservationRecordDetailResponse:
+        record = self.get(record_id)
+        projection = PlateSolveReadService(self.db).for_file(
+            common_file_id=record.file_id,
+            fallback_status=record.plate_solve_status,
+            include_result=True,
+        )
+        base = ObservationRecordResponse.model_validate(record)
+        return ObservationRecordDetailResponse.model_validate(
+            {
+                **base.model_dump(),
+                "plate_solve_status": projection.plate_solve_status,
+                "plate_solve_job_id": projection.plate_solve_job_id,
+                "plate_solve_result": projection.plate_solve_result,
+            }
+        )
 
     def list(
         self,
@@ -184,6 +216,10 @@ class ObservationRecordService:
         if record.deleted_at is None:
             try:
                 self.repository.soft_delete(record, commit=False)
+                self.plate_solve_queue.fail_waiting_if_file_unreferenced(
+                    common_file_id=record.file_id,
+                    commit=False,
+                )
                 self._append_change(record, ChangeOperation.DELETE, tombstone=True)
                 self.db.commit()
                 self.db.refresh(record)

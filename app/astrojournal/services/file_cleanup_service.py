@@ -6,6 +6,8 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.astrojournal.models.observation_record import ObservationRecord
+from app.astrojournal.models.plate_solve_job import AstroPlateSolveJob
+from app.astrojournal.repositories.plate_solve_job_repository import PlateSolveJobStatus
 from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_service import CommonFileService
@@ -23,6 +25,7 @@ class FileCleanupStatus:
     PRESERVED_ACTIVE_RECORD = "PRESERVED_ACTIVE_RECORD"
     PRESERVED_OTHER_SERVICE = "PRESERVED_OTHER_SERVICE"
     PRESERVED_PROCESSING_VISION = "PRESERVED_PROCESSING_VISION"
+    PRESERVED_ACTIVE_PLATE_SOLVE = "PRESERVED_ACTIVE_PLATE_SOLVE"
     ASSET_DELETE_FAILED = "ASSET_DELETE_FAILED"
     DATABASE_CLEANUP_FAILED = "DATABASE_CLEANUP_FAILED"
     FILE_NOT_FOUND = "FILE_NOT_FOUND"
@@ -154,6 +157,23 @@ class AstroJournalFileCleanupService:
             return FileCleanupResult(
                 file_id=file_id,
                 status=FileCleanupStatus.PRESERVED_PROCESSING_VISION,
+            )
+
+        active_plate_solve_exists = (
+            self.db.query(AstroPlateSolveJob.id)
+            .filter(AstroPlateSolveJob.common_file_id == file_id)
+            .filter(
+                AstroPlateSolveJob.status.in_(
+                    [PlateSolveJobStatus.WAITING, PlateSolveJobStatus.PROCESSING]
+                )
+            )
+            .first()
+            is not None
+        )
+        if active_plate_solve_exists:
+            return FileCleanupResult(
+                file_id=file_id,
+                status=FileCleanupStatus.PRESERVED_ACTIVE_PLATE_SOLVE,
             )
 
         if common_file.deleted and not any(

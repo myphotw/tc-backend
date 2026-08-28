@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from app.common.schemas.external_api import PlateSolveResult
+
 
 class AstroGalleryItem(BaseModel):
     record_id: UUID
@@ -25,6 +27,12 @@ class AstroGalleryItem(BaseModel):
     preview_url: str | None = None
     original_url: str | None = None
     capture_datetime: datetime | None = None
+    plate_solve_status: str | None = None
+    plate_solve_job_id: str | None = None
+
+
+class AstroGalleryDetailItem(AstroGalleryItem):
+    plate_solve_result: PlateSolveResult | None = None
 
 
 class AstroGalleryListResponse(BaseModel):

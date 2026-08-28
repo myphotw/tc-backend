@@ -60,6 +60,10 @@ joining an active `astro_observation_records` row to its active `common_files`
 asset and required `AstroJournal` entry in `common_file_services`. The list uses
 `page`/`page_size`, sorts by `captured_at DESC` with `created_at DESC` fallback,
 and supports `catalog_object_id`, `favorite`, `date_from`, and `date_to` filters.
+Gallery list items expose Plate Solve status and persistent job ID. Gallery and
+Observation detail responses additionally hydrate the saved WCS result for
+`COMPLETED` jobs by numeric `common_files.id`; non-completed or missing jobs
+return null result data.
 
 ## AstroJournal Mutation Contract (B5-01)
 
@@ -123,6 +127,23 @@ Google Vision keeps its service-account JSON file flow. See
 `docs/API_REFERENCE.md` and `docs/SECURITY.md` for contracts and deployment
 boundaries.
 
+## AstroJournal Astronomy Events
+
+`GET /api/astro/events` returns upcoming SpaceCatalog events through a stable
+Backend-owned projection. The default UTC range is today through six calendar
+months; optional `from`/`to` ISO-8601 timestamps may span at most two years.
+The response includes major meteor showers (`zhr >= 10`), solar/lunar eclipses,
+planet oppositions/greatest elongations, and provider-curated close
+conjunctions. Moon quarters, seasons, and asteroid flybys are excluded.
+
+Provider titles are normalized to concise Korean names and each event carries
+at most two observation tags. Solar eclipses use `보호장비 필수` and never the
+unsafe `맨눈 관측` tag. Results use timezone-aware UTC timestamps, remove ended
+and duplicate events, and sort by nearest peak. A process-local 24-hour cache
+avoids repeated provider calls; provider failure returns a last successful
+in-memory entry when available. SpaceCatalog needs no API key. No DB table or
+migration is involved.
+
 ## 프로젝트 구조
 
 ```
@@ -138,6 +159,7 @@ app/
 worker/
   background_worker.py     # UploadWorker
   vision_worker.py         # VisionWorker
+  plate_solve_worker.py    # Astro Plate Solve queue worker
   plugins/                 # Plugin Registry
 watcher/                   # PC Folder Watcher
 docs/
@@ -151,6 +173,9 @@ UploadWorker
 
 VisionWorker
   Vision Queue → VisionPlugin (Google Vision Labels → AI Tags)
+
+PlateSolveWorker
+  Astro Observation → Plate Solve Queue → Astrometry.net → persisted result
 ```
 
 ### Photo metadata maintenance backfill
@@ -224,6 +249,7 @@ PHOTO_PLATFORM_ROOT/
 
 - `POST /api/common/upload`
 - `GET /api/common/changes`
+- `GET /api/astro/events`
 - `GET /api/common/gallery`
 - `GET /api/common/gallery/{file_id}`
 - `GET /api/common/gallery/search`
@@ -297,6 +323,11 @@ rename/merge 또는 Vision 재처리 후에도 유지되며 AstroJournal project
 | `GEOCODING_MONTHLY_LIMIT` | `100000` | Geocoding 월간 unit |
 | `WEATHER_MONTHLY_LIMIT` | `100000` | Weather 월간 unit |
 | `PLATESOLVE_MONTHLY_LIMIT` | `100000` | Platesolve 월간 unit |
+| `PLATE_SOLVE_POLLING_INTERVAL` | `5` | Queue idle polling 간격(sec) |
+| `PLATE_SOLVE_PROVIDER_POLL_INTERVAL` | `5` | Astrometry 상태 polling 간격(sec) |
+| `PLATE_SOLVE_PROVIDER_TIMEOUT` | `1800` | 한 solve의 provider 대기 상한(sec) |
+| `PLATE_SOLVE_LEASE_SECONDS` | `300` | PROCESSING job lease(sec) |
+| `PLATE_SOLVE_WORKER_ID` | hostname + pid | Worker/lease owner 식별자 |
 
 ## 실행 방법
 

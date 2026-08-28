@@ -7,6 +7,7 @@ from app.astrojournal.schemas.observation_record import (
     ObservationRecordCreate,
     ObservationRecordConflictResponse,
     ObservationRecordDeleteResponse,
+    ObservationRecordDetailResponse,
     ObservationRecordResponse,
     ObservationRecordUpdate,
 )
@@ -38,9 +39,12 @@ def list_records(
     )
 
 
-@router.get("/{record_id}", response_model=ObservationRecordResponse)
-def get_record(record_id: str, db: Session = Depends(get_db)) -> ObservationRecordResponse:
-    return ObservationRecordService(db).get(record_id)
+@router.get("/{record_id}", response_model=ObservationRecordDetailResponse)
+def get_record(
+    record_id: str,
+    db: Session = Depends(get_db),
+) -> ObservationRecordDetailResponse:
+    return ObservationRecordService(db).get_detail(record_id)
 
 
 @router.patch(

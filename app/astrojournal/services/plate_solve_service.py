@@ -1,4 +1,4 @@
-"""Stateless Backend job facade over Astrometry.net submission identifiers."""
+"""Persistent Plate Solve queue API with legacy token lookup compatibility."""
 
 from __future__ import annotations
 
@@ -8,15 +8,14 @@ from sqlalchemy.orm import Session
 
 from app.common.models.file import CommonFile
 from app.common.repositories.file_service_repository import FileServiceRepository
-from app.common.security.crypto import decrypt_value, encrypt_value
+from app.common.security.crypto import decrypt_value
 from app.common.services.api_clients.astrometry import AstrometryClient
 from app.common.services.api_clients.base_client import (
     ApiClientError,
     ExternalApiErrorCode,
 )
-from app.common.services.key_resolver import ExternalServiceName, KeyResolver
-from app.common.services.storage_service import StorageService
 from app.astrojournal.services.reset_guard import acquire_astrojournal_reset_lock
+from app.astrojournal.services.plate_solve_queue_service import PlateSolveQueueService
 
 
 class PlateSolveService:
@@ -25,44 +24,34 @@ class PlateSolveService:
 
     def submit(self, *, common_file_id: int) -> dict[str, object]:
         common_file = self._get_astro_file(common_file_id)
+        queue = PlateSolveQueueService(self.db)
+        queued = queue.get_for_file(common_file.id)
+        if queued is not None:
+            return queue.response(queued)
         if not common_file.original_path:
             raise ApiClientError(
                 "Common file has no original media path",
                 code=ExternalApiErrorCode.INVALID_REQUEST,
             )
-        image_path = StorageService().resolve_storage_path(common_file.original_path)
-        api_key = KeyResolver(self.db).resolve(ExternalServiceName.ASTROMETRY)
-        if not api_key:
-            raise ApiClientError(
-                "ASTROMETRY is not configured",
-                code=ExternalApiErrorCode.API_KEY_NOT_CONFIGURED,
-            )
-        submitted = AstrometryClient(api_key=api_key, db=self.db).submit(
-            image_path=str(image_path)
+        job, _ = queue.enqueue(
+            common_file_id=common_file.id,
+            observation_record_id=None,
         )
-        submission_id = int(submitted["submission_id"])
-        token = encrypt_value(
-            json.dumps(
-                {
-                    "v": 1,
-                    "submission_id": submission_id,
-                    "common_file_id": common_file.id,
-                },
-                separators=(",", ":"),
-            )
-        )
-        return {
-            "job_id": token,
-            "status": "WAITING",
-            "common_file_id": common_file.id,
-            "provider": "astrometry.net",
-            "result": None,
-            "provider_metadata": {"submission_id": submission_id},
-        }
+        return queue.response(job)
 
     def get(self, *, job_id: str) -> dict[str, object]:
+        queued = PlateSolveQueueService(self.db).get_optional(job_id)
+        if queued is not None:
+            return PlateSolveQueueService(self.db).response(queued)
+
         payload = self._decode_job(job_id)
         common_file = self._get_astro_file(int(payload["common_file_id"]))
+        common_file_id = int(common_file.id)
+        width = common_file.width
+        height = common_file.height
+        # Legacy provider polling remains supported, but its validation read
+        # transaction must not stay open during the external HTTP request.
+        self.db.rollback()
         provider = AstrometryClient(api_key=None, db=None).get_status(
             submission_id=int(payload["submission_id"])
         )
@@ -71,10 +60,10 @@ class PlateSolveService:
             pixel_scale = provider.get("pixel_scale")
             field_width = provider.get("field_width")
             field_height = provider.get("field_height")
-            if pixel_scale is not None and common_file.width:
-                field_width = float(pixel_scale) * common_file.width / 3600.0
-            if pixel_scale is not None and common_file.height:
-                field_height = float(pixel_scale) * common_file.height / 3600.0
+            if pixel_scale is not None and width:
+                field_width = float(pixel_scale) * width / 3600.0
+            if pixel_scale is not None and height:
+                field_height = float(pixel_scale) * height / 3600.0
             result = {
                 "ra": provider.get("ra"),
                 "dec": provider.get("dec"),
@@ -87,7 +76,7 @@ class PlateSolveService:
         return {
             "job_id": job_id,
             "status": provider["status"],
-            "common_file_id": common_file.id,
+            "common_file_id": common_file_id,
             "provider": "astrometry.net",
             "result": result,
             "provider_metadata": {
@@ -95,6 +84,13 @@ class PlateSolveService:
                 "provider_job_id": provider.get("provider_job_id"),
             },
         }
+
+    def summary(self) -> dict[str, int]:
+        return PlateSolveQueueService(self.db).summary()
+
+    def retry(self, *, job_id: str) -> dict[str, object]:
+        queue = PlateSolveQueueService(self.db)
+        return queue.response(queue.retry(job_id))
 
     def _get_astro_file(self, common_file_id: int) -> CommonFile:
         acquire_astrojournal_reset_lock(self.db, exclusive=False)

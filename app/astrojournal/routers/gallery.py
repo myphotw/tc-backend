@@ -5,7 +5,10 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.astrojournal.schemas.gallery import AstroGalleryItem, AstroGalleryListResponse
+from app.astrojournal.schemas.gallery import (
+    AstroGalleryDetailItem,
+    AstroGalleryListResponse,
+)
 from app.astrojournal.services.gallery_service import AstroGalleryService
 from app.common.database import get_db
 
@@ -32,9 +35,9 @@ def list_gallery(
     )
 
 
-@router.get("/{record_id}", response_model=AstroGalleryItem)
+@router.get("/{record_id}", response_model=AstroGalleryDetailItem)
 def get_gallery_record(
     record_id: str,
     db: Session = Depends(get_db),
-) -> AstroGalleryItem:
+) -> AstroGalleryDetailItem:
     return AstroGalleryService(db).get_detail(record_id)

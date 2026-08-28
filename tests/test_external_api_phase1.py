@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -415,7 +416,7 @@ class ExternalApiPhase1Tests(unittest.TestCase):
             AstrometryClient(api_key="").submit(image_path="missing.jpg")
         self.assertEqual(missing.exception.code, ExternalApiErrorCode.API_KEY_NOT_CONFIGURED)
 
-    def test_plate_solve_opaque_job_contract_without_schema_change(self):
+    def test_plate_solve_legacy_opaque_job_get_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             image_path = Path(directory) / "image.jpg"
             image_path.write_bytes(b"image")
@@ -434,21 +435,23 @@ class ExternalApiPhase1Tests(unittest.TestCase):
             )
             self.db.commit()
 
-            with patch(
-                "app.astrojournal.services.plate_solve_service.KeyResolver.resolve",
-                return_value="test-astrometry-value",
-            ), patch(
-                "app.astrojournal.services.plate_solve_service.AstrometryClient.submit",
-                return_value={"submission_id": 41, "status": "WAITING"},
-            ):
-                submitted = PlateSolveService(self.db).submit(common_file_id=common_file.id)
-            self.assertNotIn("41", submitted["job_id"])
+            legacy_job_id = encrypt_value(
+                json.dumps(
+                    {
+                        "v": 1,
+                        "submission_id": 41,
+                        "common_file_id": common_file.id,
+                    },
+                    separators=(",", ":"),
+                )
+            )
+            self.assertNotIn("41", legacy_job_id)
 
-            with patch(
-                "app.astrojournal.services.plate_solve_service.AstrometryClient.get_status",
-                return_value={
+            def legacy_status(*, submission_id: int):
+                self.assertFalse(self.db.in_transaction())
+                return {
                     "status": "COMPLETED",
-                    "submission_id": 41,
+                    "submission_id": submission_id,
                     "provider_job_id": 99,
                     "ra": 10,
                     "dec": 20,
@@ -457,9 +460,13 @@ class ExternalApiPhase1Tests(unittest.TestCase):
                     "field_width": 1,
                     "field_height": 1,
                     "parity": 1,
-                },
+                }
+
+            with patch(
+                "app.astrojournal.services.plate_solve_service.AstrometryClient.get_status",
+                side_effect=legacy_status,
             ):
-                result = PlateSolveService(self.db).get(job_id=submitted["job_id"])
+                result = PlateSolveService(self.db).get(job_id=legacy_job_id)
             self.assertEqual(result["status"], "COMPLETED")
             self.assertEqual(result["result"]["field_width"], 2)
             self.assertEqual(result["result"]["field_height"], 1)
@@ -482,6 +489,8 @@ class ExternalApiPhase1Tests(unittest.TestCase):
             "/api/common/weather/current",
             "/api/common/weather/forecast",
             "/api/astro/plate-solve",
+            "/api/astro/plate-solve/summary",
+            "/api/astro/plate-solve/{job_id}/retry",
             "/api/astro/plate-solve/{job_id}",
         ):
             self.assertIn(path, paths)

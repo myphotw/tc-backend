@@ -8,6 +8,7 @@ from app.common.database import get_db
 from app.common.schemas.external_api import (
     PlateSolveCreateRequest,
     PlateSolveJobResponse,
+    PlateSolveStatusSummary,
 )
 from app.common.services.api_clients.base_client import (
     ApiClientError,
@@ -23,6 +24,16 @@ def submit_plate_solve(
     db: Session = Depends(get_db),
 ):
     return _call(PlateSolveService(db).submit, common_file_id=data.common_file_id)
+
+
+@router.get("/summary", response_model=PlateSolveStatusSummary)
+def get_plate_solve_summary(db: Session = Depends(get_db)):
+    return PlateSolveService(db).summary()
+
+
+@router.post("/{job_id}/retry", response_model=PlateSolveJobResponse, status_code=202)
+def retry_plate_solve(job_id: str, db: Session = Depends(get_db)):
+    return _call(PlateSolveService(db).retry, job_id=job_id)
 
 
 @router.get("/{job_id}", response_model=PlateSolveJobResponse)

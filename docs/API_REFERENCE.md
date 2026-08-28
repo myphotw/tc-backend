@@ -81,24 +81,34 @@ timestamped slots including precipitation probability and rain volume.
 
 The file must be an active `common_files.id` linked to `AstroJournal`. The
 Backend reuses its original media and does not upload the image from the app a
-second time. A successful submission returns HTTP `202`:
+second time. A successful queue request returns HTTP `202`:
 
 ```json
 {
-  "job_id": "opaque-token",
+  "job_id": "6de34c79-a067-43ec-9bd6-e683f5926c73",
   "status": "WAITING",
   "common_file_id": 180,
   "provider": "astrometry.net",
   "result": null,
-  "provider_metadata": {"submission_id": 123}
+  "provider_metadata": {"submission_id": null, "provider_job_id": null}
 }
 ```
 
 `GET /api/astro/plate-solve/{job_id}` returns `WAITING`, `PROCESSING`,
 `COMPLETED`, or `FAILED`. A completed result contains `ra`, `dec`, `rotation`,
-`pixel_scale`, `field_width`, `field_height`, and `parity`. Phase 1 uses an
-encrypted stateless token backed by the provider submission rather than a new
-database table or worker queue.
+`pixel_scale`, `field_width`, `field_height`, and `parity`.
+
+New ObservationRecords automatically enqueue one persistent Plate Solve job per
+numeric `common_files.id`. The POST endpoint creates or reuses the same queue
+row and never starts a new stateless provider submission. `PlateSolveWorker`
+claims the job and performs the Astrometry submit/poll outside database
+transactions. Queue job IDs are UUIDs; the GET endpoint also continues to
+accept encrypted Phase 1 tokens that were issued before the persistent queue.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/astro/plate-solve/summary` | Counts `total`, `WAITING`, `PROCESSING`, `COMPLETED`, `FAILED`. |
+| POST | `/api/astro/plate-solve/{job_id}/retry` | Moves a persisted `FAILED` job back to `WAITING`. |
 
 ### External API errors
 
@@ -106,6 +116,54 @@ Errors use FastAPI `detail` with a stable `code`: `API_KEY_NOT_CONFIGURED`
 (`503`), `API_LIMIT_EXCEEDED` (`429`), `PROVIDER_TIMEOUT` (`504`),
 `PROVIDER_ERROR` (`502`), or `INVALID_REQUEST` (`400`). Raw provider bodies,
 request URLs containing credentials, and key values are not returned.
+
+### AstroJournal Astronomy Events
+
+#### `GET /api/astro/events`
+
+Returns a normalized upcoming-event list sourced from SpaceCatalog. The
+provider's raw response, query vocabulary, descriptions, URLs, attribution, and
+circumstance payload are not exposed to AstroJournal.
+
+| Query | Default | Contract |
+|-------|---------|----------|
+| `from` | current UTC date at `00:00:00Z` | Timezone-aware ISO-8601 start. |
+| `to` | six calendar months after `from` | Timezone-aware ISO-8601 end; later than `from` and at most two years after it. |
+
+```json
+{
+  "events": [
+    {
+      "id": "shower-perseids-2027-08-12",
+      "type": "meteor_shower",
+      "title": "페르세우스자리 유성우",
+      "start_at": "2027-07-17T19:17:40Z",
+      "peak_at": "2027-08-12T22:34:27Z",
+      "end_at": "2027-08-24T09:08:06Z",
+      "tags": ["맨눈 관측", "광시야 촬영"],
+      "priority": 90
+    }
+  ]
+}
+```
+
+Normalized types are `meteor_shower`, `solar_eclipse`, `lunar_eclipse`,
+`planet_viewing`, and `conjunction`. `start_at`/`end_at` come from a shower's
+provider window and are null for instant events; `peak_at` is always the
+provider's UTC instant. No D-Day display string is returned.
+
+Only showers with provider `circumstances.zhr >= 10` are included. Moon
+quarters, seasons, asteroid flybys, unsupported records, completed events, and
+duplicate IDs are omitted. Results sort by `peak_at` ascending. Solar eclipse
+tags are `보호장비 필수` and `촬영 추천`; they never recommend naked-eye
+observation.
+
+Successful responses are held in a process-local cache for 24 hours per query
+range. An expired matching entry is returned when SpaceCatalog is unavailable;
+for the moving default range, the latest successful entry may be used as stale
+fallback. With no usable cache, errors follow the common provider contract
+(`429`, `502`, or `504`). The cache is lost on process restart. SpaceCatalog
+requires no API key and this endpoint adds no DB state.
 
 ### Capability and readiness
 
@@ -129,7 +187,7 @@ collections without duplicating its physical storage.
 |--------|----------|-------------|
 | POST | `/api/astro/records` | Create an AstroJournal observation for an existing `common_files.id`. |
 | GET | `/api/astro/records` | List active records; supports `catalog_object_id`, `favorite`, `representative`. |
-| GET | `/api/astro/records/{record_id}` | Read one active record. |
+| GET | `/api/astro/records/{record_id}` | Read one active record with Plate Solve job/result projection. |
 | PATCH | `/api/astro/records/{record_id}` | Update with required `revision`; stale revisions return `409 Conflict`. |
 | DELETE | `/api/astro/records/{record_id}` | Soft delete the record. |
 
@@ -137,6 +195,11 @@ collections without duplicating its physical storage.
 active representative for the same catalog object. The response includes
 `revision`, timestamps, plate-solve status, and FileAsset FK. These endpoints do
 not change MemoryKeeper API behavior.
+
+The record detail additionally returns `plate_solve_job_id` and
+`plate_solve_result`. The result is populated only for a persisted `COMPLETED`
+job; all other job states return null result fields. A record without a job
+keeps its existing `plate_solve_status` and returns null job/result.
 
 ## AstroJournal Gallery Projection (B4-01)
 
@@ -146,8 +209,8 @@ fields to `/api/common/gallery*`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/astro/gallery` | List active Astro observations with FileAsset media URLs. |
-| GET | `/api/astro/gallery/{record_id}` | Read one active projected observation; otherwise `404`. |
+| GET | `/api/astro/gallery` | List active observations with media URLs plus Plate Solve status/job ID. |
+| GET | `/api/astro/gallery/{record_id}` | Read one projection with persisted Plate Solve result; otherwise `404`. |
 
 List query parameters are `page`, `page_size`, `catalog_object_id`, `favorite`,
 `date_from`, and `date_to`. Results sort by `captured_at DESC`, then
@@ -155,6 +218,14 @@ List query parameters are `page`, `page_size`, `catalog_object_id`, `favorite`,
 deleted, the FileAsset is deleted or missing, or the FileAsset has no
 `AstroJournal` domain link. Media URLs reuse Common Gallery routes and are null
 when the corresponding storage path is absent.
+
+Both projections join the Plate Solve job by numeric
+`ObservationRecord.file_id = astro_plate_solve_jobs.common_file_id`. SHA
+`common_files.file_id` retains its existing media identity meaning. List items
+include `plate_solve_status` and `plate_solve_job_id`; only detail responses add
+`plate_solve_result` (`ra`, `dec`, `rotation`, `pixel_scale`, `field_width`,
+`field_height`, `parity`). The job ID is returned as an opaque string suitable
+for the existing retry endpoint.
 
 ## AstroJournal Mutation Contract (B5-01)
 
@@ -211,14 +282,15 @@ Both endpoints use the common Bearer authentication dependency.
 
 Execute requires `{"confirmation":"RESET_ASTROJOURNAL"}`. Invalid
 confirmation returns `422`. A PROCESSING Astro upload or Astro-only Vision job
-returns `409 ASTROJOURNAL_RESET_BLOCKED`. Astro-only media is removed and its
-CommonFile becomes a tombstone. Shared media, metadata, MemoryKeeper state and
-other links are preserved. Astro upload/idempotency rows are removed, allowing
-same-ID and byte-identical re-registration.
+or Plate Solve job returns `409 ASTROJOURNAL_RESET_BLOCKED`. Astro-only media is
+removed and its CommonFile becomes a tombstone. Shared media, metadata,
+MemoryKeeper state and other links are preserved. Astro upload/idempotency rows
+are removed, allowing same-ID and byte-identical re-registration.
 
 One `AstroJournalReset` change event invalidates the complete capture
-projection. Plate Solve has no persisted Backend result row and PhotoObject is
-not implemented, so their current preview/delete counts are zero. See
+projection. The current Reset contract does not yet delete or count persistent
+Plate Solve queue/result rows, so its Plate Solve counts remain zero.
+PhotoObject is not implemented. See
 [ASTROJOURNAL_RESET.md](ASTROJOURNAL_RESET.md).
 
 ## Changes Cursor API (B6-01)

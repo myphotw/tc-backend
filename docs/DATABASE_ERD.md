@@ -22,6 +22,8 @@ erDiagram
     common_files ||--o{ common_vision_jobs : queues
     common_files ||--o{ common_file_services : linked_to
     common_files ||--o{ astro_observation_records : observed_as
+    common_files ||--o| astro_plate_solve_jobs : solved_by
+    astro_observation_records ||--o| astro_plate_solve_jobs : queues
     common_files ||--o| memorykeeper_file_states : has_memorykeeper_state
     common_files ||--o{ mk_file_tag_suppressions : suppresses_for_memorykeeper
     mk_tags ||--o{ common_file_tags : catalogs
@@ -115,6 +117,30 @@ erDiagram
         datetime updated_at
         datetime deleted_at
         int revision
+    }
+
+    astro_plate_solve_jobs {
+        uuid id PK
+        int common_file_id UK_FK
+        uuid observation_record_id FK
+        string status
+        int attempts
+        int provider_submission_id
+        int provider_job_id
+        string worker_id
+        datetime lease_expires_at
+        float ra
+        float dec
+        float rotation
+        float pixel_scale
+        float field_width
+        float field_height
+        float parity
+        text last_error
+        datetime created_at
+        datetime started_at
+        datetime completed_at
+        datetime updated_at
     }
 
     common_change_events {

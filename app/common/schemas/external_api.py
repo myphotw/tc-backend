@@ -108,3 +108,10 @@ class PlateSolveJobResponse(BaseModel):
     result: PlateSolveResult | None = None
     provider_metadata: dict[str, int | str | None] = Field(default_factory=dict)
 
+
+class PlateSolveStatusSummary(BaseModel):
+    total: int
+    WAITING: int
+    PROCESSING: int
+    COMPLETED: int
+    FAILED: int

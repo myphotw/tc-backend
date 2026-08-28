@@ -74,5 +74,14 @@ services:
       backend:
         condition: service_healthy
 
+  plate-solve-worker:
+    <<: *app-base
+    # Start with: docker compose --profile astro up -d plate-solve-worker
+    profiles: ["astro"]
+    command: ["python", "-m", "worker.plate_solve_worker"]
+    depends_on:
+      backend:
+        condition: service_healthy
+
 volumes:
   postgres_data:

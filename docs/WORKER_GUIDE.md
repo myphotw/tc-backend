@@ -59,6 +59,30 @@ MemoryKeeper/AstroJournal 공통이고 UTC 월 변경 시 자동으로 새 월 �
 
 Upload API는 Queue를 만들지 않는다. UploadWorker가 Metadata/EXIF/GPS 후 enqueue.
 
+## PlateSolveWorker
+
+Entry: `python -m worker.plate_solve_worker`
+
+```
+ObservationRecord CREATE
+  → astro_plate_solve_jobs WAITING (common_file_id UNIQUE)
+  → short claim transaction + lease
+  → PROCESSING
+  → Astrometry submit/poll (no DB transaction)
+  → short result transaction
+  → COMPLETED / FAILED
+```
+
+The canonical identity is numeric `common_files.id`; SHA `common_files.file_id`
+is never used as the queue FK. Expired PROCESSING leases are reclaimable. A
+reclaimed row with `provider_submission_id` resumes polling without uploading
+the physical file again. Heartbeat and lease updates use independent short
+sessions. Retry is explicit through the Plate Solve retry API and preserves the
+attempt count. `POST /api/astro/plate-solve` only creates or reuses this queue;
+legacy encrypted job IDs remain GET-only compatibility data.
+Each worker uses `PlateSolveWorker-{hostname}-{pid}` by default so scaled
+containers have distinct heartbeat and lease-owner identities.
+
 ## EXIF / GPS persistence and maintenance
 
 신규 업로드는 `MetadataPlugin → ExifPlugin → GpsPlugin` 순서로 처리한다.

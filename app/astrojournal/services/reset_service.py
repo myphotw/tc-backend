@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.astrojournal.models.observation_record import ObservationRecord
+from app.astrojournal.models.plate_solve_job import AstroPlateSolveJob
+from app.astrojournal.repositories.plate_solve_job_repository import PlateSolveJobStatus
 from app.astrojournal.schemas.reset import (
     AstroJournalResetExecuteResponse,
     AstroJournalResetPreviewResponse,
@@ -56,7 +59,12 @@ class AstroJournalResetService:
         processing_vision_count = self._processing_vision_jobs(
             scope.astro_only_file_ids
         ).count()
-        processing_job_count = processing_upload_count + processing_vision_count
+        processing_plate_solve_count = self._processing_plate_solve_jobs().count()
+        processing_job_count = (
+            processing_upload_count
+            + processing_vision_count
+            + processing_plate_solve_count
+        )
         astro_only_files = self._common_files(scope.astro_only_file_ids)
         return AstroJournalResetPreviewResponse(
             observation_record_count=(
@@ -67,7 +75,7 @@ class AstroJournalResetService:
             astro_file_count=len(scope.target_file_ids),
             astro_only_file_count=len(scope.astro_only_file_ids),
             shared_file_count=len(scope.shared_file_ids),
-            # Plate Solve is a stateless encrypted Astrometry submission token;
+            # Persistent Plate Solve retention is not part of Reset yet.
             # PhotoObject has no Backend persistence model in the current schema.
             plate_solve_result_count=0,
             photo_object_count=0,
@@ -111,6 +119,19 @@ class AstroJournalResetService:
 
             scope = self._scope()
             astro_only_files = self._common_files(scope.astro_only_file_ids)
+
+            self._plate_solve_jobs().filter(
+                AstroPlateSolveJob.status == PlateSolveJobStatus.WAITING
+            ).update(
+                {
+                    AstroPlateSolveJob.status: PlateSolveJobStatus.FAILED,
+                    AstroPlateSolveJob.completed_at: datetime.now(timezone.utc),
+                    AstroPlateSolveJob.last_error: (
+                        "AstroJournal Reset occurred before Plate Solve started"
+                    ),
+                },
+                synchronize_session=False,
+            )
 
             self._delete_upload_incoming_assets()
             asset_cleanup = self.cleanup_service.delete_reset_assets(
@@ -216,6 +237,7 @@ class AstroJournalResetService:
 
     def _lock_scope(self) -> None:
         self._upload_jobs().with_for_update().all()
+        self._plate_solve_jobs().with_for_update().all()
         (
             self.db.query(ObservationRecord)
             .filter(ObservationRecord.service_name == self.SERVICE_NAME)
@@ -280,6 +302,14 @@ class AstroJournalResetService:
                 .filter(CommonVisionJob.status == VisionJobStatus.PROCESSING)
             )
         return query
+
+    def _plate_solve_jobs(self):
+        return self.db.query(AstroPlateSolveJob)
+
+    def _processing_plate_solve_jobs(self):
+        return self._plate_solve_jobs().filter(
+            AstroPlateSolveJob.status == PlateSolveJobStatus.PROCESSING
+        )
 
     def _delete_upload_incoming_assets(self) -> None:
         for job in self._upload_jobs().all():

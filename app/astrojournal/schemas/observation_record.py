@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.common.schemas.external_api import PlateSolveResult
+
 
 class ObservationRecordCreate(BaseModel):
     file_id: int
@@ -43,7 +45,7 @@ class ObservationRecordUpdate(BaseModel):
 
 
 class ObservationRecordResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
     id: UUID
     record_id: UUID = Field(validation_alias="id")
@@ -64,6 +66,11 @@ class ObservationRecordResponse(BaseModel):
     updated_at: datetime
     deleted_at: datetime | None
     revision: int
+
+
+class ObservationRecordDetailResponse(ObservationRecordResponse):
+    plate_solve_job_id: str | None = None
+    plate_solve_result: PlateSolveResult | None = None
 
 
 class ObservationRecordDeleteResponse(BaseModel):
