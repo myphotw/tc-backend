@@ -449,6 +449,95 @@ class PlateSolveQueueTests(unittest.TestCase):
         self.assertEqual(job.attempts, 1)
         self.assertIn("FAILED", job.last_error)
 
+    def test_new_submission_waits_for_job_then_persists_and_completes(self) -> None:
+        common_file = self._file()
+        self._record(common_file)
+        queued = self.db.query(AstroPlateSolveJob).one()
+        queued_job_id = queued.id
+        test_case = self
+
+        class DelayedJobClient:
+            submit_count = 0
+            submission_lookups = 0
+            job_lookups = 0
+
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+            def submit(self, *, image_path: str):
+                type(self).submit_count += 1
+                return {"status": "WAITING", "submission_id": 15936597}
+
+            def get_submission_status(self, *, submission_id: int):
+                test_case.assertEqual(submission_id, 15936597)
+                type(self).submission_lookups += 1
+                if type(self).submission_lookups == 1:
+                    return {
+                        "status": "WAITING",
+                        "submission_id": submission_id,
+                        "provider_job_id": None,
+                        "processing_finished": "2026-08-29 00:00:01.000000",
+                    }
+                return {
+                    "status": "PROCESSING",
+                    "submission_id": submission_id,
+                    "provider_job_id": 16772087,
+                    "processing_finished": "2026-08-29 00:00:01.000000",
+                }
+
+            def get_job_status(self, *, submission_id: int, provider_job_id: int):
+                type(self).job_lookups += 1
+                test_case.assertEqual(submission_id, 15936597)
+                test_case.assertEqual(provider_job_id, 16772087)
+                verification_db = test_case.Session()
+                try:
+                    persisted = verification_db.get(AstroPlateSolveJob, queued_job_id)
+                    test_case.assertEqual(
+                        persisted.provider_submission_id,
+                        15936597,
+                    )
+                    test_case.assertEqual(
+                        persisted.provider_job_id,
+                        16772087,
+                        "provider_job_id must be committed before job polling",
+                    )
+                finally:
+                    verification_db.close()
+                return {
+                    "status": "COMPLETED",
+                    "submission_id": submission_id,
+                    "provider_job_id": provider_job_id,
+                    "ra": 83.822,
+                    "dec": -5.391,
+                    "rotation": 12.5,
+                    "pixel_scale": 2.0,
+                    "parity": 1,
+                }
+
+            def close(self) -> None:
+                pass
+
+        self.assertTrue(
+            process_next_plate_solve_job(
+                session_factory=self.Session,
+                client_factory=DelayedJobClient,
+                worker_id="new-submit-worker",
+                api_key="test-key",
+                provider_poll_interval=0,
+                provider_timeout=1,
+            )
+        )
+        self.db.refresh(queued)
+        self.assertEqual(DelayedJobClient.submit_count, 1)
+        self.assertEqual(DelayedJobClient.submission_lookups, 2)
+        self.assertEqual(DelayedJobClient.job_lookups, 1)
+        self.assertEqual(queued.status, PlateSolveJobStatus.COMPLETED)
+        self.assertEqual(queued.provider_submission_id, 15936597)
+        self.assertEqual(queued.provider_job_id, 16772087)
+        self.assertEqual(queued.attempts, 1)
+        self.assertAlmostEqual(queued.field_width, 2.0)
+        self.assertAlmostEqual(queued.field_height, 1.0)
+
     def test_status_summary(self) -> None:
         first_file = self._file("1" * 64)
         second_file = self._file("2" * 64)

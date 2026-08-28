@@ -137,10 +137,9 @@ class AstrometryClient(BaseClient):
             raise
         jobs = [job for job in submission.get("jobs") or [] if job is not None]
         if not jobs:
-            status = "FAILED" if submission.get("processing_finished") else "WAITING"
             return {
                 "provider": "astrometry.net",
-                "status": status,
+                "status": "WAITING",
                 "submission_id": submission_id,
                 "provider_job_id": None,
             }

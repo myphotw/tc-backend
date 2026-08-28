@@ -450,9 +450,6 @@ def _poll_provider(
             if submission_id is None:
                 raise RuntimeError("Astrometry provider identifiers are missing")
             provider = client.get_submission_status(submission_id=submission_id)
-            status = provider.get("status")
-            if status == "FAILED":
-                raise RuntimeError("Astrometry provider reported FAILED")
             resolved_job_id = provider.get("provider_job_id")
             if resolved_job_id is not None:
                 provider_job_id = int(resolved_job_id)
@@ -463,6 +460,9 @@ def _poll_provider(
                     provider_job_id=provider_job_id,
                 )
                 continue
+            status = provider.get("status")
+            if status == "FAILED":
+                raise RuntimeError("Astrometry provider reported FAILED")
         else:
             provider = client.get_job_status(
                 submission_id=submission_id,

@@ -398,6 +398,38 @@ class ExternalApiPhase1Tests(unittest.TestCase):
         ).get_status(submission_id=41)
         self.assertEqual(waiting["status"], "WAITING")
 
+        finished_without_job = AstrometryClient(
+            api_key="test-astrometry-value",
+            session=FakeHttpSession(
+                FakeResponse(
+                    {
+                        "processing_finished": "2026-08-29 00:00:00.000000",
+                        "jobs": [],
+                    }
+                )
+            ),
+        ).get_submission_status(submission_id=15936597)
+        self.assertEqual(finished_without_job["status"], "WAITING")
+        self.assertIsNone(finished_without_job["provider_job_id"])
+
+        finished_with_job = AstrometryClient(
+            api_key="test-astrometry-value",
+            session=FakeHttpSession(
+                FakeResponse(
+                    {
+                        "processing_started": "2026-08-29 00:00:00.000000",
+                        "processing_finished": "2026-08-29 00:00:01.000000",
+                        "user_images": [16194376],
+                        "images": [39940594],
+                        "jobs": [16772087],
+                        "job_calibrations": [[16772087, 13358276]],
+                    }
+                )
+            ),
+        ).get_submission_status(submission_id=15936597)
+        self.assertEqual(finished_with_job["status"], "PROCESSING")
+        self.assertEqual(finished_with_job["provider_job_id"], 16772087)
+
         processing = AstrometryClient(
             api_key="test-astrometry-value",
             session=FakeHttpSession(
