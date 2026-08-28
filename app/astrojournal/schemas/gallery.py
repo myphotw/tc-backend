@@ -18,6 +18,7 @@ class AstroGalleryItem(BaseModel):
     favorite: bool
     representative: bool
     file_id: str
+    common_file_id: int
     filename: str
     mime_type: str | None = None
     thumbnail_url: str | None = None

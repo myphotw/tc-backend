@@ -63,6 +63,7 @@ class AstroGalleryService:
             favorite=bool(record.favorite),
             representative=bool(record.representative),
             file_id=common_file.file_id,
+            common_file_id=common_file.id,
             filename=common_file.original_name,
             mime_type=common_file.mime_type,
             thumbnail_url=build_gallery_media_url(
