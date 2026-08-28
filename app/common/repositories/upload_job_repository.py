@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
-from sqlalchemy import func, update
+from sqlalchemy import case, func, update
 from sqlalchemy.orm import Session
 
 from app.common.models.file import CommonFile
@@ -17,6 +17,13 @@ from app.common.models.upload_job import UploadJob
 logger = logging.getLogger(__name__)
 
 _CLAIMED_WORKER_RE = re.compile(r"CLAIMED worker=([^\s\\]+)")
+
+# Interactive services are claimed ahead of bulk services. Add future
+# interactive services here without changing the claim query structure.
+_SERVICE_CLAIM_PRIORITIES = {
+    "AstroJournal": 0,
+}
+_DEFAULT_SERVICE_CLAIM_PRIORITY = 100
 
 
 class UploadJobStatus:
@@ -48,6 +55,20 @@ class UploadJobRepository:
     def _dialect_name(self) -> str:
         bind = self.db.get_bind()
         return bind.dialect.name if bind is not None else ""
+
+    @staticmethod
+    def _waiting_order_by() -> tuple:
+        """서비스 우선순위 후 서비스 내부 FIFO 정렬을 반환한다."""
+        service_priority = case(
+            _SERVICE_CLAIM_PRIORITIES,
+            value=UploadJob.service_name,
+            else_=_DEFAULT_SERVICE_CLAIM_PRIORITY,
+        )
+        return (
+            service_priority.asc(),
+            UploadJob.created_at.asc(),
+            UploadJob.id.asc(),
+        )
 
     def create_waiting_job(
         self,
@@ -124,7 +145,7 @@ class UploadJobRepository:
         return (
             self.db.query(UploadJob)
             .filter(UploadJob.status == UploadJobStatus.WAITING)
-            .order_by(UploadJob.created_at.asc(), UploadJob.id.asc())
+            .order_by(*self._waiting_order_by())
             .first()
         )
 
@@ -165,7 +186,7 @@ class UploadJobRepository:
         실제 SQL 형태:
         SELECT ... FROM common_upload_jobs
         WHERE status='WAITING'
-        ORDER BY created_at ASC, id ASC
+        ORDER BY service priority, created_at ASC, id ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED;
         -- 이어 UPDATE status/started_at/processing_log 후 COMMIT
@@ -173,7 +194,7 @@ class UploadJobRepository:
         job = (
             self.db.query(UploadJob)
             .filter(UploadJob.status == UploadJobStatus.WAITING)
-            .order_by(UploadJob.created_at.asc(), UploadJob.id.asc())
+            .order_by(*self._waiting_order_by())
             .with_for_update(skip_locked=True)
             .first()
         )
@@ -211,7 +232,7 @@ class UploadJobRepository:
         job = (
             self.db.query(UploadJob)
             .filter(UploadJob.status == UploadJobStatus.WAITING)
-            .order_by(UploadJob.created_at.asc(), UploadJob.id.asc())
+            .order_by(*self._waiting_order_by())
             .first()
         )
         if job is None:
