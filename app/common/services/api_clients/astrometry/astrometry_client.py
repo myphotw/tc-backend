@@ -19,6 +19,18 @@ from app.common.services.api_clients.base_client import (
 )
 
 
+class AstrometryProviderWorkNotFound(ApiClientError):
+    """The provider explicitly reports that a saved submission or job is gone."""
+
+    def __init__(self, *, resource: str, provider_id: int) -> None:
+        super().__init__(
+            f"Astrometry {resource} was not found: {provider_id}",
+            status_code=404,
+        )
+        self.resource = resource
+        self.provider_id = provider_id
+
+
 class AstrometryClient(BaseClient):
     """
     Astrometry.net Plate Solve API Client.
@@ -114,7 +126,15 @@ class AstrometryClient(BaseClient):
 
     def get_submission_status(self, *, submission_id: int) -> dict[str, Any]:
         """Resolve a provider job ID without querying that job yet."""
-        submission = self._get_unmetered(f"/api/submissions/{submission_id}")
+        try:
+            submission = self._get_unmetered(f"/api/submissions/{submission_id}")
+        except ApiClientError as exc:
+            if exc.status_code == 404:
+                raise AstrometryProviderWorkNotFound(
+                    resource="submission",
+                    provider_id=submission_id,
+                ) from exc
+            raise
         jobs = [job for job in submission.get("jobs") or [] if job is not None]
         if not jobs:
             status = "FAILED" if submission.get("processing_finished") else "WAITING"
@@ -136,11 +156,19 @@ class AstrometryClient(BaseClient):
     def get_job_status(
         self,
         *,
-        submission_id: int,
+        submission_id: int | None,
         provider_job_id: int,
     ) -> dict[str, Any]:
         """Query an already resolved provider job and hydrate calibration."""
-        provider_job = self._get_unmetered(f"/api/jobs/{provider_job_id}")
+        try:
+            provider_job = self._get_unmetered(f"/api/jobs/{provider_job_id}")
+        except ApiClientError as exc:
+            if exc.status_code == 404:
+                raise AstrometryProviderWorkNotFound(
+                    resource="job",
+                    provider_id=provider_job_id,
+                ) from exc
+            raise
         provider_status = str(provider_job.get("status") or "").lower()
         if provider_status == "failure":
             return {

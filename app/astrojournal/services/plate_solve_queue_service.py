@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import logging
 from typing import Iterator
 
 from sqlalchemy.orm import Session
@@ -19,6 +20,8 @@ from app.common.services.api_clients.base_client import (
     ApiClientError,
     ExternalApiErrorCode,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class PlateSolveQueueService:
@@ -88,6 +91,13 @@ class PlateSolveQueueService:
                 "Only FAILED Plate Solve jobs can be retried",
                 code=ExternalApiErrorCode.INVALID_REQUEST,
             )
+        logger.info(
+            "Retrying failed Plate Solve job_id=%s while preserving "
+            "provider_submission_id=%s provider_job_id=%s",
+            job.id,
+            job.provider_submission_id,
+            job.provider_job_id,
+        )
         self.repository.retry(job)
         self._sync_observation_status(job, PlateSolveJobStatus.WAITING)
         with self._commit_keep_state():
@@ -183,6 +193,23 @@ class PlateSolveQueueService:
             job_id=job_id,
             worker_id=worker_id,
             provider_job_id=provider_job_id,
+        )
+        if job is None:
+            self.db.rollback()
+            raise RuntimeError("Plate Solve job lease was lost")
+        self.db.commit()
+
+    def record_replacement_submission(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        submission_id: int,
+    ) -> None:
+        job = self.repository.record_replacement_submission(
+            job_id=job_id,
+            worker_id=worker_id,
+            submission_id=submission_id,
         )
         if job is None:
             self.db.rollback()

@@ -22,7 +22,10 @@ from app.common.repositories.api_usage_repository import (
     ApiProvider,
     ApiUsageRepository,
 )
-from app.common.services.api_clients.astrometry import AstrometryClient
+from app.common.services.api_clients.astrometry import (
+    AstrometryClient,
+    AstrometryProviderWorkNotFound,
+)
 from app.common.services.api_clients.base_client import (
     ApiClientError,
     ExternalApiErrorCode,
@@ -140,7 +143,15 @@ def process_next_plate_solve_job(
             )
         client = client_factory(api_key=resolved_key, db=None)
 
-        if work.submission_id is None:
+        submission_id = work.submission_id
+        provider_job_id = work.provider_job_id
+        resuming_saved_work = submission_id is not None or provider_job_id is not None
+        if not resuming_saved_work:
+            logger.info(
+                "Creating initial Astrometry submission job_id=%s common_file_id=%s",
+                job_id,
+                common_file_id,
+            )
             _reserve_submit_usage(session_factory)
             submitted = client.submit(image_path=work.image_path)
             submission_id = int(submitted["submission_id"])
@@ -151,20 +162,62 @@ def process_next_plate_solve_job(
                 submission_id=submission_id,
             )
         else:
-            submission_id = work.submission_id
+            logger.info(
+                "Resuming existing Astrometry work job_id=%s "
+                "provider_submission_id=%s provider_job_id=%s",
+                job_id,
+                submission_id,
+                provider_job_id,
+            )
 
-        provider = _poll_provider(
-            client,
-            submission_id=submission_id,
-            provider_job_id=work.provider_job_id,
-            job_id=job_id,
-            worker_id=worker_id,
-            session_factory=session_factory,
-            monitor=monitor,
-            lease_seconds=lease_seconds,
-            poll_interval=provider_poll_interval,
-            timeout=provider_timeout,
-        )
+        try:
+            provider = _poll_provider(
+                client,
+                submission_id=submission_id,
+                provider_job_id=provider_job_id,
+                job_id=job_id,
+                worker_id=worker_id,
+                session_factory=session_factory,
+                monitor=monitor,
+                lease_seconds=lease_seconds,
+                poll_interval=provider_poll_interval,
+                timeout=provider_timeout,
+            )
+        except AstrometryProviderWorkNotFound as exc:
+            if not resuming_saved_work:
+                raise
+            logger.warning(
+                "Saved Astrometry work is explicitly absent; creating replacement "
+                "submission job_id=%s provider_submission_id=%s provider_job_id=%s "
+                "missing_resource=%s missing_provider_id=%s",
+                job_id,
+                submission_id,
+                provider_job_id,
+                exc.resource,
+                exc.provider_id,
+            )
+            _reserve_submit_usage(session_factory)
+            submitted = client.submit(image_path=work.image_path)
+            submission_id = int(submitted["submission_id"])
+            provider_job_id = None
+            _record_replacement_submission(
+                session_factory,
+                job_id=job_id,
+                worker_id=worker_id,
+                submission_id=submission_id,
+            )
+            provider = _poll_provider(
+                client,
+                submission_id=submission_id,
+                provider_job_id=None,
+                job_id=job_id,
+                worker_id=worker_id,
+                session_factory=session_factory,
+                monitor=monitor,
+                lease_seconds=lease_seconds,
+                poll_interval=provider_poll_interval,
+                timeout=provider_timeout,
+            )
         provider = _normalize_result(provider, width=work.width, height=work.height)
         result_db = session_factory()
         try:
@@ -183,7 +236,9 @@ def process_next_plate_solve_job(
             common_file_id,
         )
     except Exception as exc:
-        if submission_id is not None and _is_transient_provider_error(exc):
+        if (
+            submission_id is not None or provider_job_id is not None
+        ) and _is_transient_provider_error(exc):
             logger.warning(
                 "Transient Plate Solve provider error; requeueing job_id=%s "
                 "submission_id=%s",
@@ -330,6 +385,24 @@ def _record_provider_job(
         db.close()
 
 
+def _record_replacement_submission(
+    session_factory: Callable[[], Session],
+    *,
+    job_id: str,
+    worker_id: str,
+    submission_id: int,
+) -> None:
+    db = session_factory()
+    try:
+        PlateSolveQueueService(db).record_replacement_submission(
+            job_id=job_id,
+            worker_id=worker_id,
+            submission_id=submission_id,
+        )
+    finally:
+        db.close()
+
+
 def _touch_lease(
     session_factory: Callable[[], Session],
     *,
@@ -353,7 +426,7 @@ def _touch_lease(
 def _poll_provider(
     client,
     *,
-    submission_id: int,
+    submission_id: int | None,
     provider_job_id: int | None,
     job_id: str,
     worker_id: str,
@@ -374,6 +447,8 @@ def _poll_provider(
         if monitor is not None:
             monitor.maybe_heartbeat(current_job_id=job_id)
         if provider_job_id is None:
+            if submission_id is None:
+                raise RuntimeError("Astrometry provider identifiers are missing")
             provider = client.get_submission_status(submission_id=submission_id)
             status = provider.get("status")
             if status == "FAILED":

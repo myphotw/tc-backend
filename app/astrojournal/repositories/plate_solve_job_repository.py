@@ -90,7 +90,7 @@ class PlateSolveJobRepository:
         if job is None:
             return None
         job.status = PlateSolveJobStatus.PROCESSING
-        if job.provider_submission_id is None:
+        if job.provider_submission_id is None and job.provider_job_id is None:
             job.attempts = int(job.attempts or 0) + 1
         job.started_at = now
         job.completed_at = None
@@ -149,6 +149,23 @@ class PlateSolveJobRepository:
         if job is None:
             return None
         job.provider_job_id = provider_job_id
+        self.db.flush()
+        return job
+
+    def record_replacement_submission(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        submission_id: int,
+    ) -> AstroPlateSolveJob | None:
+        """Replace confirmed-missing provider work after a new submit succeeds."""
+        job = self._owned_processing_job(job_id=job_id, worker_id=worker_id)
+        if job is None:
+            return None
+        job.provider_submission_id = submission_id
+        job.provider_job_id = None
+        job.attempts = int(job.attempts or 0) + 1
         self.db.flush()
         return job
 
@@ -221,6 +238,7 @@ class PlateSolveJobRepository:
         return job
 
     def retry(self, job: AstroPlateSolveJob) -> AstroPlateSolveJob:
+        """Requeue a failed job while retaining all reusable provider identifiers."""
         job.status = PlateSolveJobStatus.WAITING
         for field in (
             "ra",

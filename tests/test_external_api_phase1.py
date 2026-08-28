@@ -24,7 +24,10 @@ from app.common.routers.api_keys import get_api_keys
 from app.common.routers.capabilities import capabilities
 from app.common.routers.external_apis import current_weather
 from app.common.security.crypto import encrypt_value
-from app.common.services.api_clients.astrometry import AstrometryClient
+from app.common.services.api_clients.astrometry import (
+    AstrometryClient,
+    AstrometryProviderWorkNotFound,
+)
 from app.common.services.api_clients.base_client import (
     ApiClientError,
     ExternalApiErrorCode,
@@ -411,6 +414,15 @@ class ExternalApiPhase1Tests(unittest.TestCase):
         with self.assertRaises(ApiClientError) as timed_out:
             timeout.get_status(submission_id=41)
         self.assertEqual(timed_out.exception.code, ExternalApiErrorCode.PROVIDER_TIMEOUT)
+
+        missing_submission = AstrometryClient(
+            api_key="test-astrometry-value",
+            session=FakeHttpSession(FakeResponse({}, status_code=404)),
+        )
+        with self.assertRaises(AstrometryProviderWorkNotFound) as not_found:
+            missing_submission.get_submission_status(submission_id=15936182)
+        self.assertEqual(not_found.exception.resource, "submission")
+        self.assertEqual(not_found.exception.provider_id, 15936182)
 
         with self.assertRaises(ApiClientError) as missing:
             AstrometryClient(api_key="").submit(image_path="missing.jpg")
