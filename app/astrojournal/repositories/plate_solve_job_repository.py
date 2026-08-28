@@ -90,7 +90,8 @@ class PlateSolveJobRepository:
         if job is None:
             return None
         job.status = PlateSolveJobStatus.PROCESSING
-        job.attempts = int(job.attempts or 0) + 1
+        if job.provider_submission_id is None:
+            job.attempts = int(job.attempts or 0) + 1
         job.started_at = now
         job.completed_at = None
         job.last_error = None
@@ -134,6 +135,40 @@ class PlateSolveJobRepository:
         if job is None:
             return None
         job.provider_submission_id = submission_id
+        self.db.flush()
+        return job
+
+    def record_provider_job(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        provider_job_id: int,
+    ) -> AstroPlateSolveJob | None:
+        job = self._owned_processing_job(job_id=job_id, worker_id=worker_id)
+        if job is None:
+            return None
+        job.provider_job_id = provider_job_id
+        self.db.flush()
+        return job
+
+    def mark_retryable(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        error_message: str,
+    ) -> AstroPlateSolveJob | None:
+        """Release a transient provider failure without losing provider IDs."""
+        job = self._owned_processing_job(job_id=job_id, worker_id=worker_id)
+        if job is None:
+            return None
+        job.status = PlateSolveJobStatus.WAITING
+        job.started_at = None
+        job.completed_at = None
+        job.last_error = error_message
+        job.worker_id = None
+        job.lease_expires_at = None
         self.db.flush()
         return job
 
@@ -187,8 +222,6 @@ class PlateSolveJobRepository:
 
     def retry(self, job: AstroPlateSolveJob) -> AstroPlateSolveJob:
         job.status = PlateSolveJobStatus.WAITING
-        job.provider_submission_id = None
-        job.provider_job_id = None
         for field in (
             "ra",
             "dec",

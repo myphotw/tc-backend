@@ -172,6 +172,43 @@ class PlateSolveQueueService:
             raise RuntimeError("Plate Solve job lease was lost")
         self.db.commit()
 
+    def record_provider_job(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        provider_job_id: int,
+    ) -> None:
+        job = self.repository.record_provider_job(
+            job_id=job_id,
+            worker_id=worker_id,
+            provider_job_id=provider_job_id,
+        )
+        if job is None:
+            self.db.rollback()
+            raise RuntimeError("Plate Solve job lease was lost")
+        self.db.commit()
+
+    def requeue_transient(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        error_message: str,
+    ) -> AstroPlateSolveJob:
+        job = self.repository.mark_retryable(
+            job_id=job_id,
+            worker_id=worker_id,
+            error_message=error_message,
+        )
+        if job is None:
+            self.db.rollback()
+            raise RuntimeError("Plate Solve job lease was lost")
+        self._sync_observation_status(job, PlateSolveJobStatus.WAITING)
+        with self._commit_keep_state():
+            pass
+        return job
+
     def complete(
         self,
         *,

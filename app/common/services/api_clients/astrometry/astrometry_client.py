@@ -102,6 +102,18 @@ class AstrometryClient(BaseClient):
         }
 
     def get_status(self, *, submission_id: int) -> dict[str, Any]:
+        """Legacy combined status lookup used by the synchronous API path."""
+        submission = self.get_submission_status(submission_id=submission_id)
+        provider_job_id = submission.get("provider_job_id")
+        if provider_job_id is None:
+            return submission
+        return self.get_job_status(
+            submission_id=submission_id,
+            provider_job_id=int(provider_job_id),
+        )
+
+    def get_submission_status(self, *, submission_id: int) -> dict[str, Any]:
+        """Resolve a provider job ID without querying that job yet."""
         submission = self._get_unmetered(f"/api/submissions/{submission_id}")
         jobs = [job for job in submission.get("jobs") or [] if job is not None]
         if not jobs:
@@ -114,6 +126,20 @@ class AstrometryClient(BaseClient):
             }
 
         provider_job_id = int(jobs[0])
+        return {
+            "provider": "astrometry.net",
+            "status": "PROCESSING",
+            "submission_id": submission_id,
+            "provider_job_id": provider_job_id,
+        }
+
+    def get_job_status(
+        self,
+        *,
+        submission_id: int,
+        provider_job_id: int,
+    ) -> dict[str, Any]:
+        """Query an already resolved provider job and hydrate calibration."""
         provider_job = self._get_unmetered(f"/api/jobs/{provider_job_id}")
         provider_status = str(provider_job.get("status") or "").lower()
         if provider_status == "failure":

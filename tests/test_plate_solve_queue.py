@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from http.client import RemoteDisconnected
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 
+import requests
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -19,7 +21,11 @@ from app.astrojournal.services.plate_solve_service import PlateSolveService
 from app.common.database import Base
 from app.common.models.file import CommonFile
 from app.common.models.file_service import CommonFileService
-from worker.plate_solve_worker import process_next_plate_solve_job
+from app.common.services.api_clients.base_client import ApiClientError
+from worker.plate_solve_worker import (
+    _is_transient_provider_error,
+    process_next_plate_solve_job,
+)
 
 
 class PlateSolveQueueTests(unittest.TestCase):
@@ -169,11 +175,11 @@ class PlateSolveQueueTests(unittest.TestCase):
 
         retried = queue.retry(failed.id)
         self.assertEqual(retried.status, PlateSolveJobStatus.WAITING)
-        self.assertIsNone(retried.provider_submission_id)
+        self.assertEqual(retried.provider_submission_id, 41)
         self.db.refresh(record)
         self.assertEqual(record.plate_solve_status, PlateSolveJobStatus.WAITING)
         claimed_again = queue.claim_next(worker_id="test-worker", lease_seconds=60)
-        self.assertEqual(claimed_again.attempts, 2)
+        self.assertEqual(claimed_again.attempts, 1)
 
     def test_worker_provider_failure_marks_job_failed(self) -> None:
         common_file = self._file()
@@ -186,11 +192,18 @@ class PlateSolveQueueTests(unittest.TestCase):
             def submit(self, *, image_path: str):
                 return {"status": "WAITING", "submission_id": 41}
 
-            def get_status(self, *, submission_id: int):
+            def get_submission_status(self, *, submission_id: int):
+                return {
+                    "status": "PROCESSING",
+                    "submission_id": submission_id,
+                    "provider_job_id": 99,
+                }
+
+            def get_job_status(self, *, submission_id: int, provider_job_id: int):
                 return {
                     "status": "FAILED",
                     "submission_id": submission_id,
-                    "provider_job_id": 99,
+                    "provider_job_id": provider_job_id,
                 }
 
             def close(self) -> None:
@@ -253,12 +266,19 @@ class PlateSolveQueueTests(unittest.TestCase):
             def submit(self, *, image_path: str):
                 raise AssertionError("saved provider submission must not be resubmitted")
 
-            def get_status(self, *, submission_id: int):
+            def get_submission_status(self, *, submission_id: int):
                 type(self).seen_submission_id = submission_id
+                return {
+                    "status": "PROCESSING",
+                    "submission_id": submission_id,
+                    "provider_job_id": 99,
+                }
+
+            def get_job_status(self, *, submission_id: int, provider_job_id: int):
                 return {
                     "status": "COMPLETED",
                     "submission_id": submission_id,
-                    "provider_job_id": 99,
+                    "provider_job_id": provider_job_id,
                     "ra": 10,
                     "dec": 20,
                     "rotation": 30,
@@ -281,7 +301,7 @@ class PlateSolveQueueTests(unittest.TestCase):
         job = self.db.query(AstroPlateSolveJob).one()
         self.db.refresh(job)
         self.assertEqual(job.status, PlateSolveJobStatus.COMPLETED)
-        self.assertEqual(job.attempts, 2)
+        self.assertEqual(job.attempts, 1)
         self.assertEqual(ResumeClient.seen_submission_id, 41)
 
     def test_provider_calls_run_without_an_open_db_transaction(self) -> None:
@@ -303,12 +323,20 @@ class PlateSolveQueueTests(unittest.TestCase):
                 self.assert_image_path = image_path
                 return {"status": "WAITING", "submission_id": 41}
 
-            def get_status(self, *, submission_id: int):
+            def get_submission_status(self, *, submission_id: int):
+                self._assert_no_transaction()
+                return {
+                    "status": "PROCESSING",
+                    "submission_id": submission_id,
+                    "provider_job_id": 99,
+                }
+
+            def get_job_status(self, *, submission_id: int, provider_job_id: int):
                 self._assert_no_transaction()
                 return {
                     "status": "COMPLETED",
                     "submission_id": submission_id,
-                    "provider_job_id": 99,
+                    "provider_job_id": provider_job_id,
                     "ra": 10,
                     "dec": 20,
                     "rotation": 30,
@@ -336,6 +364,199 @@ class PlateSolveQueueTests(unittest.TestCase):
         self.db.refresh(job)
         self.assertEqual(job.status, PlateSolveJobStatus.COMPLETED)
         self.assertEqual(job.common_file_id, common_file.id)
+
+    def test_submission_lookup_connection_error_requeues_with_ids_preserved(self) -> None:
+        common_file = self._file()
+        record = self._record(common_file)
+        job = self.db.query(AstroPlateSolveJob).one()
+        job.provider_submission_id = 15936182
+        job.attempts = 3
+        self.db.commit()
+
+        class TransientSubmissionClient:
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+            def submit(self, *, image_path: str):
+                raise AssertionError("existing submission must not be uploaded again")
+
+            def get_submission_status(self, *, submission_id: int):
+                self.submission_id = submission_id
+                raise requests.ConnectionError(
+                    "remote disconnected",
+                    response=None,
+                )
+
+            def get_job_status(self, *, submission_id: int, provider_job_id: int):
+                raise AssertionError("provider job is not resolved yet")
+
+            def close(self) -> None:
+                pass
+
+        self.assertTrue(
+            process_next_plate_solve_job(
+                session_factory=self.Session,
+                client_factory=TransientSubmissionClient,
+                worker_id="test-worker",
+                api_key="test-key",
+                provider_poll_interval=0,
+                provider_timeout=1,
+            )
+        )
+
+        self.db.refresh(job)
+        self.db.refresh(record)
+        self.assertEqual(job.status, PlateSolveJobStatus.WAITING)
+        self.assertEqual(job.provider_submission_id, 15936182)
+        self.assertIsNone(job.provider_job_id)
+        self.assertEqual(job.attempts, 3)
+        self.assertIn("remote disconnected", job.last_error)
+        self.assertEqual(record.plate_solve_status, PlateSolveJobStatus.WAITING)
+
+    def test_saved_submission_resolves_job_and_completes_without_resubmit(self) -> None:
+        common_file = self._file()
+        self._record(common_file)
+        job = self.db.query(AstroPlateSolveJob).one()
+        job.provider_submission_id = 15936182
+        job.attempts = 3
+        self.db.commit()
+
+        class ResumeSubmissionClient:
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+            def submit(self, *, image_path: str):
+                raise AssertionError("existing submission must not be uploaded again")
+
+            def get_submission_status(self, *, submission_id: int):
+                return {
+                    "status": "PROCESSING",
+                    "submission_id": submission_id,
+                    "provider_job_id": 16771675,
+                }
+
+            def get_job_status(self, *, submission_id: int, provider_job_id: int):
+                self.provider_job_id = provider_job_id
+                return {
+                    "status": "COMPLETED",
+                    "submission_id": submission_id,
+                    "provider_job_id": provider_job_id,
+                    "ra": 10,
+                    "dec": 20,
+                    "rotation": 30,
+                    "pixel_scale": 2,
+                    "parity": 1,
+                }
+
+            def close(self) -> None:
+                pass
+
+        self.assertTrue(
+            process_next_plate_solve_job(
+                session_factory=self.Session,
+                client_factory=ResumeSubmissionClient,
+                worker_id="test-worker",
+                api_key="test-key",
+                provider_poll_interval=0,
+                provider_timeout=1,
+            )
+        )
+
+        self.db.refresh(job)
+        self.assertEqual(job.status, PlateSolveJobStatus.COMPLETED)
+        self.assertEqual(job.provider_submission_id, 15936182)
+        self.assertEqual(job.provider_job_id, 16771675)
+        self.assertEqual(job.attempts, 3)
+        self.assertEqual(job.field_width, 2.0)
+        self.assertEqual(job.field_height, 1.0)
+
+    def test_saved_provider_job_transient_error_resumes_without_submission_lookup(self) -> None:
+        common_file = self._file()
+        self._record(common_file)
+        job = self.db.query(AstroPlateSolveJob).one()
+        job.provider_submission_id = 15936182
+        job.provider_job_id = 16771675
+        job.attempts = 3
+        self.db.commit()
+
+        class TransientJobClient:
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+            def submit(self, *, image_path: str):
+                raise AssertionError("existing submission must not be uploaded again")
+
+            def get_submission_status(self, *, submission_id: int):
+                raise AssertionError("resolved provider job must be reused")
+
+            def get_job_status(self, *, submission_id: int, provider_job_id: int):
+                raise requests.ConnectionError("job status unavailable")
+
+            def close(self) -> None:
+                pass
+
+        self.assertTrue(
+            process_next_plate_solve_job(
+                session_factory=self.Session,
+                client_factory=TransientJobClient,
+                worker_id="worker-a",
+                api_key="test-key",
+                provider_poll_interval=0,
+                provider_timeout=1,
+            )
+        )
+        self.db.refresh(job)
+        self.assertEqual(job.status, PlateSolveJobStatus.WAITING)
+        self.assertEqual(job.provider_submission_id, 15936182)
+        self.assertEqual(job.provider_job_id, 16771675)
+        self.assertEqual(job.attempts, 3)
+
+        class RestartedWorkerClient(TransientJobClient):
+            def get_job_status(self, *, submission_id: int, provider_job_id: int):
+                return {
+                    "status": "COMPLETED",
+                    "submission_id": submission_id,
+                    "provider_job_id": provider_job_id,
+                    "ra": 10,
+                    "dec": 20,
+                    "rotation": 30,
+                    "pixel_scale": 2,
+                    "parity": 1,
+                }
+
+        self.assertTrue(
+            process_next_plate_solve_job(
+                session_factory=self.Session,
+                client_factory=RestartedWorkerClient,
+                worker_id="worker-b",
+                api_key="test-key",
+                provider_poll_interval=0,
+                provider_timeout=1,
+            )
+        )
+        self.db.refresh(job)
+        self.assertEqual(job.status, PlateSolveJobStatus.COMPLETED)
+        self.assertEqual(job.provider_submission_id, 15936182)
+        self.assertEqual(job.provider_job_id, 16771675)
+        self.assertEqual(job.attempts, 3)
+
+    def test_transient_provider_error_classification(self) -> None:
+        transient = [
+            requests.Timeout("timeout"),
+            requests.ConnectionError("connection"),
+            RemoteDisconnected("remote disconnected"),
+            ApiClientError("http 408", status_code=408),
+            ApiClientError("http 429", status_code=429),
+            ApiClientError("http 500", status_code=500),
+            ApiClientError("http 503", status_code=503),
+        ]
+        for error in transient:
+            with self.subTest(error=error):
+                self.assertTrue(_is_transient_provider_error(error))
+
+        self.assertFalse(
+            _is_transient_provider_error(ApiClientError("http 400", status_code=400))
+        )
 
 
 if __name__ == "__main__":

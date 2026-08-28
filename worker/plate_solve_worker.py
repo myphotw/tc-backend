@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from http.client import RemoteDisconnected
 import logging
 import os
 import socket
 import time
 from typing import Callable
 
+import requests
 from sqlalchemy.orm import Session
 
 from app.astrojournal.services.plate_solve_queue_service import PlateSolveQueueService
@@ -46,6 +48,7 @@ class PlateSolveWork:
     job_id: str
     common_file_id: int
     submission_id: int | None
+    provider_job_id: int | None
     image_path: str
     width: int | None
     height: int | None
@@ -109,6 +112,11 @@ def process_next_plate_solve_job(
             if claimed.provider_submission_id is not None
             else None
         )
+        provider_job_id = (
+            int(claimed.provider_job_id)
+            if claimed.provider_job_id is not None
+            else None
+        )
     finally:
         claim_db.close()
 
@@ -122,6 +130,7 @@ def process_next_plate_solve_job(
             job_id=job_id,
             common_file_id=common_file_id,
             submission_id=submission_id,
+            provider_job_id=provider_job_id,
         )
         resolved_key = api_key or _resolve_api_key(session_factory)
         if not resolved_key:
@@ -147,6 +156,7 @@ def process_next_plate_solve_job(
         provider = _poll_provider(
             client,
             submission_id=submission_id,
+            provider_job_id=work.provider_job_id,
             job_id=job_id,
             worker_id=worker_id,
             session_factory=session_factory,
@@ -173,18 +183,38 @@ def process_next_plate_solve_job(
             common_file_id,
         )
     except Exception as exc:
-        logger.exception("Plate Solve job failed job_id=%s", job_id)
-        failure_db = session_factory()
-        try:
-            PlateSolveQueueService(failure_db).fail(
-                job_id=job_id,
-                worker_id=worker_id,
-                error_message=str(exc)[:4000],
+        if submission_id is not None and _is_transient_provider_error(exc):
+            logger.warning(
+                "Transient Plate Solve provider error; requeueing job_id=%s "
+                "submission_id=%s",
+                job_id,
+                submission_id,
+                exc_info=True,
             )
-        finally:
-            failure_db.close()
-        if monitor is not None:
-            monitor.mark_failed()
+            retry_db = session_factory()
+            try:
+                PlateSolveQueueService(retry_db).requeue_transient(
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    error_message=str(exc)[:4000],
+                )
+            finally:
+                retry_db.close()
+            if monitor is not None:
+                monitor.maybe_heartbeat(current_job_id=None, force=True)
+        else:
+            logger.exception("Plate Solve job failed job_id=%s", job_id)
+            failure_db = session_factory()
+            try:
+                PlateSolveQueueService(failure_db).fail(
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    error_message=str(exc)[:4000],
+                )
+            finally:
+                failure_db.close()
+            if monitor is not None:
+                monitor.mark_failed()
     finally:
         if client is not None:
             client.close()
@@ -197,6 +227,7 @@ def _load_work(
     job_id: str,
     common_file_id: int,
     submission_id: int | None,
+    provider_job_id: int | None,
 ) -> PlateSolveWork:
     db = session_factory()
     try:
@@ -231,6 +262,7 @@ def _load_work(
         job_id=job_id,
         common_file_id=common_file_id,
         submission_id=submission_id,
+        provider_job_id=provider_job_id,
         image_path=str(image_path),
         width=width,
         height=height,
@@ -280,6 +312,24 @@ def _record_submission(
         db.close()
 
 
+def _record_provider_job(
+    session_factory: Callable[[], Session],
+    *,
+    job_id: str,
+    worker_id: str,
+    provider_job_id: int,
+) -> None:
+    db = session_factory()
+    try:
+        PlateSolveQueueService(db).record_provider_job(
+            job_id=job_id,
+            worker_id=worker_id,
+            provider_job_id=provider_job_id,
+        )
+    finally:
+        db.close()
+
+
 def _touch_lease(
     session_factory: Callable[[], Session],
     *,
@@ -304,6 +354,7 @@ def _poll_provider(
     client,
     *,
     submission_id: int,
+    provider_job_id: int | None,
     job_id: str,
     worker_id: str,
     session_factory: Callable[[], Session],
@@ -322,7 +373,26 @@ def _poll_provider(
         )
         if monitor is not None:
             monitor.maybe_heartbeat(current_job_id=job_id)
-        provider = client.get_status(submission_id=submission_id)
+        if provider_job_id is None:
+            provider = client.get_submission_status(submission_id=submission_id)
+            status = provider.get("status")
+            if status == "FAILED":
+                raise RuntimeError("Astrometry provider reported FAILED")
+            resolved_job_id = provider.get("provider_job_id")
+            if resolved_job_id is not None:
+                provider_job_id = int(resolved_job_id)
+                _record_provider_job(
+                    session_factory,
+                    job_id=job_id,
+                    worker_id=worker_id,
+                    provider_job_id=provider_job_id,
+                )
+                continue
+        else:
+            provider = client.get_job_status(
+                submission_id=submission_id,
+                provider_job_id=provider_job_id,
+            )
         status = provider.get("status")
         if status == "COMPLETED":
             return provider
@@ -334,6 +404,33 @@ def _poll_provider(
                 code=ExternalApiErrorCode.PROVIDER_TIMEOUT,
             )
         time.sleep(poll_interval)
+
+
+def _is_transient_provider_error(exc: BaseException) -> bool:
+    """Return whether a provider lookup failure is safe to resume later."""
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(
+            current,
+            (requests.Timeout, requests.ConnectionError, RemoteDisconnected),
+        ):
+            return True
+        if isinstance(current, ApiClientError):
+            if current.code == ExternalApiErrorCode.PROVIDER_TIMEOUT:
+                return True
+            status_code = current.status_code
+            if status_code in {408, 429} or (
+                status_code is not None and status_code >= 500
+            ):
+                return True
+            if current.code == ExternalApiErrorCode.PROVIDER_ERROR and (
+                status_code is None or status_code < 400
+            ):
+                return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _normalize_result(
