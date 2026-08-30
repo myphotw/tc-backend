@@ -1,16 +1,64 @@
-"""DB 스키마 동기화 (create_all + 누락 컬럼 ALTER)."""
+"""DB 스키마 동기화와 startup auto-DDL ownership 경계."""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 
-from sqlalchemy import inspect, text
+from sqlalchemy import MetaData, Table, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.schema import CreateColumn
 
 logger = logging.getLogger(__name__)
 
 SERVICE_LINK_BACKFILL_MARKER = "common_file_services_legacy_backfill_v1"
+SCHEMA_OWNER_INFO_KEY = "tc_schema_owner"
+BOOTSTRAP_SCHEMA_OWNER = "bootstrap"
+MIGRATION_SCHEMA_OWNER = "migration"
+_VALID_SCHEMA_OWNERS = {
+    BOOTSTRAP_SCHEMA_OWNER,
+    MIGRATION_SCHEMA_OWNER,
+}
+
+
+def migration_managed_schema_info() -> dict[str, str]:
+    """Return SQLAlchemy ``info`` metadata for migration-owned schema items.
+
+    Apply this to a ``Column``, ``Index``, or ``Table``. Items without an
+    explicit owner remain bootstrap-managed for backward compatibility.
+    """
+    return {SCHEMA_OWNER_INFO_KEY: MIGRATION_SCHEMA_OWNER}
+
+
+def is_migration_managed(schema_item: object) -> bool:
+    """Return whether a SQLAlchemy schema item is owned by migrations.
+
+    Table ownership is inherited by its columns and indexes. A misspelled
+    explicit owner fails closed instead of silently enabling startup DDL.
+    """
+    if _declared_schema_owner(schema_item) == MIGRATION_SCHEMA_OWNER:
+        return True
+
+    parent_table = getattr(schema_item, "table", None)
+    return (
+        parent_table is not None
+        and parent_table is not schema_item
+        and _declared_schema_owner(parent_table) == MIGRATION_SCHEMA_OWNER
+    )
+
+
+def bootstrap_managed_tables(metadata: MetaData) -> tuple[Table, ...]:
+    """Return tables that ``create_all`` may create at application startup.
+
+    A missing table containing any migration-managed column or index is also
+    excluded. This prevents ``create_all`` from bypassing child ownership by
+    creating the complete table in one statement.
+    """
+    return tuple(
+        table
+        for table in metadata.sorted_tables
+        if not _table_requires_migration(table)
+    )
 
 
 def initialize_database(bind: Engine | None = None) -> list[str]:
@@ -26,12 +74,15 @@ def initialize_database(bind: Engine | None = None) -> list[str]:
     from app.common.database import Base, engine as default_engine
 
     engine = bind or default_engine
+    metadata = Base.metadata
     before_create = inspect(engine)
     common_files_existed = before_create.has_table("common_files")
     service_links_existed = before_create.has_table("common_file_services")
-    Base.metadata.create_all(bind=engine)
-    changes = sync_missing_columns(engine)
-    changes.extend(sync_missing_indexes(engine))
+    auto_create_tables = bootstrap_managed_tables(metadata)
+    _log_ownership_summary(metadata, auto_create_tables)
+    metadata.create_all(bind=engine, tables=auto_create_tables)
+    changes = sync_missing_columns(engine, metadata=metadata)
+    changes.extend(sync_missing_indexes(engine, metadata=metadata))
     changes.extend(
         sync_file_service_links(
             engine,
@@ -140,15 +191,20 @@ def sync_file_service_links(
     return [f"backfill:common_file_services={inserted}"] if inserted else []
 
 
-def sync_missing_columns(engine: Engine) -> list[str]:
+def sync_missing_columns(
+    engine: Engine,
+    *,
+    metadata: MetaData | None = None,
+) -> list[str]:
     """모델 컬럼 중 DB에 없는 것을 ADD COLUMN 한다."""
-    from app.common.database import Base
+    metadata = _resolve_metadata(metadata)
 
     inspector = inspect(engine)
     changes: list[str] = []
+    migration_skips: list[str] = []
 
     with engine.begin() as connection:
-        for table in Base.metadata.sorted_tables:
+        for table in metadata.sorted_tables:
             if not inspector.has_table(table.name, schema=table.schema):
                 continue
 
@@ -159,6 +215,9 @@ def sync_missing_columns(engine: Engine) -> list[str]:
 
             for column in table.columns:
                 if column.name in existing_columns:
+                    continue
+                if is_migration_managed(column):
+                    migration_skips.append(f"{table.name}.{column.name}")
                     continue
 
                 column_ddl = str(
@@ -171,18 +230,24 @@ def sync_missing_columns(engine: Engine) -> list[str]:
                 changes.append(f"{table.name}.{column.name}")
                 logger.warning("Added missing column: %s.%s", table.name, column.name)
 
+    _log_migration_skips("columns", migration_skips)
     return changes
 
 
-def sync_missing_indexes(engine: Engine) -> list[str]:
+def sync_missing_indexes(
+    engine: Engine,
+    *,
+    metadata: MetaData | None = None,
+) -> list[str]:
     """모델 인덱스 중 DB에 없는 것을 생성한다."""
-    from app.common.database import Base
+    metadata = _resolve_metadata(metadata)
 
     inspector = inspect(engine)
     changes: list[str] = []
+    migration_skips: list[str] = []
 
     with engine.begin() as connection:
-        for table in Base.metadata.sorted_tables:
+        for table in metadata.sorted_tables:
             if not inspector.has_table(table.name, schema=table.schema):
                 continue
 
@@ -205,6 +270,9 @@ def sync_missing_indexes(engine: Engine) -> list[str]:
             for index in table.indexes:
                 if not index.name or index.name in existing_index_names:
                     continue
+                if is_migration_managed(index):
+                    migration_skips.append(index.name)
+                    continue
                 try:
                     index.create(bind=connection)
                     changes.append(f"index:{index.name}")
@@ -217,6 +285,7 @@ def sync_missing_indexes(engine: Engine) -> list[str]:
                         exc,
                     )
 
+    _log_migration_skips("indexes", migration_skips)
     return changes
 
 
@@ -248,3 +317,93 @@ def verify_model_columns(engine: Engine, table_name: str) -> dict[str, object]:
 def _quote_ident(name: str, engine: Engine) -> str:
     """엔진 dialect에 맞게 identifier를 quote한다."""
     return engine.dialect.identifier_preparer.quote(name)
+
+
+def _resolve_metadata(metadata: MetaData | None) -> MetaData:
+    if metadata is not None:
+        return metadata
+
+    from app.common.database import Base
+
+    return Base.metadata
+
+
+def _declared_schema_owner(schema_item: object) -> str:
+    info = getattr(schema_item, "info", {}) or {}
+    owner = info.get(SCHEMA_OWNER_INFO_KEY, BOOTSTRAP_SCHEMA_OWNER)
+    if owner not in _VALID_SCHEMA_OWNERS:
+        item_name = getattr(schema_item, "name", repr(schema_item))
+        raise ValueError(
+            f"Unknown schema owner {owner!r} for {item_name!r}; "
+            f"expected one of {sorted(_VALID_SCHEMA_OWNERS)}"
+        )
+    return owner
+
+
+def _table_requires_migration(table: Table) -> bool:
+    if is_migration_managed(table):
+        return True
+    return any(
+        is_migration_managed(item)
+        for item in (*table.columns, *table.indexes)
+    )
+
+
+def _log_ownership_summary(
+    metadata: MetaData,
+    auto_create_tables: Iterable[Table],
+) -> None:
+    auto_table_names = {table.fullname for table in auto_create_tables}
+    migration_tables = [
+        table.fullname
+        for table in metadata.sorted_tables
+        if table.fullname not in auto_table_names
+    ]
+    migration_columns = [
+        f"{table.fullname}.{column.name}"
+        for table in metadata.sorted_tables
+        for column in table.columns
+        if is_migration_managed(column)
+    ]
+    migration_indexes = [
+        index.name or f"{table.fullname}:unnamed"
+        for table in metadata.sorted_tables
+        for index in table.indexes
+        if is_migration_managed(index)
+    ]
+    total_columns = sum(len(table.columns) for table in metadata.sorted_tables)
+    total_indexes = sum(len(table.indexes) for table in metadata.sorted_tables)
+
+    logger.info(
+        "Schema sync ownership: auto-managed tables=%d columns=%d indexes=%d; "
+        "migration-managed create tables=%d columns=%d indexes=%d",
+        len(auto_table_names),
+        total_columns - len(migration_columns),
+        total_indexes - len(migration_indexes),
+        len(migration_tables),
+        len(migration_columns),
+        len(migration_indexes),
+    )
+    if migration_tables or migration_columns or migration_indexes:
+        logger.debug(
+            "Migration-managed schema excluded from startup auto-DDL: "
+            "tables=%s columns=%s indexes=%s",
+            migration_tables,
+            migration_columns,
+            migration_indexes,
+        )
+
+
+def _log_migration_skips(kind: str, names: list[str]) -> None:
+    if not names:
+        return
+    logger.info(
+        "Schema sync skipped missing migration-managed %s: count=%d",
+        kind,
+        len(names),
+    )
+    logger.debug(
+        "Missing migration-managed %s excluded from startup auto-DDL: %s",
+        kind,
+        names,
+    )
