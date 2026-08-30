@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 sqlalchemy
+alembic>=1.16,<2.0
 psycopg2-binary
 python-dotenv
 pydantic-settings
