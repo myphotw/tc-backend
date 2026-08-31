@@ -212,6 +212,8 @@ Before a future production migration, the operator must confirm:
   disposable PostgreSQL 16 clone or an approved production schema snapshot.
 - No backfill runner exists.
 - No `bootstrap-empty` command exists.
-- No PostgreSQL integration test has been executed by this change.
+- The opt-in PostgreSQL 16 integration suite is documented in
+  `docs/DATABASE_MIGRATION_TESTING.md`, but it has not been executed by this
+  change.
 - Autogenerate is not an operator command. The environment only contains a
   fail-closed ownership filter for future reviewed use.
