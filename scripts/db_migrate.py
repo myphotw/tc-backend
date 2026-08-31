@@ -24,6 +24,12 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.pool import NullPool
 
+from migrations.baseline import (
+    DatabaseAssessment,
+    DatabaseState,
+    inspect_database_state,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_CONFIG_PATH = PROJECT_ROOT / "alembic.ini"
@@ -31,10 +37,6 @@ BASELINE_REVISION = "20260831_0001"
 
 # ASCII-like fixed key: "TCBMIGR1", represented as a signed BIGINT-safe value.
 TC_BACKEND_MIGRATION_LOCK_KEY = 0x5443424D49475231
-
-BaselineFingerprintCheck = Callable[[Connection], Sequence[str]]
-BASELINE_FINGERPRINT_CHECKS: tuple[BaselineFingerprintCheck, ...] = ()
-
 
 class MigrationCliError(RuntimeError):
     """Base error for safe CLI failures."""
@@ -84,9 +86,16 @@ def script_head(config: Config) -> str:
 
 
 def verify_revision_graph(config: Config) -> list[str]:
-    """Verify the phase-1 baseline and the single-head invariant."""
+    """Verify one baseline root and a single lineage ending at one head."""
     scripts = ScriptDirectory.from_config(config)
     head = require_single_head(scripts.get_heads())
+    bases = tuple(scripts.get_bases())
+    if bases != (BASELINE_REVISION,):
+        rendered = ",".join(bases) if bases else "NONE"
+        raise MigrationVerificationError(
+            f"Expected baseline as the only revision root; found {rendered}"
+        )
+
     baseline = scripts.get_revision(BASELINE_REVISION)
     if baseline is None:
         raise MigrationVerificationError(
@@ -94,10 +103,61 @@ def verify_revision_graph(config: Config) -> list[str]:
         )
     if baseline.down_revision is not None:
         raise MigrationVerificationError("Baseline revision must be the graph root")
+
+    revisions = {revision.revision: revision for revision in scripts.walk_revisions()}
+    if BASELINE_REVISION not in revisions:
+        raise MigrationVerificationError("Baseline revision is outside the revision graph")
+    for revision_id in revisions:
+        if revision_id == BASELINE_REVISION:
+            continue
+        if not _revision_descends_from_baseline(revision_id, revisions):
+            raise MigrationVerificationError(
+                f"Revision {revision_id} is not descended from {BASELINE_REVISION}"
+            )
+    if not _revision_descends_from_baseline(head, revisions, allow_self=True):
+        raise MigrationVerificationError(
+            f"Head {head} is not in the baseline revision lineage"
+        )
+
     return [
         f"single_head={head}",
         f"baseline={BASELINE_REVISION}",
+        f"revision_count={len(revisions)}",
     ]
+
+
+def _revision_descends_from_baseline(
+    revision_id: str,
+    revisions: dict[str, Any],
+    *,
+    allow_self: bool = False,
+) -> bool:
+    if allow_self and revision_id == BASELINE_REVISION:
+        return True
+
+    pending = [revision_id]
+    visited: set[str] = set()
+    while pending:
+        current_id = pending.pop()
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+        current = revisions.get(current_id)
+        if current is None:
+            return False
+        parents = current.down_revision
+        if parents is None:
+            continue
+        parent_ids = (parents,) if isinstance(parents, str) else tuple(parents)
+        if BASELINE_REVISION in parent_ids:
+            return True
+        pending.extend(parent_ids)
+    return False
+
+
+def known_script_revisions(config: Config) -> frozenset[str]:
+    scripts = ScriptDirectory.from_config(config)
+    return frozenset(revision.revision for revision in scripts.walk_revisions())
 
 
 def verify_ownership_boundary() -> list[str]:
@@ -155,14 +215,62 @@ def verify_database_revision(connection: Connection, expected_head: str) -> list
     return [f"database_head={expected_head}"]
 
 
-def run_baseline_fingerprint_checks(connection: Connection) -> list[str]:
-    """Extension point for future production baseline fingerprint checks."""
-    results: list[str] = []
-    for check in BASELINE_FINGERPRINT_CHECKS:
-        results.extend(check(connection))
-    if not BASELINE_FINGERPRINT_CHECKS:
-        results.append("baseline_fingerprint_checks=not_configured")
-    return results
+def assess_database(config: Config, connection: Connection) -> DatabaseAssessment:
+    """Run the shared read-only state and fingerprint assessment."""
+    return inspect_database_state(
+        connection,
+        known_revisions=known_script_revisions(config),
+    )
+
+
+def require_baseline_ready(assessment: DatabaseAssessment) -> None:
+    if assessment.state is DatabaseState.LEGACY_UNVERSIONED:
+        return
+    if assessment.state is DatabaseState.EMPTY:
+        detail = "database is empty; use the future bootstrap-empty path"
+    elif assessment.state is DatabaseState.VERSIONED:
+        detail = "database is already versioned and is not a baseline candidate"
+    else:
+        detail = "database state or baseline fingerprint is invalid/ambiguous"
+    diagnostics = (
+        *assessment.state_errors,
+        *assessment.fingerprint_mismatches,
+    )
+    if diagnostics:
+        detail += "; " + "; ".join(diagnostics)
+    raise MigrationVerificationError(f"Baseline refused: {detail}")
+
+
+def require_versioned_upgrade(assessment: DatabaseAssessment) -> None:
+    if assessment.state is DatabaseState.VERSIONED:
+        return
+    if assessment.state is DatabaseState.LEGACY_UNVERSIONED:
+        detail = "run preflight-baseline and stamp-baseline before upgrade"
+    elif assessment.state is DatabaseState.EMPTY:
+        detail = "use the future bootstrap-empty path before upgrade"
+    else:
+        detail = "database state is invalid/ambiguous"
+    if assessment.state_errors:
+        detail += "; " + "; ".join(assessment.state_errors)
+    raise MigrationVerificationError(f"Upgrade refused: {detail}")
+
+
+def print_database_assessment(assessment: DatabaseAssessment) -> None:
+    print(f"database_state={assessment.state.value}")
+    revisions = ",".join(assessment.current_revisions) or "UNVERSIONED"
+    print(f"database_revisions={revisions}")
+    if (
+        assessment.state
+        in {DatabaseState.LEGACY_UNVERSIONED, DatabaseState.VERSIONED}
+        and not assessment.fingerprint_mismatches
+    ):
+        print("baseline_fingerprint=MATCH")
+    elif assessment.state is DatabaseState.EMPTY:
+        print("baseline_fingerprint=NOT_APPLICABLE")
+    for mismatch in assessment.fingerprint_mismatches:
+        print(f"fingerprint_mismatch={mismatch}")
+    for error in assessment.state_errors:
+        print(f"state_error={error}")
 
 
 def _commit_open_transaction(connection: Connection) -> None:
@@ -191,22 +299,33 @@ def session_advisory_lock(connection: Connection) -> Iterator[None]:
             "Another TC-Backend migration session already holds the advisory lock"
         )
 
+    primary_error: BaseException | None = None
     try:
         yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
-        # Alembic may leave a failed transaction open. End it before unlock.
-        _rollback_open_transaction(connection)
-        released = bool(
-            connection.execute(
-                text("SELECT pg_advisory_unlock(:lock_key)"),
-                {"lock_key": TC_BACKEND_MIGRATION_LOCK_KEY},
-            ).scalar_one()
-        )
-        _commit_open_transaction(connection)
-        if not released:
-            raise MigrationCliError(
-                "TC-Backend migration advisory lock was not owned during unlock"
+        try:
+            # Alembic may leave a failed transaction open. End it before unlock.
+            _rollback_open_transaction(connection)
+            released = bool(
+                connection.execute(
+                    text("SELECT pg_advisory_unlock(:lock_key)"),
+                    {"lock_key": TC_BACKEND_MIGRATION_LOCK_KEY},
+                ).scalar_one()
             )
+            _commit_open_transaction(connection)
+            if not released:
+                raise MigrationCliError(
+                    "TC-Backend migration advisory lock was not owned during unlock"
+                )
+        except BaseException as unlock_error:
+            if primary_error is None:
+                raise
+            # Keep the migration/stamp exception and its traceback primary.  The
+            # CLI prints this attached failure as a separate masked diagnostic.
+            setattr(primary_error, "migration_unlock_error", unlock_error)
 
 
 def run_locked_operation(connection: Connection, operation: Callable[[], Any]) -> Any:
@@ -232,50 +351,82 @@ def run_current(verbose: bool) -> None:
 
 def run_status() -> None:
     config = build_alembic_config()
+    verify_revision_graph(config)
     head = script_head(config)
     engine = create_migration_engine()
     try:
         with engine.connect() as connection:
-            current = database_current_heads(connection)
+            assessment = assess_database(config, connection)
     finally:
         engine.dispose()
 
-    rendered = ",".join(current) if current else "UNVERSIONED"
+    print_database_assessment(assessment)
+    current = assessment.current_revisions
     print(f"script_head={head}")
-    print(f"database_heads={rendered}")
     print(f"at_head={current == (head,)}")
 
 
 def run_upgrade(revision: str) -> None:
     config = build_alembic_config()
-    require_single_head(ScriptDirectory.from_config(config).get_heads())
+    verify_revision_graph(config)
     engine = create_migration_engine()
     try:
         with engine.connect() as connection:
             _attach_connection(config, connection)
+
+            def guarded_upgrade() -> None:
+                assessment = assess_database(config, connection)
+                require_versioned_upgrade(assessment)
+                # Inspector/catalog reads use SQLAlchemy autobegin. End that
+                # read transaction before Alembic opens revision transactions;
+                # the PostgreSQL session-level advisory lock remains held.
+                _rollback_open_transaction(connection)
+                command.upgrade(config, revision)
+
             run_locked_operation(
                 connection,
-                lambda: command.upgrade(config, revision),
+                guarded_upgrade,
             )
     finally:
         engine.dispose()
     print(f"upgrade_complete={revision}")
 
 
-def run_stamp(revision: str) -> None:
+def run_preflight_baseline() -> None:
     config = build_alembic_config()
-    require_single_head(ScriptDirectory.from_config(config).get_heads())
+    verify_revision_graph(config)
+    engine = create_migration_engine()
+    try:
+        with engine.connect() as connection:
+            assessment = assess_database(config, connection)
+    finally:
+        engine.dispose()
+    print_database_assessment(assessment)
+    require_baseline_ready(assessment)
+    print("baseline_preflight=BASELINE_READY")
+
+
+def run_stamp_baseline() -> None:
+    """Stamp only the reviewed legacy baseline; generic stamp is unsupported."""
+    config = build_alembic_config()
+    verify_revision_graph(config)
     engine = create_migration_engine()
     try:
         with engine.connect() as connection:
             _attach_connection(config, connection)
-            run_locked_operation(
-                connection,
-                lambda: command.stamp(config, revision),
-            )
+
+            def guarded_stamp() -> None:
+                # Re-run the complete read-only assessment while holding the
+                # migration lock.  A prior preflight result is never trusted.
+                assessment = assess_database(config, connection)
+                require_baseline_ready(assessment)
+                _rollback_open_transaction(connection)
+                command.stamp(config, BASELINE_REVISION)
+
+            run_locked_operation(connection, guarded_stamp)
     finally:
         engine.dispose()
-    print(f"stamp_complete={revision}")
+    print(f"stamp_complete={BASELINE_REVISION}")
 
 
 def run_verify() -> None:
@@ -287,8 +438,13 @@ def run_verify() -> None:
     engine = create_migration_engine()
     try:
         with engine.connect() as connection:
+            assessment = assess_database(config, connection)
+            if assessment.state is not DatabaseState.VERSIONED:
+                raise MigrationVerificationError(
+                    f"Database state is {assessment.state.value}; expected VERSIONED"
+                )
             checks.extend(verify_database_revision(connection, expected_head))
-            checks.extend(run_baseline_fingerprint_checks(connection))
+            checks.append("baseline_fingerprint=MATCH")
     finally:
         engine.dispose()
 
@@ -343,8 +499,14 @@ def build_parser() -> argparse.ArgumentParser:
     upgrade_parser = subparsers.add_parser("upgrade", help="Upgrade under advisory lock")
     upgrade_parser.add_argument("revision", nargs="?", default="head")
 
-    stamp_parser = subparsers.add_parser("stamp", help="Stamp under advisory lock")
-    stamp_parser.add_argument("revision")
+    subparsers.add_parser(
+        "preflight-baseline",
+        help="Read-only legacy production baseline fingerprint check",
+    )
+    subparsers.add_parser(
+        "stamp-baseline",
+        help="Revalidate and stamp only the fixed legacy baseline",
+    )
 
     subparsers.add_parser("verify", help="Verify graph, ownership, and database revision")
     return parser
@@ -361,8 +523,10 @@ def dispatch(args: argparse.Namespace) -> None:
         command.history(build_alembic_config(), verbose=args.verbose)
     elif args.command_name == "upgrade":
         run_upgrade(args.revision)
-    elif args.command_name == "stamp":
-        run_stamp(args.revision)
+    elif args.command_name == "preflight-baseline":
+        run_preflight_baseline()
+    elif args.command_name == "stamp-baseline":
+        run_stamp_baseline()
     elif args.command_name == "verify":
         run_verify()
     else:  # pragma: no cover - argparse enforces the command choices.
@@ -379,6 +543,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"migration command failed ({type(exc).__name__}): {safe_message}",
             file=sys.stderr,
         )
+        unlock_error = getattr(exc, "migration_unlock_error", None)
+        if unlock_error is not None:
+            safe_unlock_message = mask_secrets(
+                unlock_error,
+                configured_secrets(),
+            )
+            print(
+                "secondary advisory unlock failure "
+                f"({type(unlock_error).__name__}): {safe_unlock_message}",
+                file=sys.stderr,
+            )
         return 1
     return 0
 
