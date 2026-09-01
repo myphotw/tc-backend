@@ -24,7 +24,7 @@ def build_test_alembic_config(connection: Connection) -> Config:
 
 def create_legacy_schema(engine: Engine) -> None:
     """Create the current pre-Alembic model schema without a version table."""
-    from app.common.database import Base
+    from app.common.model_registry import Base
 
     Base.metadata.create_all(bind=engine)
 

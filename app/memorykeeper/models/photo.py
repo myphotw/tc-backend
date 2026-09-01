@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime, BigInteger
 from sqlalchemy.sql import func
 
-from app.common.database import Base
+from app.common.model_base import Base
 
 
 class Photo(Base):

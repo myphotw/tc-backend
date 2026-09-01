@@ -324,7 +324,7 @@ class DatabaseStateClassificationTests(unittest.TestCase):
 
 class BaselineFingerprintTests(unittest.TestCase):
     def test_fingerprint_snapshot_matches_registered_baseline_models(self) -> None:
-        from app.common.database import Base
+        from app.common.model_registry import Base
 
         model_tables = {
             table.name

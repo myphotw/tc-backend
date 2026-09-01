@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey
 from sqlalchemy.sql import func
 
-from app.common.database import Base
+from app.common.model_base import Base
 
 
 class PhotoTag(Base):

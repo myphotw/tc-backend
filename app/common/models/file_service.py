@@ -1,7 +1,7 @@
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.sql import func
 
-from app.common.database import Base
+from app.common.model_base import Base
 
 
 class CommonFileService(Base):

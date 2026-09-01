@@ -245,7 +245,7 @@ BASELINE_FINGERPRINT: tuple[TableFingerprint, ...] = (
 
 def application_table_names() -> frozenset[str]:
     """Return model-registered public application table names."""
-    from app.common.database import Base
+    from app.common.model_registry import Base
 
     return frozenset(
         table.name

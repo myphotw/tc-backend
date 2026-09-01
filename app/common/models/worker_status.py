@@ -1,7 +1,7 @@
 from sqlalchemy import Column, DateTime, Integer, String
 from sqlalchemy.sql import func
 
-from app.common.database import Base
+from app.common.model_base import Base
 
 
 class CommonWorkerStatus(Base):

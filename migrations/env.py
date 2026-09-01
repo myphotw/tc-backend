@@ -6,7 +6,7 @@ from logging.config import fileConfig
 
 from alembic import context
 
-from app.common.database import Base
+from app.common.model_registry import Base
 from migrations.ownership import include_migration_managed_object
 
 

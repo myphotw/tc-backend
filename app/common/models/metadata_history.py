@@ -1,7 +1,7 @@
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.sql import func
 
-from app.common.database import Base
+from app.common.model_base import Base
 
 
 class CommonMetadataHistory(Base):

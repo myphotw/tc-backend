@@ -5,7 +5,7 @@ import uuid
 from sqlalchemy import Boolean, Column, DateTime, Float, Index, Integer, String, text
 from sqlalchemy.sql import func
 
-from app.common.database import Base
+from app.common.model_base import Base
 
 
 class MemoryKeeperPlace(Base):

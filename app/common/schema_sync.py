@@ -71,9 +71,14 @@ def initialize_database(bind: Engine | None = None) -> list[str]:
     Returns:
         list[str]: 적용된 변경 설명 목록
     """
-    from app.common.database import Base, engine as default_engine
+    from app.common.model_registry import Base
 
-    engine = bind or default_engine
+    if bind is None:
+        from app.common.database import engine as default_engine
+
+        engine = default_engine
+    else:
+        engine = bind
     metadata = Base.metadata
     before_create = inspect(engine)
     common_files_existed = before_create.has_table("common_files")
@@ -296,7 +301,7 @@ def verify_model_columns(engine: Engine, table_name: str) -> dict[str, object]:
     Returns:
         dict: model_columns / db_columns / missing_in_db / extra_in_db
     """
-    from app.common.database import Base
+    from app.common.model_registry import Base
 
     table = Base.metadata.tables[table_name]
     inspector = inspect(engine)
@@ -323,7 +328,7 @@ def _resolve_metadata(metadata: MetaData | None) -> MetaData:
     if metadata is not None:
         return metadata
 
-    from app.common.database import Base
+    from app.common.model_registry import Base
 
     return Base.metadata
 

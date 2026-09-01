@@ -5,7 +5,7 @@ import uuid
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.sql import func, text
 
-from app.common.database import Base
+from app.common.model_base import Base
 
 
 class ObservationRecord(Base):

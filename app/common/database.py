@@ -1,9 +1,11 @@
 from urllib.parse import quote_plus
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.orm import sessionmaker
 
 from app.common.config import settings
+# Compatibility re-export for existing ``from app.common.database import Base`` callers.
+from app.common.model_registry import Base
 
 
 DATABASE_URL = (
@@ -30,36 +32,6 @@ SessionLocal = sessionmaker(
     autoflush=False,
     bind=engine
 )
-
-
-Base = declarative_base()
-
-
-# 모델 등록
-from app.common.models import api_key
-from app.common.models import setting
-from app.common.models import file
-from app.common.models import file_service
-from app.common.models import change_event
-from app.common.models import upload_job
-from app.common.models import file_metadata
-from app.common.models import metadata_history
-from app.common.models import file_tag
-from app.common.models import vision_job
-from app.common.models import api_usage
-from app.common.models import geocode_cache
-from app.common.models import worker_status
-
-from app.memorykeeper.models import photo
-from app.memorykeeper.models import tag
-from app.memorykeeper.models import photo_tag
-from app.memorykeeper.models import place
-from app.memorykeeper.models import file_state
-from app.memorykeeper.models import tag_canonical_override
-from app.memorykeeper.models import file_tag_suppression
-
-from app.astrojournal.models import observation_record
-from app.astrojournal.models import plate_solve_job
 
 
 def get_db():

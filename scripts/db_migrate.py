@@ -162,7 +162,7 @@ def known_script_revisions(config: Config) -> frozenset[str]:
 
 def verify_ownership_boundary() -> list[str]:
     """Confirm migration-owned objects cannot enter bootstrap create_all."""
-    from app.common.database import Base
+    from app.common.model_registry import Base
     from app.common.schema_sync import (
         bootstrap_managed_tables,
         is_migration_managed,
