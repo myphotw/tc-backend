@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.orm import Session
 
@@ -12,6 +12,10 @@ from app.common.models.upload_job import UploadJob
 from app.common.models.vision_job import CommonVisionJob
 from app.common.repositories.upload_job_repository import UploadJobRepository
 from app.common.services.storage_service import StorageService
+
+if TYPE_CHECKING:
+    from app.common.models.file_service import CommonFileService
+    from app.memorykeeper.models.file_state import MemoryKeeperFileState
 
 
 @dataclass
@@ -35,6 +39,8 @@ class PluginContext:
     thumb_path: Path | None = None
     original_path: Path | None = None
     common_file: CommonFile | None = None
+    file_service_link: CommonFileService | None = None
+    memorykeeper_state: MemoryKeeperFileState | None = None
     restore_deleted_common_file: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
     tags: list[dict[str, Any]] = field(default_factory=list)

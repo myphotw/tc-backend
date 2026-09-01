@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from app.common.models.file import CommonFile
+from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_tag import CommonFileTag
 from app.common.repositories.file_service_repository import FileServiceRepository
 from app.common.repositories.vision_job_repository import (
     VisionJobRepository,
     VisionJobStatus,
 )
-from app.memorykeeper.models.file_state import MemoryKeeperFileState
+from app.memorykeeper.services.capture_date_service import (
+    MemoryKeeperCaptureDateService,
+)
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from worker.plugins.base import BasePlugin, PluginContext
 
@@ -48,10 +51,33 @@ class HashPlugin(BasePlugin):
                 context.restore_deleted_common_file = True
                 context.log("DELETED_FILE_REUPLOAD")
                 return
-            _, link_created = FileServiceRepository(context.db).ensure_link(
-                file_id=existing.id,
-                service_name=context.service_name or "MemoryKeeper",
-            )
+            service_name = context.service_name or "MemoryKeeper"
+            try:
+                link, link_created = FileServiceRepository(context.db).ensure_link(
+                    file_id=existing.id,
+                    service_name=service_name,
+                    commit=False,
+                )
+                state = None
+                if service_name.casefold() == "memorykeeper":
+                    metadata = (
+                        context.db.query(CommonFileMetadata)
+                        .filter(CommonFileMetadata.file_id == existing.id)
+                        .first()
+                    )
+                    state = MemoryKeeperCaptureDateService(context.db).synchronize(
+                        common_file=existing,
+                        service_link=link,
+                        metadata=metadata,
+                        state_missing_known=link_created,
+                    )
+                context.db.commit()
+            except Exception:
+                context.db.rollback()
+                raise
+
+            context.file_service_link = link
+            context.memorykeeper_state = state
             context.storage_service.delete_incoming(context.job.incoming_path)
             context.stop_pipeline = True
             context.log("DUPLICATE_FOUND")
@@ -61,31 +87,13 @@ class HashPlugin(BasePlugin):
                 f"requested_service={context.service_name}"
             )
             context.log("LINK_CREATED" if link_created else "LINK_EXISTS")
-            if (context.service_name or "MemoryKeeper").casefold() == "memorykeeper":
+            if service_name.casefold() == "memorykeeper":
                 if link_created:
-                    self._ensure_blank_memorykeeper_state(context, existing)
                     self._reuse_or_enqueue_vision(context, existing)
                 if MemoryKeeperPlaceService(context.db).auto_match_file(
                     file_id=existing.id
                 ):
                     context.log("MEMORYKEEPER_PLACE_MATCHED")
-
-    @staticmethod
-    def _ensure_blank_memorykeeper_state(
-        context: PluginContext,
-        common_file: CommonFile,
-    ) -> None:
-        if context.db.get(MemoryKeeperFileState, common_file.id) is not None:
-            return
-        context.db.add(
-            MemoryKeeperFileState(
-                file_id=common_file.id,
-                favorite=False,
-                memo=None,
-                revision=0,
-            )
-        )
-        context.db.flush()
 
     @staticmethod
     def _reuse_or_enqueue_vision(

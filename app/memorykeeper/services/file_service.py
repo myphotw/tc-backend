@@ -16,6 +16,7 @@ from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_service import CommonFileService
 from app.common.models.file_tag import CommonFileTag
 from app.common.repositories.change_event_repository import ChangeEventRepository, ChangeOperation
+from app.common.repositories.file_service_repository import FileServiceRepository
 from app.common.repositories.history_repository import HistoryRepository
 from app.common.repositories.metadata_priority import MetadataPriority
 from app.common.repositories.tag_repository import TagSource
@@ -29,6 +30,9 @@ from app.memorykeeper.schemas.file import (
     MemoryKeeperFileMetadataUpdate,
 )
 from app.memorykeeper.services.place_matcher import PlaceMatchSource
+from app.memorykeeper.services.capture_date_service import (
+    MemoryKeeperCaptureDateService,
+)
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 
 logger = logging.getLogger(__name__)
@@ -226,15 +230,27 @@ class MemoryKeeperFileService:
         create: bool,
     ) -> MemoryKeeperFileState | None:
         state = self.db.get(MemoryKeeperFileState, common_file.id)
-        if state is None and create:
-            state = MemoryKeeperFileState(
+        projection_missing = bool(
+            state is not None
+            and state.effective_capture_datetime is None
+            and state.date_basis is None
+        )
+        if create and (state is None or projection_missing):
+            service_link = FileServiceRepository(self.db).get(
                 file_id=common_file.id,
-                favorite=bool(common_file.favorite),
-                memo=None,
-                revision=0,
+                service_name=self.SERVICE_NAME,
             )
-            self.db.add(state)
-            self.db.flush()
+            if service_link is None:
+                raise RuntimeError("MemoryKeeper state requires an active service link")
+            metadata = self.get_metadata(common_file, create=False)
+            state = MemoryKeeperCaptureDateService(self.db).synchronize(
+                common_file=common_file,
+                service_link=service_link,
+                metadata=metadata,
+                state=state,
+                state_missing_known=state is None,
+                initial_favorite=bool(common_file.favorite),
+            )
         return state
 
     def get_metadata(

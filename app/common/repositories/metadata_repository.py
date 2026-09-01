@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -176,6 +177,51 @@ class MetadataRepository:
             modified_by=modified_by,
             commit=commit,
         )
+
+    def set_original_capture_datetime_if_missing(
+        self,
+        *,
+        item: CommonFileMetadata,
+        value: datetime | None,
+        modified_by: str | None = None,
+        commit: bool = True,
+    ) -> CommonFileMetadata:
+        """Persist the immutable EXIF wall-clock fact only when it is absent.
+
+        This deliberately bypasses the legacy row-level ``locked`` and source
+        priority policy.  It does not alter ``datetime_original`` and never
+        overwrites an already recorded original fact.
+        """
+        if value is None:
+            if commit:
+                self.db.commit()
+            return item
+        if value.tzinfo is not None and value.utcoffset() is not None:
+            raise ValueError(
+                "original_capture_datetime must be a naive wall-clock datetime"
+            )
+        if item.original_capture_datetime is not None:
+            if commit:
+                self.db.commit()
+            return item
+
+        item.original_capture_datetime = value
+        self.history_repository.create_history(
+            file_id=item.file_id,
+            field_name="original_capture_datetime",
+            old_value=None,
+            new_value=value,
+            source=MetadataSource.EXIF,
+            priority=MetadataPriority.EXIF,
+            modified_by=modified_by,
+            approved=False,
+            commit=False,
+        )
+        if commit:
+            self.db.commit()
+        else:
+            self.db.flush()
+        return item
 
     def get_metadata(self, *, file_id: int) -> CommonFileMetadata | None:
         """파일의 현재 메타데이터 Row를 조회한다."""

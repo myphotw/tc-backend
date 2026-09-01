@@ -8,7 +8,11 @@ import time
 from sqlalchemy.exc import IntegrityError
 
 from app.common.models.file import CommonFile
+from app.common.models.file_metadata import CommonFileMetadata
 from app.common.repositories.file_service_repository import FileServiceRepository
+from app.memorykeeper.services.capture_date_service import (
+    MemoryKeeperCaptureDateService,
+)
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from app.common.services.storage import StorageRuleEngine
 from app.common.utils.perf import elapsed_ms, log_perf
@@ -79,9 +83,10 @@ class StoragePlugin(BasePlugin):
             except Exception:
                 context.db.rollback()
                 raise
-            _, link_created = FileServiceRepository(context.db).ensure_link(
-                file_id=common_file.id,
-                service_name=context.service_name or "MemoryKeeper",
+            link_created = self._ensure_service_link_and_projection(
+                context,
+                common_file,
+                load_existing_metadata=True,
             )
             context.common_file = common_file
             context.log("COMMON_FILE_RESTORED")
@@ -147,9 +152,10 @@ class StoragePlugin(BasePlugin):
             if existing is None:
                 raise
             context.common_file = existing
-            _, link_created = FileServiceRepository(context.db).ensure_link(
-                file_id=existing.id,
-                service_name=context.service_name or "MemoryKeeper",
+            link_created = self._ensure_service_link_and_projection(
+                context,
+                existing,
+                load_existing_metadata=True,
             )
             context.stop_pipeline = True
             context.log("DUPLICATE_FOUND")
@@ -178,9 +184,10 @@ class StoragePlugin(BasePlugin):
 
         context.common_file = common_file
         context.log("COMMON_FILE_CREATED")
-        _, link_created = FileServiceRepository(context.db).ensure_link(
-            file_id=common_file.id,
-            service_name=context.service_name or "MemoryKeeper",
+        link_created = self._ensure_service_link_and_projection(
+            context,
+            common_file,
+            load_existing_metadata=False,
         )
         context.log("LINK_CREATED" if link_created else "LINK_EXISTS")
         log_perf(
@@ -194,6 +201,44 @@ class StoragePlugin(BasePlugin):
             elapsed_ms=elapsed_ms(total_started),
             job_id=getattr(context.job, "job_id", None),
         )
+
+    @staticmethod
+    def _ensure_service_link_and_projection(
+        context: PluginContext,
+        common_file: CommonFile,
+        *,
+        load_existing_metadata: bool,
+    ) -> bool:
+        service_name = context.service_name or "MemoryKeeper"
+        try:
+            link, link_created = FileServiceRepository(context.db).ensure_link(
+                file_id=common_file.id,
+                service_name=service_name,
+                commit=False,
+            )
+            state = None
+            if service_name.casefold() == "memorykeeper":
+                metadata = None
+                if load_existing_metadata:
+                    metadata = (
+                        context.db.query(CommonFileMetadata)
+                        .filter(CommonFileMetadata.file_id == common_file.id)
+                        .first()
+                    )
+                state = MemoryKeeperCaptureDateService(context.db).synchronize(
+                    common_file=common_file,
+                    service_link=link,
+                    metadata=metadata,
+                    state_missing_known=link_created,
+                )
+            context.db.commit()
+        except Exception:
+            context.db.rollback()
+            raise
+
+        context.file_service_link = link
+        context.memorykeeper_state = state
+        return link_created
 
 
 def guess_mime_type(extension: str | None) -> str | None:
