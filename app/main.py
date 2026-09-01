@@ -14,6 +14,7 @@ from app.astrojournal.routers import observation_records
 from app.astrojournal.routers import plate_solve
 from app.astrojournal.routers import reset as astrojournal_reset
 from app.memorykeeper.routers import places as memorykeeper_places
+from app.memorykeeper.routers import gallery as memorykeeper_gallery
 from app.memorykeeper.routers import files as memorykeeper_files
 from app.memorykeeper.routers import pending as memorykeeper_pending
 from app.memorykeeper.routers import tags as memorykeeper_tags
@@ -108,6 +109,7 @@ protected_api_router.include_router(astrojournal_events.router)
 protected_api_router.include_router(plate_solve.router)
 protected_api_router.include_router(astrojournal_reset.router)
 protected_api_router.include_router(memorykeeper_places.router)
+protected_api_router.include_router(memorykeeper_gallery.router)
 protected_api_router.include_router(memorykeeper_files.router)
 protected_api_router.include_router(memorykeeper_tags.router)
 protected_api_router.include_router(memorykeeper_auto_tags.router)

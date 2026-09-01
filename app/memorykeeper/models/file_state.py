@@ -21,7 +21,18 @@ class MemoryKeeperFileState(Base):
     """MemoryKeeper-only writable state for a shared CommonFile."""
 
     __tablename__ = "memorykeeper_file_states"
-    __table_args__ = (Index("ix_memorykeeper_file_states_favorite", "favorite"),)
+    __table_args__ = (
+        Index("ix_memorykeeper_file_states_favorite", "favorite"),
+        # This is created only by Alembic revision 20260901_0003.  Startup
+        # schema sync excludes migration-owned indexes from its DDL projection.
+        Index(
+            "ix_memorykeeper_file_states_effective_capture_desc",
+            "effective_capture_datetime",
+            "file_id",
+            postgresql_where=text("effective_capture_datetime IS NOT NULL"),
+            info=migration_managed_schema_info(),
+        ),
+    )
 
     file_id = Column(Integer, ForeignKey("common_files.id"), primary_key=True)
     favorite = Column(

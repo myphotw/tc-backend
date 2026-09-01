@@ -39,7 +39,7 @@ Online Alembic execution without a connection supplied by
 The initial graph is:
 
 ```text
-base -> 20260831_0001 (baseline) -> 20260901_0002 (capture-date nullable expand, head)
+base -> 20260831_0001 (baseline) -> 20260901_0002 (capture-date nullable expand) -> 20260901_0003 (MemoryKeeper fast Gallery index, head)
 ```
 
 The baseline `upgrade()` and `downgrade()` are both no-ops. It does not create,

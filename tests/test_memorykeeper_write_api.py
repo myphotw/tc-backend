@@ -486,6 +486,9 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
             "/api/memorykeeper/files/{file_id}/tags/{tag_id}": "post",
             "/api/memorykeeper/pending": "get",
             "/api/memorykeeper/pending/assign-place": "post",
+            "/api/memorykeeper/gallery/photos": "get",
+            "/api/memorykeeper/gallery/summary": "get",
+            "/api/memorykeeper/gallery/hierarchy": "get",
         }
         for path, method in expected.items():
             self.assertTrue(paths[path][method]["security"], path)

@@ -1,4 +1,3 @@
-from app.memorykeeper.routers import places
-from app.memorykeeper.routers import files, pending, tags
+from app.memorykeeper.routers import files, gallery, pending, places, tags
 
-__all__ = ["places"]
+__all__ = ["files", "gallery", "pending", "places", "tags"]

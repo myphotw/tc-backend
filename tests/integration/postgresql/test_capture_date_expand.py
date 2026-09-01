@@ -24,7 +24,7 @@ from tests.integration.postgresql.support import (
 
 pytestmark = pytest.mark.postgresql_integration
 
-EXPAND_REVISION = "20260901_0002"
+HEAD_REVISION = "20260901_0003"
 
 
 def test_capture_date_expand_upgrade_generated_values_and_downgrade(
@@ -121,7 +121,7 @@ def test_capture_date_expand_upgrade_generated_values_and_downgrade(
         revision = connection.execute(
             text("SELECT version_num FROM public.alembic_version")
         ).scalar_one()
-        assert revision == EXPAND_REVISION
+        assert revision == HEAD_REVISION
         connection.rollback()
 
     with Session(postgresql_engine) as session:

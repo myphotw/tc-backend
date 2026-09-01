@@ -81,6 +81,11 @@ def test_capture_date_columns_are_excluded_from_startup_ddl_not_base_tables() ->
             "effective_capture_year",
             "date_basis",
         }.isdisjoint(state_columns)
+        index_names = {
+            index["name"]
+            for index in inspector.get_indexes("memorykeeper_file_states")
+        }
+        assert "ix_memorykeeper_file_states_effective_capture_desc" not in index_names
     finally:
         engine.dispose()
 
@@ -96,3 +101,12 @@ def test_shared_metadata_creates_on_sqlite_without_postgresql_computed_sql() -> 
         assert {"effective_capture_date", "effective_capture_year"}.issubset(columns)
     finally:
         engine.dispose()
+
+
+def test_fast_gallery_keyset_index_is_migration_owned() -> None:
+    index = next(
+        index
+        for index in MemoryKeeperFileState.__table__.indexes
+        if index.name == "ix_memorykeeper_file_states_effective_capture_desc"
+    )
+    assert is_migration_managed(index)
