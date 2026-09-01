@@ -23,10 +23,16 @@ def build_test_alembic_config(connection: Connection) -> Config:
 
 
 def create_legacy_schema(engine: Engine) -> None:
-    """Create the current pre-Alembic model schema without a version table."""
-    from app.common.model_registry import Base
+    """Create the baseline-era schema without a version table.
 
-    Base.metadata.create_all(bind=engine)
+    Reuse the production bootstrap projection so mixed-ownership tables retain
+    their baseline shape while future migration-owned children are absent.
+    Baseline -> head tests therefore exercise the actual Alembic additions.
+    """
+    from app.common.model_registry import Base
+    from app.common.schema_sync import bootstrap_metadata_projection
+
+    bootstrap_metadata_projection(Base.metadata).create_all(bind=engine)
 
 
 def public_catalog_snapshot(connection: Connection) -> tuple[tuple[object, ...], ...]:

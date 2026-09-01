@@ -64,7 +64,7 @@ def test_read_only_commands_do_not_create_version_or_public_objects(
     assert after == before
 
 
-def test_valid_legacy_preflight_stamp_and_verify_preserve_application_schema(
+def test_valid_legacy_preflight_stamp_upgrade_and_verify(
     postgresql_engine: Engine,
     migration_engine_factory,
     capsys,
@@ -99,9 +99,11 @@ def test_valid_legacy_preflight_stamp_and_verify_preserve_application_schema(
         assert assessment.state is DatabaseState.VERSIONED
         connection.rollback()
 
+    run_with_engine_patch(migration_engine_factory, lambda: run_upgrade("head"))
+
     run_with_engine_patch(migration_engine_factory, run_verify)
     verify_output = capsys.readouterr().out
-    assert f"ok database_head={BASELINE_REVISION}" in verify_output
+    assert "ok database_head=20260901_0002" in verify_output
 
 
 def _prepare_state(engine: Engine, state_name: str) -> None:

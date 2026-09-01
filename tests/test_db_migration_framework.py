@@ -4,14 +4,18 @@ import ast
 from pathlib import Path
 import unittest
 
-from sqlalchemy import Column, Integer, MetaData, String, Table
+from sqlalchemy import Column, Index, Integer, MetaData, String, Table
 
-from app.common.schema_sync import migration_managed_schema_info
+from app.common.schema_sync import (
+    bootstrap_metadata_projection,
+    migration_managed_schema_info,
+)
 from migrations.ownership import include_migration_managed_object
 from scripts.db_migrate import (
     BASELINE_REVISION,
     MigrationLockUnavailable,
     MigrationVerificationError,
+    _verify_ownership_projection,
     build_alembic_config,
     mask_secrets,
     require_single_head,
@@ -77,11 +81,12 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
             self.assertEqual(len(function.body), 1)
             self.assertIsInstance(function.body[0], ast.Pass)
 
-    def test_revision_graph_has_baseline_as_its_only_head(self) -> None:
+    def test_revision_graph_has_single_capture_date_expand_head(self) -> None:
         checks = verify_revision_graph(build_alembic_config())
 
-        self.assertIn(f"single_head={BASELINE_REVISION}", checks)
+        self.assertIn("single_head=20260901_0002", checks)
         self.assertIn(f"baseline={BASELINE_REVISION}", checks)
+        self.assertIn("revision_count=2", checks)
 
     def test_alembic_config_contains_no_database_url(self) -> None:
         content = (PROJECT_ROOT / "alembic.ini").read_text(encoding="utf-8")
@@ -204,6 +209,115 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
                 None,
             )
         )
+
+    def test_ownership_verification_allows_mixed_migration_column(self) -> None:
+        metadata = MetaData()
+        Table(
+            "mixed_migration_column",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("bootstrap_value", String(50)),
+            Column(
+                "migration_value",
+                String(50),
+                info=migration_managed_schema_info(),
+            ),
+        )
+
+        checks = _verify_ownership_projection(
+            metadata,
+            bootstrap_metadata_projection(metadata),
+        )
+
+        self.assertIn("bootstrap_tables=1", checks)
+        self.assertIn("migration_scoped_tables=1", checks)
+
+    def test_ownership_verification_allows_mixed_migration_index(self) -> None:
+        metadata = MetaData()
+        table = Table(
+            "mixed_migration_index",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("bootstrap_value", String(50)),
+            Column("migration_value", String(50)),
+        )
+        Index("ix_mixed_bootstrap", table.c.bootstrap_value)
+        Index(
+            "ix_mixed_migration",
+            table.c.migration_value,
+            info=migration_managed_schema_info(),
+        )
+
+        checks = _verify_ownership_projection(
+            metadata,
+            bootstrap_metadata_projection(metadata),
+        )
+
+        self.assertIn("bootstrap_tables=1", checks)
+        self.assertIn("migration_scoped_tables=1", checks)
+
+    def test_ownership_verification_rejects_leaked_migration_column(self) -> None:
+        metadata = MetaData()
+        Table(
+            "leaked_migration_column",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column(
+                "migration_value",
+                String(50),
+                info=migration_managed_schema_info(),
+            ),
+        )
+        leaked_projection = MetaData()
+        Table(
+            "leaked_migration_column",
+            leaked_projection,
+            Column("id", Integer, primary_key=True),
+            Column("migration_value", String(50)),
+        )
+
+        with self.assertRaisesRegex(
+            MigrationVerificationError,
+            r"column:leaked_migration_column\.migration_value",
+        ):
+            _verify_ownership_projection(metadata, leaked_projection)
+
+    def test_ownership_verification_rejects_leaked_migration_index(self) -> None:
+        metadata = MetaData()
+        table = Table(
+            "leaked_migration_index",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("migration_value", String(50)),
+        )
+        Index(
+            "ix_leaked_migration",
+            table.c.migration_value,
+            info=migration_managed_schema_info(),
+        )
+
+        with self.assertRaisesRegex(
+            MigrationVerificationError,
+            r"index:leaked_migration_index\.ix_leaked_migration",
+        ):
+            _verify_ownership_projection(metadata, metadata)
+
+    def test_ownership_verification_rejects_leaked_migration_table(self) -> None:
+        metadata = MetaData()
+        table = Table(
+            "leaked_migration_table",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            info=migration_managed_schema_info(),
+        )
+        leaked_projection = MetaData()
+        table.to_metadata(leaked_projection)
+
+        with self.assertRaisesRegex(
+            MigrationVerificationError,
+            r"table:leaked_migration_table",
+        ):
+            _verify_ownership_projection(metadata, leaked_projection)
 
     def test_api_and_worker_startup_do_not_import_migration_framework(self) -> None:
         startup_files = (

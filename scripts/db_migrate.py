@@ -20,7 +20,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine, text
+from sqlalchemy import MetaData, create_engine, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.pool import NullPool
 
@@ -161,35 +161,83 @@ def known_script_revisions(config: Config) -> frozenset[str]:
 
 
 def verify_ownership_boundary() -> list[str]:
-    """Confirm migration-owned objects cannot enter bootstrap create_all."""
+    """Confirm the bootstrap DDL projection excludes migration-owned schema."""
     from app.common.model_registry import Base
+    from app.common.schema_sync import bootstrap_metadata_projection
+
+    return _verify_ownership_projection(
+        Base.metadata,
+        bootstrap_metadata_projection(Base.metadata),
+    )
+
+
+def _verify_ownership_projection(
+    metadata: MetaData,
+    projection: MetaData,
+) -> list[str]:
+    """Validate source ownership markers against startup DDL projection.
+
+    ``bootstrap_metadata_projection`` keeps a mixed-ownership table in the
+    projection but marks copied migration-owned columns as ``system`` so that
+    SQLAlchemy omits them from ``CREATE TABLE``.  Verification must therefore
+    inspect that rendered-DDL marker rather than treating a mixed table itself
+    as a leak.
+    """
     from app.common.schema_sync import (
         bootstrap_managed_tables,
         is_migration_managed,
+        table_has_migration_managed_schema,
     )
 
-    bootstrap_tables = set(bootstrap_managed_tables(Base.metadata))
-    migration_items = 0
+    bootstrap_tables = bootstrap_managed_tables(metadata)
+    migration_scoped_tables = sum(
+        table_has_migration_managed_schema(table)
+        for table in metadata.sorted_tables
+    )
+
     conflicts: list[str] = []
 
-    for table in Base.metadata.sorted_tables:
-        table_migration_owned = is_migration_managed(table)
-        child_migration_owned = any(
-            is_migration_managed(column) for column in table.columns
-        ) or any(is_migration_managed(index) for index in table.indexes)
-        if table_migration_owned or child_migration_owned:
-            migration_items += 1
-            if table in bootstrap_tables:
-                conflicts.append(table.name)
+    for table in metadata.sorted_tables:
+        projected_table = projection.tables.get(table.key)
+        if is_migration_managed(table):
+            if projected_table is not None:
+                conflicts.append(f"table:{table.fullname}")
+            continue
+
+        if projected_table is None:
+            conflicts.append(f"table:{table.fullname}")
+            continue
+
+        for column in table.columns:
+            projected_column = projected_table.c.get(column.name)
+            if is_migration_managed(column):
+                if projected_column is None or not projected_column.system:
+                    conflicts.append(f"column:{table.fullname}.{column.name}")
+            elif projected_column is None or projected_column.system:
+                conflicts.append(f"column:{table.fullname}.{column.name}")
+
+        projected_index_names = {
+            index.name
+            for index in projected_table.indexes
+            if index.name is not None
+        }
+        for index in table.indexes:
+            if index.name is None:
+                continue
+            if is_migration_managed(index):
+                if index.name in projected_index_names:
+                    conflicts.append(f"index:{table.fullname}.{index.name}")
+            elif index.name not in projected_index_names:
+                conflicts.append(f"index:{table.fullname}.{index.name}")
 
     if conflicts:
         raise MigrationVerificationError(
-            "Migration-owned schema leaked into bootstrap create_all: "
+            "Schema ownership conflicts in bootstrap projection: "
             + ", ".join(sorted(conflicts))
         )
     return [
         f"bootstrap_tables={len(bootstrap_tables)}",
-        f"migration_scoped_tables={migration_items}",
+        f"migration_scoped_tables={migration_scoped_tables}",
     ]
 
 

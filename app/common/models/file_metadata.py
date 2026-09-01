@@ -11,6 +11,7 @@ from sqlalchemy import (
 from sqlalchemy.sql import func
 
 from app.common.model_base import Base
+from app.common.schema_sync import migration_managed_schema_info
 
 
 class CommonFileMetadata(Base):
@@ -52,6 +53,13 @@ class CommonFileMetadata(Base):
     datetime_original = Column(
         DateTime(timezone=True),
         nullable=True,
+    )
+    # EXIF wall-clock fact for the capture-date projection.  Keep the legacy
+    # timestamptz datetime_original untouched for existing API compatibility.
+    original_capture_datetime = Column(
+        DateTime(timezone=False),
+        nullable=True,
+        info=migration_managed_schema_info(),
     )
     gps_lat = Column(
         Float,

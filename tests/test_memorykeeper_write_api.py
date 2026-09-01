@@ -519,6 +519,21 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
             changes = initialize_database(engine)
             inspector = inspect(engine)
             self.assertTrue(inspector.has_table("memorykeeper_file_states"))
+            state_columns = {
+                column["name"]
+                for column in inspector.get_columns("memorykeeper_file_states")
+            }
+            self.assertTrue({"file_id", "favorite", "memo", "revision"} <= state_columns)
+            self.assertTrue(
+                {
+                    "user_capture_datetime",
+                    "user_capture_precision",
+                    "effective_capture_datetime",
+                    "effective_capture_date",
+                    "effective_capture_year",
+                    "date_basis",
+                }.isdisjoint(state_columns)
+            )
             tag_columns = {column["name"] for column in inspector.get_columns("mk_tags")}
             self.assertTrue({"normalized_name", "favorite", "revision", "deleted", "updated_at"} <= tag_columns)
             relation_columns = {

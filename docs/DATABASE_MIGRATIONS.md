@@ -10,11 +10,15 @@ transition to explicit migrations.
 - A Table, Column, or Index marked with
   `info=migration_managed_schema_info()` is owned by Alembic.
 - A migration-managed Table passes ownership to its child Columns and Indexes.
-- A missing Table that contains a migration-managed child is excluded from
-  startup `create_all()`. This prevents startup DDL from bypassing ownership.
+- A bootstrap-owned Table remains bootstrap-creatable when it has
+  migration-managed child Columns or Indexes. Startup uses an independent
+  bootstrap projection that omits those children from `CREATE TABLE` DDL.
+- A missing migration-managed Table remains excluded from startup DDL.
 - Constraints are not covered by the current marker policy. New generated
   expressions, CHECK constraints, and PostgreSQL-specific DDL must therefore be
-  written and reviewed manually in a migration revision.
+  written and reviewed manually in a migration revision. Bootstrap fails closed
+  when a bootstrap constraint or unmarked index targets an omitted
+  migration-managed Column.
 
 Do not change ownership of an existing object without an explicit revision and
 a reviewed deployment plan. Alembic must not generate drops or alterations for
@@ -35,7 +39,7 @@ Online Alembic execution without a connection supplied by
 The initial graph is:
 
 ```text
-base -> 20260831_0001 (baseline, head)
+base -> 20260831_0001 (baseline) -> 20260901_0002 (capture-date nullable expand, head)
 ```
 
 The baseline `upgrade()` and `downgrade()` are both no-ops. It does not create,
@@ -151,16 +155,17 @@ No concurrent-index revision is included in phase 1.
 
 ## Fresh empty database policy
 
-Once a model Table contains a migration-managed child, startup `schema_sync`
-may exclude the whole missing Table. A future empty-database command is
-therefore required with this invariant:
+Startup can create the baseline bootstrap projection for an empty database,
+but it does not version the database or create migration-owned children. A
+future empty-database command is therefore required with this invariant:
 
 ```text
 confirm completely empty database
   -> acquire session advisory lock
-  -> full Base.metadata.create_all()
-  -> verify schema
-  -> stamp Alembic head
+  -> create bootstrap projection
+  -> verify baseline schema
+  -> stamp baseline
+  -> upgrade Alembic head
 ```
 
 That command must fail closed if any application Table already exists. It must
@@ -207,9 +212,13 @@ Before a future production migration, the operator must confirm:
 
 ## Phase 1 limitations
 
-- No date schema migration exists.
-- The baseline fingerprint is implemented but has not been validated against a
-  disposable PostgreSQL 16 clone or an approved production schema snapshot.
+- The capture-date nullable expand migration deliberately contains no
+  dual-write, backfill, read-path switch, constraint, or index work. Those
+  rollout phases remain separate reviewed migrations and application changes.
+- The baseline fingerprint was validated on disposable PostgreSQL 16.
+  Production preflight and post-stamp verification reported
+  `baseline_fingerprint=MATCH`; production is stamped at `20260831_0001`, not
+  the capture-date expand revision.
 - No backfill runner exists.
 - No `bootstrap-empty` command exists.
 - The opt-in PostgreSQL 16 integration suite is documented in

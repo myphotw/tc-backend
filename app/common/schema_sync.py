@@ -50,15 +50,84 @@ def is_migration_managed(schema_item: object) -> bool:
 def bootstrap_managed_tables(metadata: MetaData) -> tuple[Table, ...]:
     """Return tables that ``create_all`` may create at application startup.
 
-    A missing table containing any migration-managed column or index is also
-    excluded. This prevents ``create_all`` from bypassing child ownership by
-    creating the complete table in one statement.
+    Table ownership is independent from child Column and Index ownership.
+    A bootstrap-owned table remains creatable even when it contains
+    migration-owned children; ``bootstrap_metadata_projection`` omits those
+    children from its startup DDL.
     """
     return tuple(
         table
         for table in metadata.sorted_tables
-        if not _table_requires_migration(table)
+        if not is_migration_managed(table)
     )
+
+
+def table_has_migration_managed_schema(table: Table) -> bool:
+    """Return whether a table or one of its direct schema children is managed.
+
+    Alembic uses this to traverse mixed-ownership tables so it can consider
+    their migration-owned columns and indexes. Startup bootstrap instead uses
+    table ownership plus a projection that removes those child DDL elements.
+    """
+    return is_migration_managed(table) or any(
+        is_migration_managed(item)
+        for item in (*table.columns, *table.indexes)
+    )
+
+
+def bootstrap_metadata_projection(metadata: MetaData) -> MetaData:
+    """Build independent startup DDL metadata without migration-owned children.
+
+    The source ``Base.metadata`` remains untouched for ORM mapping and Alembic.
+    ``Table.to_metadata`` preserves the bootstrap table's public schema
+    definition; only copied migration-owned columns are marked as SQLAlchemy
+    system columns, which excludes them from ``CREATE TABLE`` rendering.
+    """
+    projection = MetaData(
+        schema=metadata.schema,
+        naming_convention=metadata.naming_convention,
+        info=dict(metadata.info),
+    )
+    copied_tables = [
+        (table, table.to_metadata(projection))
+        for table in bootstrap_managed_tables(metadata)
+    ]
+
+    for source_table, projected_table in copied_tables:
+        migration_column_names = {
+            column.name
+            for column in source_table.columns
+            if is_migration_managed(column)
+        }
+        _validate_bootstrap_projection_constraints(
+            source_table,
+            migration_column_names,
+        )
+        for column_name in migration_column_names:
+            # ``system`` is set only on this independent DDL projection. It
+            # causes SQLAlchemy to omit the copied column from CREATE TABLE
+            # without mutating the ORM/Alembic source metadata.
+            projected_table.c[column_name].system = True
+
+        migration_index_names = {
+            index.name
+            for index in source_table.indexes
+            if is_migration_managed(index)
+        }
+        if None in migration_index_names:
+            raise ValueError(
+                "Migration-managed indexes require explicit names for "
+                "bootstrap projection"
+            )
+        _validate_bootstrap_projection_indexes(
+            source_table,
+            migration_column_names,
+        )
+        for index in tuple(projected_table.indexes):
+            if index.name in migration_index_names:
+                projected_table.indexes.remove(index)
+
+    return projection
 
 
 def initialize_database(bind: Engine | None = None) -> list[str]:
@@ -85,7 +154,7 @@ def initialize_database(bind: Engine | None = None) -> list[str]:
     service_links_existed = before_create.has_table("common_file_services")
     auto_create_tables = bootstrap_managed_tables(metadata)
     _log_ownership_summary(metadata, auto_create_tables)
-    metadata.create_all(bind=engine, tables=auto_create_tables)
+    bootstrap_metadata_projection(metadata).create_all(bind=engine)
     changes = sync_missing_columns(engine, metadata=metadata)
     changes.extend(sync_missing_indexes(engine, metadata=metadata))
     changes.extend(
@@ -345,13 +414,45 @@ def _declared_schema_owner(schema_item: object) -> str:
     return owner
 
 
-def _table_requires_migration(table: Table) -> bool:
-    if is_migration_managed(table):
-        return True
-    return any(
-        is_migration_managed(item)
-        for item in (*table.columns, *table.indexes)
-    )
+def _validate_bootstrap_projection_constraints(
+    table: Table,
+    migration_column_names: set[str],
+) -> None:
+    """Reject constraints that would reference omitted startup DDL columns."""
+    if not migration_column_names:
+        return
+    for constraint in table.constraints:
+        column_names = {
+            column.name
+            for column in getattr(constraint, "columns", ())
+            if column.name is not None
+        }
+        overlap = column_names & migration_column_names
+        if overlap:
+            raise ValueError(
+                "Bootstrap constraint references migration-managed column(s): "
+                f"{table.fullname}.{constraint.name or type(constraint).__name__} "
+                f"-> {sorted(overlap)}"
+            )
+
+
+def _validate_bootstrap_projection_indexes(
+    table: Table,
+    migration_column_names: set[str],
+) -> None:
+    """Reject unmarked indexes that would target omitted startup columns."""
+    if not migration_column_names:
+        return
+    for index in table.indexes:
+        if is_migration_managed(index):
+            continue
+        column_names = {column.name for column in index.columns}
+        overlap = column_names & migration_column_names
+        if overlap:
+            raise ValueError(
+                "Bootstrap index references migration-managed column(s): "
+                f"{table.fullname}.{index.name or '<unnamed>'} -> {sorted(overlap)}"
+            )
 
 
 def _log_ownership_summary(
@@ -362,7 +463,13 @@ def _log_ownership_summary(
     migration_tables = [
         table.fullname
         for table in metadata.sorted_tables
-        if table.fullname not in auto_table_names
+        if is_migration_managed(table)
+    ]
+    mixed_tables = [
+        table.fullname
+        for table in metadata.sorted_tables
+        if not is_migration_managed(table)
+        and table_has_migration_managed_schema(table)
     ]
     migration_columns = [
         f"{table.fullname}.{column.name}"
@@ -381,19 +488,21 @@ def _log_ownership_summary(
 
     logger.info(
         "Schema sync ownership: auto-managed tables=%d columns=%d indexes=%d; "
-        "migration-managed create tables=%d columns=%d indexes=%d",
+        "migration-managed tables=%d mixed tables=%d columns=%d indexes=%d",
         len(auto_table_names),
         total_columns - len(migration_columns),
         total_indexes - len(migration_indexes),
         len(migration_tables),
+        len(mixed_tables),
         len(migration_columns),
         len(migration_indexes),
     )
-    if migration_tables or migration_columns or migration_indexes:
+    if migration_tables or mixed_tables or migration_columns or migration_indexes:
         logger.debug(
             "Migration-managed schema excluded from startup auto-DDL: "
-            "tables=%s columns=%s indexes=%s",
+            "tables=%s mixed_tables=%s columns=%s indexes=%s",
             migration_tables,
+            mixed_tables,
             migration_columns,
             migration_indexes,
         )

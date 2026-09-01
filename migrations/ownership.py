@@ -9,8 +9,8 @@ from __future__ import annotations
 from sqlalchemy import Table
 
 from app.common.schema_sync import (
-    bootstrap_managed_tables,
     is_migration_managed,
+    table_has_migration_managed_schema,
 )
 
 
@@ -37,8 +37,10 @@ def include_migration_managed_object(
     if object_type == "table":
         if not isinstance(model_object, Table):
             return False
-        bootstrap_tables = set(bootstrap_managed_tables(model_object.metadata))
-        return model_object not in bootstrap_tables
+        # A bootstrap-owned table may still contain migration-owned children.
+        # Keep that table in Alembic traversal so the per-column/index policy
+        # below can include only the migration-owned objects.
+        return table_has_migration_managed_schema(model_object)
 
     if object_type in {"column", "index"}:
         return is_migration_managed(model_object)

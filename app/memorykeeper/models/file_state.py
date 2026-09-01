@@ -1,7 +1,20 @@
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, Text, text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    FetchedValue,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    text,
+)
 from sqlalchemy.sql import func
 
 from app.common.model_base import Base
+from app.common.schema_sync import migration_managed_schema_info
 
 
 class MemoryKeeperFileState(Base):
@@ -19,6 +32,42 @@ class MemoryKeeperFileState(Base):
     )
     memo = Column(Text, nullable=True)
     revision = Column(Integer, nullable=False, default=0, server_default="0")
+    # MemoryKeeper-only capture-date projection.  The nullable expand migration
+    # adds these fields; dual-write/backfill and read-path adoption follow later.
+    user_capture_datetime = Column(
+        DateTime(timezone=False),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    user_capture_precision = Column(
+        String(16),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    effective_capture_datetime = Column(
+        DateTime(timezone=False),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    effective_capture_date = Column(
+        Date(),
+        server_default=FetchedValue(),
+        server_onupdate=FetchedValue(),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    effective_capture_year = Column(
+        Integer,
+        server_default=FetchedValue(),
+        server_onupdate=FetchedValue(),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    date_basis = Column(
+        String(16),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
