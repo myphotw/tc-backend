@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ from app.common.models.metadata_history import CommonMetadataHistory
 from app.common.schema_sync import initialize_database
 from app.common.repositories.geocode_cache_repository import GeocodeCacheRepository
 from app.common.services.gallery_service import GalleryService
+from app.common.utils.perf import QueryCounter
 from app.main import app
 from app.memorykeeper.models.place import MemoryKeeperPlace
 from app.memorykeeper.schemas.place import (
@@ -366,6 +368,104 @@ class MemoryKeeperPlaceTests(unittest.TestCase):
             self.assertEqual(value, place.display_name)
         self.assertEqual(item.place_name, "원시 역지오코딩 주소")
         self.assertEqual(marker.latitude, 35.2274227)
+
+    def test_gallery_map_is_one_projection_query_and_preserves_shape(self) -> None:
+        place = self.place()
+        for marker in ("q", "r", "s"):
+            _, metadata = self.file(marker)
+            metadata.memorykeeper_place_id = place.id
+            metadata.place_match_source = "RADIUS"
+            metadata.place_match_distance_m = 12.5
+            metadata.place_match_revision = 3
+        self.db.commit()
+        self.db.expunge_all()
+
+        with QueryCounter(self.engine) as counter:
+            response = GalleryService(self.db).map_markers(
+                service_name="MemoryKeeper"
+            )
+
+        self.assertEqual(counter.count, 1)
+        self.assertEqual(response.total, 3)
+        marker = response.items[0]
+        self.assertEqual(
+            set(marker.model_dump()),
+            {
+                "file_id",
+                "latitude",
+                "longitude",
+                "place_name",
+                "geocoded_place_name",
+                "memorykeeper_place_id",
+                "place_display_name",
+                "place_canonical_name",
+                "place_match_source",
+                "place_match_distance_m",
+                "place_revision",
+                "province",
+                "district",
+                "thumbnail",
+                "year",
+                "service_name",
+            },
+        )
+        self.assertEqual(marker.memorykeeper_place_id, place.id)
+        self.assertEqual(marker.place_display_name, "피아골")
+        self.assertEqual(marker.geocoded_place_name, "원시 역지오코딩 주소")
+        self.assertEqual(marker.place_revision, 3)
+
+    def test_gallery_map_filters_service_gps_deleted_and_year_without_duplicates(
+        self,
+    ) -> None:
+        captured_2024 = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        captured_2024_newer = datetime(2024, 6, 2, tzinfo=timezone.utc)
+        captured_2023 = datetime(2023, 6, 1, tzinfo=timezone.utc)
+
+        memory_file, memory_metadata = self.file("t")
+        memory_metadata.datetime_original = captured_2024_newer
+        shared_file, shared_metadata = self.file(
+            "u",
+            services=("MemoryKeeper", "AstroJournal"),
+        )
+        shared_metadata.datetime_original = captured_2024
+        _, astro_metadata = self.file("v", services=("AstroJournal",))
+        astro_metadata.datetime_original = captured_2024
+        _, no_gps_metadata = self.file("w", lat=None, lon=None)
+        no_gps_metadata.datetime_original = captured_2024
+        deleted_file, deleted_metadata = self.file("x")
+        deleted_file.deleted = True
+        deleted_metadata.datetime_original = captured_2024
+        _, old_metadata = self.file("y")
+        old_metadata.datetime_original = captured_2023
+        self.db.commit()
+
+        response = GalleryService(self.db).map_markers(
+            service_name="MemoryKeeper",
+            year=2024,
+        )
+
+        self.assertEqual(response.total, 2)
+        self.assertEqual(
+            [item.file_id for item in response.items],
+            [memory_file.file_id, shared_file.file_id],
+        )
+        self.assertEqual(
+            {item.file_id for item in response.items},
+            {memory_file.file_id, shared_file.file_id},
+        )
+        self.assertEqual(len({item.file_id for item in response.items}), 2)
+
+        astro_response = GalleryService(self.db).map_markers(
+            service_name="AstroJournal",
+            year=2024,
+        )
+        self.assertEqual(
+            {item.file_id for item in astro_response.items},
+            {shared_file.file_id, "v" * 64},
+        )
+        self.assertTrue(
+            all(item.service_name == "AstroJournal" for item in astro_response.items)
+        )
 
     def test_delete_nulls_relation_but_preserves_raw(self) -> None:
         place = self.place()

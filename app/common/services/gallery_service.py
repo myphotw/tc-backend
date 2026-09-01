@@ -353,30 +353,54 @@ class GalleryService:
             db_ms = watch.stop("db_query")
             watch.start("dto_mapping")
             items: list[MapMarkerResponse] = []
-            for common_file, metadata in rows:
-                if metadata.gps_lat is None or metadata.gps_lon is None:
-                    continue
-                capture = metadata.datetime_original
+            for row in rows:
+                effective_service = (
+                    service_name or row.legacy_service_name or "MemoryKeeper"
+                )
+                is_memorykeeper = effective_service.casefold() == "memorykeeper"
+                capture = row.capture_datetime
                 items.append(
                     # Raw GPS/place_name remain unchanged; display name is projected.
                     MapMarkerResponse(
-                        file_id=common_file.file_id,
-                        latitude=float(metadata.gps_lat),
-                        longitude=float(metadata.gps_lon),
-                        place_name=metadata.place_name,
-                        province=metadata.province,
-                        district=metadata.district,
+                        file_id=row.file_id,
+                        latitude=float(row.latitude),
+                        longitude=float(row.longitude),
+                        place_name=row.place_name,
+                        province=row.province,
+                        district=row.district,
                         thumbnail=self._to_media_url(
-                            common_file.file_id,
+                            row.file_id,
                             "thumbnail",
-                            common_file.thumb_path,
+                            row.thumb_path,
                         ),
                         year=capture.year if capture is not None else None,
-                        service_name=service_name or common_file.service_name or "MemoryKeeper",
-                        **self._place_fields(
-                            common_file=common_file,
-                            metadata=metadata,
-                            service_name=service_name,
+                        service_name=effective_service,
+                        memorykeeper_place_id=(
+                            row.memorykeeper_place_id if is_memorykeeper else None
+                        ),
+                        place_display_name=(
+                            (
+                                row.place_display_name
+                                if row.memorykeeper_place_id
+                                else (row.place_name or "미분류")
+                            )
+                            if is_memorykeeper
+                            else None
+                        ),
+                        place_canonical_name=(
+                            row.place_canonical_name if is_memorykeeper else None
+                        ),
+                        geocoded_place_name=(
+                            row.place_name if is_memorykeeper else None
+                        ),
+                        place_match_source=(
+                            row.place_match_source if is_memorykeeper else None
+                        ),
+                        place_match_distance_m=(
+                            row.place_match_distance_m if is_memorykeeper else None
+                        ),
+                        place_revision=(
+                            int(row.place_revision or 0) if is_memorykeeper else None
                         ),
                     )
                 )

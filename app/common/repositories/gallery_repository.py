@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Query, Session
 
 from app.common.models.file import CommonFile
@@ -16,6 +16,7 @@ from app.common.models.metadata_history import CommonMetadataHistory
 from app.common.repositories.tag_repository import TagSource
 from app.common.utils.perf import Stopwatch, log_perf
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
+from app.memorykeeper.models.place import MemoryKeeperPlace
 from app.memorykeeper.services.tag_catalog_service import (
     MemoryKeeperTagCatalogService,
 )
@@ -175,13 +176,40 @@ class GalleryRepository:
         *,
         service_name: str | None = None,
         year: int | None = None,
-    ) -> list[tuple[CommonFile, CommonFileMetadata]]:
-        """GPS가 있는 사진 Marker 목록을 조회한다."""
+    ) -> list[Any]:
+        """GPS marker에 필요한 열과 Place projection을 한 번에 조회한다."""
         query = (
-            self.db.query(CommonFile, CommonFileMetadata)
+            self.db.query(
+                CommonFile.file_id.label("file_id"),
+                CommonFile.thumb_path.label("thumb_path"),
+                CommonFile.service_name.label("legacy_service_name"),
+                CommonFileMetadata.gps_lat.label("latitude"),
+                CommonFileMetadata.gps_lon.label("longitude"),
+                CommonFileMetadata.place_name.label("place_name"),
+                CommonFileMetadata.province.label("province"),
+                CommonFileMetadata.district.label("district"),
+                CommonFileMetadata.datetime_original.label("capture_datetime"),
+                MemoryKeeperPlace.id.label("memorykeeper_place_id"),
+                MemoryKeeperPlace.display_name.label("place_display_name"),
+                MemoryKeeperPlace.canonical_name.label("place_canonical_name"),
+                CommonFileMetadata.place_match_source.label("place_match_source"),
+                CommonFileMetadata.place_match_distance_m.label(
+                    "place_match_distance_m"
+                ),
+                CommonFileMetadata.place_match_revision.label("place_revision"),
+            )
+            .select_from(CommonFile)
             .join(
                 CommonFileMetadata,
                 CommonFileMetadata.file_id == CommonFile.id,
+            )
+            .outerjoin(
+                MemoryKeeperPlace,
+                and_(
+                    MemoryKeeperPlace.id
+                    == CommonFileMetadata.memorykeeper_place_id,
+                    MemoryKeeperPlace.deleted_at.is_(None),
+                ),
             )
             .filter(CommonFile.deleted.is_(False))
             .filter(CommonFileMetadata.gps_lat.isnot(None))
