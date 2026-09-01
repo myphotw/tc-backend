@@ -77,3 +77,15 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+  plate-solve-worker:
+    <<: *app-base
+    profiles: ["astro"]
+    command:
+      - python
+      - -m
+      - worker.plate_solve_worker
+
+    depends_on:
+      backend:
+        condition: service_healthy
