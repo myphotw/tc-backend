@@ -181,6 +181,31 @@ response fields. Gallery collection endpoints apply `service_name` using the
 domain link, so a shared asset can appear in both MemoryKeeper and AstroJournal
 collections without duplicating its physical storage.
 
+## MemoryKeeper Fast Gallery and Travel reads
+
+`GET /api/memorykeeper/gallery/photos` keeps SHA-256 `file_id` as the Common
+Gallery media identity and returns numeric `common_file_id` separately. Media
+URLs are emitted only when the corresponding persisted derivative path is
+present. `GET /api/common/gallery/{file_id}/thumbnail` may serve the persisted
+preview when the thumbnail file has drifted from storage; it never falls back
+to the original or performs an on-demand resize.
+
+`GET /api/memorykeeper/travel/aggregates` remains a two-query set-based
+projection. Place items additionally expose nullable `latitude` and
+`longitude`, preferring the active `memorykeeper_places` coordinates and then
+a deterministic complete raw GPS pair from `common_file_metadata`. No
+per-place query is performed.
+
+`GET /api/memorykeeper/travel/memories` preserves `exact_anniversary` and
+`previous_year_period` and adds a bounded `items` projection plus
+`past_year_period` and `long_ago`. Each item has an optional `category` of
+`EXACT_ANNIVERSARY`, `PREVIOUS_YEAR_PERIOD`, `PAST_YEAR_PERIOD`, or `LONG_AGO`.
+`items` is deduplicated by numeric `common_file_id`, selected round-robin across
+available categories, and limited by the existing `limit` query parameter. All
+candidates refer to real active MemoryKeeper FileAssets and canonical
+`effective_capture_date` values. `LONG_AGO` is limited to assets from at least
+two calendar years before the reference year.
+
 ## AstroJournal Observation Records (B3)
 
 | Method | Endpoint | Description |

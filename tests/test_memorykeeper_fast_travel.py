@@ -61,6 +61,8 @@ class TestMemoryKeeperFastTravel:
         raw_place_name: str | None = None,
         raw_country: str | None = None,
         raw_city: str | None = None,
+        raw_latitude: float | None = None,
+        raw_longitude: float | None = None,
         preview: bool = True,
         thumbnail: bool = True,
     ) -> CommonFile:
@@ -89,6 +91,8 @@ class TestMemoryKeeperFastTravel:
                 place_name=raw_place_name,
                 country=raw_country,
                 city=raw_city,
+                gps_lat=raw_latitude,
+                gps_lon=raw_longitude,
             )
         )
         self.db.add(
@@ -151,6 +155,8 @@ class TestMemoryKeeperFastTravel:
             date(2025, 4, 11),
         ]
         assert tokyo_result.visit_count == 2
+        assert tokyo_result.latitude == 35.0
+        assert tokyo_result.longitude == 135.0
         assert tokyo_result.representative_common_file_id != oldest_media.id
         assert tokyo_result.representative_common_file_id == latest_tokyo_media.id
         assert tokyo_result.representative_capture_date == date(2025, 4, 11)
@@ -186,6 +192,8 @@ class TestMemoryKeeperFastTravel:
         assert response.places[0].place_display_name is None
         assert response.places[0].country is None
         assert response.places[0].region is None
+        assert response.places[0].latitude is None
+        assert response.places[0].longitude is None
         assert response.places[0].photo_count == 1
         assert response.places[0].representative_common_file_id == included.id
         assert len(response.countries) == 1
@@ -202,6 +210,60 @@ class TestMemoryKeeperFastTravel:
         response = self.service.aggregates()
 
         assert response.places[0].capture_dates == [date(2025, 1, 1)]
+
+    def test_place_coordinates_use_master_then_stable_latest_raw_gps(self) -> None:
+        self._photo(
+            date(2024, 1, 1),
+            raw_place_name="해변",
+            raw_country="대한민국",
+            raw_city="강릉",
+            raw_latitude=37.1,
+            raw_longitude=128.1,
+        )
+        self._photo(
+            date(2025, 1, 1),
+            raw_place_name="해변",
+            raw_country="대한민국",
+            raw_city="강릉",
+            raw_latitude=37.2,
+            raw_longitude=128.2,
+        )
+
+        statements: list[str] = []
+
+        def capture(_connection, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+
+        event.listen(self.engine, "before_cursor_execute", capture)
+        try:
+            response = self.service.aggregates()
+        finally:
+            event.remove(self.engine, "before_cursor_execute", capture)
+
+        assert len(response.places) == 1
+        assert response.places[0].latitude == 37.2
+        assert response.places[0].longitude == 128.2
+        assert len(statements) == 2
+
+    def test_deleted_place_is_not_exposed_and_raw_gps_remains_available(self) -> None:
+        place = self._place(name="삭제된 장소", country="대한민국", city="서울")
+        place.deleted_at = datetime(2026, 1, 1)
+        self._photo(
+            date(2025, 1, 1),
+            place=place,
+            raw_place_name="원시 장소",
+            raw_country="대한민국",
+            raw_city="서울",
+            raw_latitude=37.55,
+            raw_longitude=126.98,
+        )
+
+        response = self.service.aggregates()
+
+        assert response.places[0].memorykeeper_place_id is None
+        assert response.places[0].place_display_name == "원시 장소"
+        assert response.places[0].latitude == 37.55
+        assert response.places[0].longitude == 126.98
 
     def test_memories_return_exact_years_and_one_deterministic_photo_per_date(self) -> None:
         place = self._place(name="교토", country="일본", city="교토부")
@@ -251,7 +313,12 @@ class TestMemoryKeeperFastTravel:
         assert response.previous_year_period[0].preview_url is not None
         assert response.exact_anniversary[0].years_ago == 1
         assert response.exact_anniversary[0].common_file_id == exact_2025.id
-        assert len(statements) == 2
+        assert len(statements) == 4
+        assert [item.category for item in response.items] == [
+            "EXACT_ANNIVERSARY",
+            "PREVIOUS_YEAR_PERIOD",
+            "EXACT_ANNIVERSARY",
+        ]
 
     def test_memories_without_exact_use_nearest_previous_year_and_respect_limit(self) -> None:
         place = self._place(name="부산", country="대한민국", city="부산")
@@ -270,6 +337,71 @@ class TestMemoryKeeperFastTravel:
             near_earlier.id,
             near_later.id,
         ]
+
+    def test_memories_add_multi_year_period_and_oldest_real_fallback(self) -> None:
+        place = self._place(name="추억", country="대한민국", city="서울")
+        exact = self._photo(date(2025, 9, 2), place=place)
+        previous = self._photo(date(2025, 8, 31), place=place)
+        past = self._photo(date(2020, 9, 3), place=place)
+        oldest = self._photo(date(2010, 1, 1), place=place)
+
+        response = self.service.memories(
+            reference_date=date(2026, 9, 2),
+            limit=4,
+        )
+
+        assert [item.common_file_id for item in response.items] == [
+            exact.id,
+            previous.id,
+            past.id,
+            oldest.id,
+        ]
+        assert [item.category for item in response.items] == [
+            "EXACT_ANNIVERSARY",
+            "PREVIOUS_YEAR_PERIOD",
+            "PAST_YEAR_PERIOD",
+            "LONG_AGO",
+        ]
+        assert response.past_year_period[0].common_file_id == past.id
+        assert response.long_ago[0].common_file_id == oldest.id
+        assert len({item.common_file_id for item in response.items}) == 4
+
+    def test_memories_multi_year_period_crosses_month_boundary(self) -> None:
+        august = self._photo(date(2020, 8, 31))
+        september = self._photo(date(2019, 9, 8))
+
+        response = self.service.memories(
+            reference_date=date(2026, 9, 2),
+            limit=2,
+        )
+
+        assert response.exact_anniversary == []
+        assert response.previous_year_period == []
+        assert [item.common_file_id for item in response.items] == [
+            august.id,
+            september.id,
+        ]
+        assert all(
+            item.category == "PAST_YEAR_PERIOD" for item in response.items
+        )
+
+    def test_memories_use_real_oldest_photo_when_periods_are_empty(self) -> None:
+        oldest = self._photo(date(2010, 1, 1))
+        newer = self._photo(date(2015, 2, 2))
+
+        response = self.service.memories(
+            reference_date=date(2026, 9, 2),
+            limit=2,
+        )
+
+        assert response.exact_anniversary == []
+        assert response.previous_year_period == []
+        assert response.past_year_period == []
+        assert [item.common_file_id for item in response.items] == [
+            oldest.id,
+            newer.id,
+        ]
+        assert all(item.category == "LONG_AGO" for item in response.items)
 
     def test_routes_are_additive(self) -> None:
         from app.main import app

@@ -70,12 +70,11 @@ class GalleryService:
         """
         watch = Stopwatch()
         watch.start("db_lookup")
-        detail = self.repository.detail(file_id)
+        common_file = self.repository.media_file(file_id)
         db_lookup_ms = watch.stop("db_lookup")
-        if detail is None:
+        if common_file is None:
             raise HTTPException(status_code=404, detail="File not found")
 
-        common_file: CommonFile = detail["file"]
         if bool(common_file.deleted):
             logger.warning(
                 "Gallery media rejected deleted file_id=%s kind=%s",
@@ -84,56 +83,72 @@ class GalleryService:
             )
             raise HTTPException(status_code=404, detail="File not found")
 
-        db_path = self._media_db_path(common_file, kind)
-        if not db_path:
-            logger.warning(
-                "Gallery media path missing file_id=%s kind=%s db_path=%s",
-                file_id,
-                kind,
-                db_path,
-            )
-            raise HTTPException(status_code=404, detail="Media file not found")
+        candidates = [(kind, self._media_db_path(common_file, kind))]
+        if kind == "thumbnail":
+            # A stale/missing thumbnail must not force the client to download the
+            # original.  The persisted preview is the only bounded fallback.
+            candidates.append(("preview", common_file.preview_path))
 
-        try:
-            watch.start("path_resolve")
-            resolved = self.storage_service.resolve_storage_path(db_path)
-            path_resolve_ms = watch.stop("path_resolve")
-        except Exception as exc:
-            logger.exception(
-                "Gallery media path resolve failed file_id=%s kind=%s db_path=%s error=%s",
-                file_id,
-                kind,
-                db_path,
-                exc,
-            )
-            raise HTTPException(status_code=404, detail="Media file not found") from exc
+        resolved: Path | None = None
+        served_kind: str | None = None
+        path_resolve_ms = 0.0
+        for candidate_kind, db_path in candidates:
+            if not db_path:
+                continue
+            try:
+                watch.start("path_resolve")
+                candidate = self.storage_service.resolve_storage_path(db_path)
+                path_resolve_ms += watch.stop("path_resolve")
+            except Exception:
+                path_resolve_ms += watch.stop("path_resolve")
+                logger.exception(
+                    "Gallery media path resolve failed file_id=%s "
+                    "requested_kind=%s candidate_kind=%s",
+                    file_id,
+                    kind,
+                    candidate_kind,
+                )
+                continue
+            if candidate.is_file():
+                resolved = candidate
+                served_kind = candidate_kind
+                break
 
-        exists = resolved.is_file()
-        file_size = resolved.stat().st_size if exists else None
-        media_type = self._resolve_media_type(common_file, kind, resolved)
+        exists = resolved is not None
+        file_size = resolved.stat().st_size if resolved is not None else None
+        media_type = (
+            self._resolve_media_type(common_file, served_kind or kind, resolved)
+            if resolved is not None
+            else None
+        )
         log_perf(
             "gallery_media",
-            kind=kind,
+            requested_kind=kind,
+            served_kind=served_kind,
             file_id=file_id,
             db_lookup_ms=db_lookup_ms,
             path_resolve_ms=path_resolve_ms,
             file_size=file_size,
             exists=exists,
             mime_type=media_type,
+            preview_fallback=kind == "thumbnail" and served_kind == "preview",
             cache_control="public, max-age=86400",
             elapsed_ms=watch.total_ms(),
         )
         logger.info(
-            "Gallery media file_id=%s kind=%s db_path=%s resolved=%s exists=%s mime_type=%s",
+            "Gallery media file_id=%s requested_kind=%s served_kind=%s "
+            "resolved=%s exists=%s mime_type=%s",
             file_id,
             kind,
-            db_path,
+            served_kind,
             resolved,
             exists,
             media_type,
         )
         if not exists:
             raise HTTPException(status_code=404, detail="Media file not found")
+        assert resolved is not None
+        assert media_type is not None
         return resolved, media_type
 
     @staticmethod

@@ -67,14 +67,16 @@ class TestMemoryKeeperFastGallery:
         country: str | None = "대한민국",
         city: str | None = "서울",
         date_basis: str | None = "EXIF",
+        preview: bool = True,
+        thumbnail: bool = True,
     ) -> CommonFile:
         self.counter += 1
         public_id = f"{self.counter:064x}"
         common_file = CommonFile(
             file_id=public_id,
             original_name=f"{self.counter}.jpg",
-            preview_path=f"preview/{public_id}.jpg",
-            thumb_path=f"thumb/{public_id}.jpg",
+            preview_path=f"preview/{public_id}.jpg" if preview else None,
+            thumb_path=f"thumb/{public_id}.jpg" if thumbnail else None,
             deleted=deleted,
             service_name=service_name,
         )
@@ -186,6 +188,37 @@ class TestMemoryKeeperFastGallery:
         assert item.place_display_name == "서울숲"
         assert item.preview_url == f"/api/common/gallery/{matched.file_id}/preview"
         assert item.thumbnail_url == f"/api/common/gallery/{matched.file_id}/thumbnail"
+
+    def test_media_urls_follow_persisted_derivative_paths_without_filesystem_io(
+        self,
+    ) -> None:
+        complete = self._photo(datetime(2026, 1, 3, 10, 0))
+        preview_only = self._photo(
+            datetime(2026, 1, 2, 10, 0),
+            thumbnail=False,
+        )
+        missing = self._photo(
+            datetime(2026, 1, 1, 10, 0),
+            preview=False,
+            thumbnail=False,
+        )
+
+        response = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2026),
+        )
+        by_id = {item.common_file_id: item for item in response.items}
+
+        assert len(by_id[complete.id].file_id) == 64
+        assert by_id[complete.id].thumbnail_url is not None
+        assert by_id[complete.id].preview_url is not None
+        assert by_id[preview_only.id].thumbnail_url is None
+        assert by_id[preview_only.id].preview_url == (
+            f"/api/common/gallery/{preview_only.file_id}/preview"
+        )
+        assert by_id[missing.id].thumbnail_url is None
+        assert by_id[missing.id].preview_url is None
 
     def test_invalid_cursor_and_invalid_date_range_return_clear_400(self) -> None:
         with pytest.raises(HTTPException) as invalid_cursor:

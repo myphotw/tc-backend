@@ -123,6 +123,8 @@ def test_fast_travel_uses_generated_dates_for_aggregates_and_memories(
             date(2025, 12, 20),
         ]
         assert aggregates.places[0].visit_count == 3
+        assert aggregates.places[0].latitude == 35.6762
+        assert aggregates.places[0].longitude == 139.6503
         assert aggregates.countries[0].photo_count == 4
         assert aggregates.countries[0].visit_count == 3
 
@@ -217,6 +219,16 @@ def test_fast_travel_queries_remain_set_based_at_current_catalog_scale(
                 date_to=date(2025, 9, 8),
                 reference_date=date(2026, 9, 1),
             ),
+            repository.build_past_year_period_statement(
+                reference_date=date(2026, 9, 1),
+                period_from=date(2026, 8, 25),
+                period_to=date(2026, 9, 8),
+                limit=80,
+            ),
+            repository.build_long_ago_statement(
+                reference_date=date(2026, 9, 1),
+                limit=160,
+            ),
         ]
 
     with postgresql_engine.connect() as connection:
@@ -230,7 +242,7 @@ def test_fast_travel_queries_remain_set_based_at_current_catalog_scale(
     aggregate_ms = sum(float(plan["Execution Time"]) for plan in plans[:2])
     memory_ms = sum(float(plan["Execution Time"]) for plan in plans[2:])
     assert aggregate_ms <= 300.0
-    assert memory_ms <= 200.0
+    assert memory_ms <= 400.0
 
 
 def _explain_analyze_json(connection, statement, engine: Engine) -> dict[str, object]:

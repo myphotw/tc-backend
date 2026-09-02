@@ -110,6 +110,14 @@ class GalleryRepository:
             "history_count": int(history_count),
         }
 
+    def media_file(self, file_id: str) -> CommonFile | None:
+        """Media endpoint에 필요한 CommonFile만 조회한다."""
+        return (
+            self.db.query(CommonFile)
+            .filter(CommonFile.file_id == file_id)
+            .first()
+        )
+
     def search(
         self,
         *,

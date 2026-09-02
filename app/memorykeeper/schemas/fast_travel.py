@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -12,6 +13,8 @@ class FastTravelPlaceAggregate(BaseModel):
     place_display_name: str | None = None
     country: str | None = None
     region: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     photo_count: int
     capture_dates: list[date] = Field(default_factory=list)
     visit_count: int
@@ -51,9 +54,18 @@ class FastTravelMemoryCandidate(BaseModel):
     country: str | None = None
     preview_url: str | None = None
     thumbnail_url: str | None = None
+    category: Literal[
+        "EXACT_ANNIVERSARY",
+        "PREVIOUS_YEAR_PERIOD",
+        "PAST_YEAR_PERIOD",
+        "LONG_AGO",
+    ] | None = None
 
 
 class FastTravelMemoriesResponse(BaseModel):
     reference_date: date
+    items: list[FastTravelMemoryCandidate] = Field(default_factory=list)
     exact_anniversary: list[FastTravelMemoryCandidate] = Field(default_factory=list)
     previous_year_period: list[FastTravelMemoryCandidate] = Field(default_factory=list)
+    past_year_period: list[FastTravelMemoryCandidate] = Field(default_factory=list)
+    long_ago: list[FastTravelMemoryCandidate] = Field(default_factory=list)

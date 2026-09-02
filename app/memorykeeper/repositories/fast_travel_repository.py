@@ -43,6 +43,20 @@ class MemoryKeeperFastTravelRepository:
         )
 
     @staticmethod
+    def _latitude_expression():
+        return func.coalesce(
+            MemoryKeeperPlace.latitude,
+            CommonFileMetadata.gps_lat,
+        )
+
+    @staticmethod
+    def _longitude_expression():
+        return func.coalesce(
+            MemoryKeeperPlace.longitude,
+            CommonFileMetadata.gps_lon,
+        )
+
+    @staticmethod
     def _media_priority_expression():
         return case(
             (
@@ -91,21 +105,30 @@ class MemoryKeeperFastTravelRepository:
         country = self._country_expression()
         region = self._region_expression()
         display_name = self._place_display_expression()
+        latitude = self._latitude_expression()
+        longitude = self._longitude_expression()
         group_columns = [
-            CommonFileMetadata.memorykeeper_place_id,
+            MemoryKeeperPlace.id,
             display_name,
             country,
             region,
         ]
+        has_coordinates = case(
+            (
+                and_(latitude.isnot(None), longitude.isnot(None)),
+                1,
+            ),
+            else_=0,
+        )
         ranked = (
             self._base_query()
             .with_entities(
-                CommonFileMetadata.memorykeeper_place_id.label(
-                    "memorykeeper_place_id"
-                ),
+                MemoryKeeperPlace.id.label("memorykeeper_place_id"),
                 display_name.label("place_display_name"),
                 country.label("country"),
                 region.label("region"),
+                latitude.label("latitude"),
+                longitude.label("longitude"),
                 MemoryKeeperFileState.effective_capture_date,
                 CommonFile.id.label("common_file_id"),
                 CommonFile.file_id,
@@ -117,6 +140,16 @@ class MemoryKeeperFastTravelRepository:
                     order_by=self._representative_order(),
                 )
                 .label("representative_rank"),
+                func.row_number()
+                .over(
+                    partition_by=group_columns,
+                    order_by=[
+                        has_coordinates.desc(),
+                        MemoryKeeperFileState.effective_capture_datetime.desc(),
+                        CommonFile.id.desc(),
+                    ],
+                )
+                .label("coordinate_rank"),
             )
             .subquery("travel_place_ranked")
         )
@@ -131,6 +164,7 @@ class MemoryKeeperFastTravelRepository:
                     "photo_count"
                 ),
                 *self._representative_aggregate_columns(ranked),
+                *self._coordinate_aggregate_columns(ranked),
             )
             .group_by(
                 ranked.c.memorykeeper_place_id,
@@ -235,6 +269,92 @@ class MemoryKeeperFastTravelRepository:
         )
         return self._memory_candidate_statement(condition)
 
+    def past_year_period_candidates(
+        self,
+        *,
+        reference_date: date,
+        period_from: date,
+        period_to: date,
+        limit: int,
+    ) -> list[object]:
+        """Return bounded nearby-calendar candidates from two or more years ago."""
+        return list(
+            self.db.execute(
+                self.build_past_year_period_statement(
+                    reference_date=reference_date,
+                    period_from=period_from,
+                    period_to=period_to,
+                    limit=limit,
+                )
+            ).all()
+        )
+
+    def build_past_year_period_statement(
+        self,
+        *,
+        reference_date: date,
+        period_from: date,
+        period_to: date,
+        limit: int,
+    ):
+        condition = and_(
+            MemoryKeeperFileState.effective_capture_date
+            < date(reference_date.year - 1, 1, 1),
+            self._month_day_window_condition(
+                MemoryKeeperFileState.effective_capture_date,
+                period_from=period_from,
+                period_to=period_to,
+            ),
+        )
+        return self._memory_candidate_statement(condition, limit=limit)
+
+    @staticmethod
+    def _month_day_window_condition(
+        column: object,
+        *,
+        period_from: date,
+        period_to: date,
+    ):
+        """Compare recurring month/day ranges without database-specific date casts."""
+        month_day = extract("month", column) * 100 + extract("day", column)
+        start = period_from.month * 100 + period_from.day
+        end = period_to.month * 100 + period_to.day
+        if start <= end:
+            return and_(month_day >= start, month_day <= end)
+        return (month_day >= start) | (month_day <= end)
+
+    def long_ago_candidates(
+        self,
+        *,
+        reference_date: date,
+        limit: int,
+    ) -> list[object]:
+        """Return bounded oldest real capture dates as a deterministic fallback."""
+        return list(
+            self.db.execute(
+                self.build_long_ago_statement(
+                    reference_date=reference_date,
+                    limit=limit,
+                )
+            ).all()
+        )
+
+    def build_long_ago_statement(
+        self,
+        *,
+        reference_date: date,
+        limit: int,
+    ):
+        condition = (
+            MemoryKeeperFileState.effective_capture_date
+            < date(reference_date.year - 1, 1, 1)
+        )
+        return self._memory_candidate_statement(
+            condition,
+            descending=False,
+            limit=limit,
+        )
+
     def _representative_order(self) -> list[object]:
         return [
             self._media_priority_expression().desc(),
@@ -263,7 +383,25 @@ class MemoryKeeperFastTravelRepository:
             ).label("representative_capture_date"),
         )
 
-    def _memory_candidate_statement(self, condition: object):
+    @staticmethod
+    def _coordinate_aggregate_columns(ranked):
+        is_coordinate_representative = ranked.c.coordinate_rank == 1
+        return (
+            func.max(
+                case((is_coordinate_representative, ranked.c.latitude))
+            ).label("latitude"),
+            func.max(
+                case((is_coordinate_representative, ranked.c.longitude))
+            ).label("longitude"),
+        )
+
+    def _memory_candidate_statement(
+        self,
+        condition: object,
+        *,
+        descending: bool = True,
+        limit: int | None = None,
+    ):
         country = self._country_expression()
         display_name = self._place_display_expression()
         ranked = (
@@ -288,11 +426,21 @@ class MemoryKeeperFastTravelRepository:
             )
             .subquery("travel_memory_candidates")
         )
-        return (
+        effective_date_order = (
+            ranked.c.effective_capture_date.desc()
+            if descending
+            else ranked.c.effective_capture_date.asc()
+        )
+        statement = (
             select(ranked)
             .where(ranked.c.candidate_rank == 1)
             .order_by(
-                ranked.c.effective_capture_date.desc(),
-                ranked.c.common_file_id.desc(),
+                effective_date_order,
+                (
+                    ranked.c.common_file_id.desc()
+                    if descending
+                    else ranked.c.common_file_id.asc()
+                ),
             )
         )
+        return statement.limit(limit) if limit is not None else statement

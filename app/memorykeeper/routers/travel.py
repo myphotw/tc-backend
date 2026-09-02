@@ -35,7 +35,7 @@ def travel_memories(
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> FastTravelMemoriesResponse:
-    """Return bounded anniversary/previous-year candidates for one date."""
+    """Return bounded, categorized real-photo memories for one date."""
     return MemoryKeeperFastTravelService(db).memories(
         reference_date=reference_date,
         limit=limit,
