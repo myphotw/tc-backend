@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+import logging
 from typing import Iterator
 
-from sqlalchemy import func, update
+from sqlalchemy import func, or_, update
 from sqlalchemy.orm import Session
 
 from app.common.models.vision_job import CommonVisionJob
+from app.common.models.worker_status import CommonWorkerStatus
+
+
+logger = logging.getLogger(__name__)
 
 
 class VisionJobStatus:
@@ -183,6 +188,132 @@ class VisionJobRepository:
         with self._commit_keep_state():
             pass
         return job
+
+    def recover_stale_processing_jobs(
+        self,
+        *,
+        stale_seconds: int,
+        worker_name_prefix: str,
+        live_heartbeat_seconds: int,
+        limit: int = 50,
+    ) -> int:
+        """Return abandoned PROCESSING rows to WAITING without a retry penalty.
+
+        A recently heartbeating Vision worker's current job is protected.  On
+        PostgreSQL, row locks with SKIP LOCKED allow concurrent recovery loops
+        to divide work without recovering the same row twice.
+        """
+        if stale_seconds <= 0 or live_heartbeat_seconds <= 0 or limit <= 0:
+            return 0
+
+        now = datetime.now(timezone.utc)
+        stale_before = now - timedelta(seconds=stale_seconds)
+        live_after = now - timedelta(seconds=live_heartbeat_seconds)
+
+        try:
+            protected_ids = self._live_processing_job_ids(
+                worker_name_prefix=worker_name_prefix,
+                live_after=live_after,
+            )
+            recovered = self._recover_stale_rows(
+                stale_before=stale_before,
+                protected_ids=protected_ids,
+                limit=limit,
+            )
+        except Exception:
+            self.db.rollback()
+            logger.exception("Failed to recover stale Vision jobs")
+            return 0
+
+        if recovered:
+            logger.warning(
+                "Recovered stale Vision jobs count=%s stale_seconds=%s",
+                recovered,
+                stale_seconds,
+            )
+        return recovered
+
+    def _live_processing_job_ids(
+        self,
+        *,
+        worker_name_prefix: str,
+        live_after: datetime,
+    ) -> set[int]:
+        rows = (
+            self.db.query(CommonWorkerStatus.current_job_id)
+            .filter(CommonWorkerStatus.status == "RUNNING")
+            .filter(CommonWorkerStatus.last_heartbeat.isnot(None))
+            .filter(CommonWorkerStatus.last_heartbeat >= live_after)
+            .filter(CommonWorkerStatus.current_job_id.isnot(None))
+            .filter(
+                or_(
+                    CommonWorkerStatus.worker_name == worker_name_prefix,
+                    CommonWorkerStatus.worker_name.like(
+                        f"{worker_name_prefix}-%"
+                    ),
+                )
+            )
+            .all()
+        )
+        protected: set[int] = set()
+        for row in rows:
+            try:
+                protected.add(int(row[0]))
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring non-numeric Vision current_job_id worker=%s value=%r",
+                    worker_name_prefix,
+                    row[0],
+                )
+        return protected
+
+    def _stale_query(
+        self,
+        *,
+        stale_before: datetime,
+        protected_ids: set[int],
+    ):
+        query = (
+            self.db.query(CommonVisionJob)
+            .filter(CommonVisionJob.deleted.is_(False))
+            .filter(CommonVisionJob.status == VisionJobStatus.PROCESSING)
+            .filter(CommonVisionJob.completed_at.is_(None))
+            .filter(CommonVisionJob.started_at.isnot(None))
+            .filter(CommonVisionJob.started_at < stale_before)
+        )
+        if protected_ids:
+            query = query.filter(CommonVisionJob.id.notin_(protected_ids))
+        return query
+
+    def _recover_stale_rows(
+        self,
+        *,
+        stale_before: datetime,
+        protected_ids: set[int],
+        limit: int,
+    ) -> int:
+        query = self._stale_query(
+            stale_before=stale_before,
+            protected_ids=protected_ids,
+        ).order_by(CommonVisionJob.started_at.asc(), CommonVisionJob.id.asc())
+        if self.db.get_bind().dialect.name == "postgresql":
+            query = query.with_for_update(skip_locked=True)
+        jobs = query.limit(limit).all()
+        for job in jobs:
+            self._reset_stale_job(job)
+        if jobs:
+            with self._commit_keep_state():
+                pass
+        else:
+            self.db.rollback()
+        return len(jobs)
+
+    @staticmethod
+    def _reset_stale_job(job: CommonVisionJob) -> None:
+        job.status = VisionJobStatus.WAITING
+        job.started_at = None
+        job.completed_at = None
+        job.last_error = None
 
     def exists(self, *, file_id: int) -> bool:
         """

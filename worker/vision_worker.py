@@ -35,6 +35,13 @@ logging.basicConfig(level=logging.INFO)
 
 POLLING_INTERVAL = int(os.environ.get("VISION_POLLING_INTERVAL", "5"))
 USAGE_RETRY_INTERVAL = int(os.environ.get("VISION_USAGE_RETRY_INTERVAL", "1800"))
+STALE_RECOVERY_INTERVAL = int(
+    os.environ.get("VISION_STALE_RECOVERY_INTERVAL", "300")
+)
+STALE_SECONDS = int(os.environ.get("VISION_JOB_STALE_SECONDS", "21600"))
+LIVE_HEARTBEAT_SECONDS = int(
+    os.environ.get("VISION_LIVE_HEARTBEAT_SECONDS", "90")
+)
 WORKER_NAME = "VisionWorker"
 
 
@@ -47,12 +54,22 @@ def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
     """
     initialize_database()
     monitor = WorkerMonitor(WORKER_NAME)
+    _recover_stale(stale_seconds=STALE_SECONDS)
     monitor.start()
-    logger.info("Vision worker started")
+    logger.info(
+        "Vision worker started stale_seconds=%s recovery_interval=%s",
+        STALE_SECONDS,
+        STALE_RECOVERY_INTERVAL,
+    )
+    last_stale_at = time.monotonic()
 
     try:
         while True:
             monitor.maybe_heartbeat()
+            now = time.monotonic()
+            if now - last_stale_at >= STALE_RECOVERY_INTERVAL:
+                _recover_stale(stale_seconds=STALE_SECONDS)
+                last_stale_at = now
             db = SessionLocal()
             try:
                 processed = process_next_vision_job(db, monitor=monitor)
@@ -65,6 +82,18 @@ def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
                 db.close()
     finally:
         monitor.stop()
+
+
+def _recover_stale(*, stale_seconds: int) -> int:
+    db = SessionLocal()
+    try:
+        return VisionJobRepository(db).recover_stale_processing_jobs(
+            stale_seconds=stale_seconds,
+            worker_name_prefix=WORKER_NAME,
+            live_heartbeat_seconds=LIVE_HEARTBEAT_SECONDS,
+        )
+    finally:
+        db.close()
 
 
 def process_next_vision_job(
@@ -100,14 +129,13 @@ def process_next_vision_job(
         )
         return True
 
-    if monitor is not None:
-        monitor.maybe_heartbeat(current_job_id=str(job.id))
-
     claimed = repository.mark_processing(job)
     if claimed is None:
         logger.info("Vision job claim skipped: job_id=%s", job.id)
         return True
     job = claimed
+    if monitor is not None:
+        monitor.maybe_heartbeat(current_job_id=str(job.id), force=True)
     try:
         process_vision_job(db, job)
         repository.mark_completed(job)
