@@ -45,6 +45,10 @@ class LocalStorageService(StorageService):
         return self.root
 
     @property
+    def incoming_root(self) -> Path:
+        return self.root / "incoming"
+
+    @property
     def original_root(self) -> Path:
         return self.root / "original"
 

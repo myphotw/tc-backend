@@ -25,6 +25,7 @@ from app.common.routers.upload import (
 )
 from app.common.schema_sync import initialize_database
 from app.common.services.gallery_service import GalleryService
+from app.common.services.media_probe import MediaCategory, MediaProbeResult
 from app.common.services.upload_metadata import decode_upload_metadata
 from app.common.services.upload_job_service import UploadJobService
 from worker import background_worker
@@ -45,6 +46,11 @@ class FakeStorageService:
         return Path(incoming_path)
 
 
+class FakeMediaProbe:
+    def probe_for_service(self, *_args, **_kwargs) -> MediaProbeResult:
+        return MediaProbeResult(MediaCategory.IMAGE, ".jpg", "image/jpeg")
+
+
 class SprintB1Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.engine = create_engine("sqlite:///:memory:")
@@ -61,7 +67,9 @@ class SprintB1Tests(unittest.TestCase):
 
     def test_legacy_file_only_upload_response_is_unchanged(self) -> None:
         fake_storage = FakeStorageService()
-        with patch("app.common.routers.upload.storage_service", fake_storage):
+        with patch("app.common.routers.upload.storage_service", fake_storage), patch(
+            "app.common.routers.upload.media_probe", FakeMediaProbe()
+        ):
             response = upload_file(
                 file=self._upload_file(),
                 service_name="MemoryKeeper",
@@ -75,7 +83,9 @@ class SprintB1Tests(unittest.TestCase):
     def test_astro_upload_and_idempotent_replay(self) -> None:
         fake_storage = FakeStorageService()
         digest = "a" * 64
-        with patch("app.common.routers.upload.storage_service", fake_storage):
+        with patch("app.common.routers.upload.storage_service", fake_storage), patch(
+            "app.common.routers.upload.media_probe", FakeMediaProbe()
+        ):
             created = upload_file(
                 file=self._upload_file(),
                 service_name="AstroJournal",

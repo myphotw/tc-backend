@@ -11,6 +11,7 @@ from app.common.repositories.vision_job_repository import (
 from app.memorykeeper.services.capture_date_service import (
     MemoryKeeperCaptureDateService,
 )
+from app.common.services.media_probe import MediaCategory
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from worker.plugins.base import BasePlugin, PluginContext
 
@@ -100,6 +101,16 @@ class HashPlugin(BasePlugin):
         context: PluginContext,
         common_file: CommonFile,
     ) -> None:
+        if context.media is not None and context.media.category == MediaCategory.VIDEO:
+            context.log("VISION_QUEUE_SKIPPED:VIDEO")
+            return
+        if (
+            context.media is not None
+            and context.media.category == MediaCategory.HEIC
+            and not common_file.preview_path
+        ):
+            context.log("VISION_QUEUE_SKIPPED:HEIC_DERIVATIVE_UNAVAILABLE")
+            return
         repository = VisionJobRepository(context.db)
         blocking_status = repository.get_blocking_status(file_id=common_file.id)
         if blocking_status == VisionJobStatus.COMPLETED:

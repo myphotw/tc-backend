@@ -13,6 +13,7 @@ from fastapi import UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.common.config import settings
+from app.common.services.upload_filename import decode_upload_filename
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,8 @@ IMAGE_EXTENSIONS: set[str] = {
     ".bmp",
     ".tif",
     ".tiff",
+    ".heic",
+    ".heif",
 }
 
 
@@ -121,7 +124,7 @@ class StorageService:
         Returns:
             str: PHOTO_PLATFORM_ROOT 기준 상대 경로
         """
-        original_name = file.filename or "unknown"
+        original_name = decode_upload_filename(file.filename or "unknown")
         safe_name = self._sanitize_filename(original_name)
         incoming_path = self.incoming_root / f"{job_id}_{safe_name}"
         incoming_path.parent.mkdir(parents=True, exist_ok=True)
@@ -322,6 +325,8 @@ class StorageService:
         original_path: str | Path,
         file_id: str,
         extension: str,
+        *,
+        output_extension: str | None = None,
     ) -> Path | None:
         """
         원본 이미지에서 preview 이미지를 PREVIEW_DIR에 생성한다.
@@ -339,6 +344,7 @@ class StorageService:
             target_root=self.preview_root,
             file_id=file_id,
             extension=extension,
+            output_extension=output_extension,
             max_size=self.PREVIEW_MAX_SIZE,
         )
 
@@ -347,6 +353,8 @@ class StorageService:
         original_path: str | Path,
         file_id: str,
         extension: str,
+        *,
+        output_extension: str | None = None,
     ) -> Path | None:
         """
         원본 이미지에서 thumbnail 이미지를 THUMB_DIR에 생성한다.
@@ -364,8 +372,25 @@ class StorageService:
             target_root=self.thumb_root,
             file_id=file_id,
             extension=extension,
+            output_extension=output_extension,
             max_size=self.THUMB_MAX_SIZE,
         )
+
+    def build_derivative_path(
+        self,
+        *,
+        kind: str,
+        file_id: str,
+        extension: str,
+    ) -> Path:
+        """Build a persisted preview/thumb path without writing the file."""
+        if kind == "preview":
+            root = self.preview_root
+        elif kind == "thumb":
+            root = self.thumb_root
+        else:
+            raise ValueError("derivative kind must be preview or thumb")
+        return self._build_path(root, file_id, self._normalize_extension(extension))
 
     def get_image_size(self, path: str | Path) -> tuple[int | None, int | None]:
         """
@@ -381,7 +406,7 @@ class StorageService:
             with Image.open(self.resolve_storage_path(path)) as image:
                 image = ImageOps.exif_transpose(image)
                 return image.size
-        except (UnidentifiedImageError, OSError):
+        except (UnidentifiedImageError, OSError, ValueError):
             return None, None
 
     def delete_incoming(self, incoming_path: str | Path) -> None:
@@ -749,6 +774,7 @@ class StorageService:
         target_root: Path,
         file_id: str,
         extension: str,
+        output_extension: str | None,
         max_size: tuple[int, int],
     ) -> Path | None:
         """
@@ -765,9 +791,10 @@ class StorageService:
             Path | None: 생성된 이미지 경로 또는 이미지가 아닌 경우 None
         """
         path = self.resolve_storage_path(original_path)
-        ext = self._normalize_extension(extension or path.suffix)
-        if ext.lower() not in IMAGE_EXTENSIONS:
+        source_ext = self._normalize_extension(extension or path.suffix)
+        if source_ext.lower() not in IMAGE_EXTENSIONS:
             return None
+        target_ext = self._normalize_extension(output_extension or source_ext)
 
         try:
             with Image.open(path) as image:
@@ -776,7 +803,7 @@ class StorageService:
                     image=image,
                     target_root=target_root,
                     sha256=file_id,
-                    extension=ext,
+                    extension=target_ext,
                     max_size=max_size,
                 )
         except (UnidentifiedImageError, OSError):
@@ -828,7 +855,7 @@ class StorageService:
         """
         save_image = image
         ext = extension.lower()
-        if ext in {".jpg", ".jpeg"} and image.mode in {"RGBA", "P", "LA"}:
+        if ext in {".jpg", ".jpeg"} and image.mode not in {"RGB", "L"}:
             save_image = image.convert("RGB")
 
         save_image.save(

@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 from app.common.database import get_db
 from app.common.models.upload_job import UploadJob
 from app.common.repositories.upload_job_repository import UploadJobRepository
+from app.common.services.media_probe import (
+    MediaProbe,
+    MediaToolUnavailableError,
+    UnsupportedMediaError,
+)
 from app.common.services.storage_service import StorageService
+from app.common.services.upload_filename import decode_upload_filename
 from app.common.services.upload_metadata import encode_upload_metadata
 from app.common.utils.perf import Stopwatch, log_perf
 from app.memorykeeper.services.reset_guard import acquire_memorykeeper_reset_lock
@@ -29,6 +35,7 @@ router = APIRouter(
 )
 
 storage_service = StorageService()
+media_probe = MediaProbe()
 SUPPORTED_SERVICES = {"MemoryKeeper", "AstroJournal"}
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -56,6 +63,8 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
             },
         },
         400: {"description": "filename 누락"},
+        415: {"description": "지원하지 않거나 손상된 미디어"},
+        503: {"description": "미디어 판별 도구 사용 불가"},
         500: {"description": "업로드 실패"},
     },
 )
@@ -130,6 +139,22 @@ def upload_file(
         watch.start("incoming_save")
         incoming_path = storage_service.save_incoming(file, job_id)
         incoming_ms = watch.stop("incoming_save")
+
+        decoded_filename = decode_upload_filename(file.filename)
+        try:
+            media_probe.probe_for_service(
+                storage_service.resolve_storage_path(incoming_path),
+                filename=decoded_filename,
+                service_name=service_name,
+            )
+        except UnsupportedMediaError as exc:
+            storage_service.delete_incoming(incoming_path)
+            incoming_path = None
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
+        except MediaToolUnavailableError as exc:
+            storage_service.delete_incoming(incoming_path)
+            incoming_path = None
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         watch.start("upload_job_create")
         try:

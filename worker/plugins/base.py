@@ -15,6 +15,7 @@ from app.common.services.storage_service import StorageService
 
 if TYPE_CHECKING:
     from app.common.models.file_service import CommonFileService
+    from app.common.services.media_probe import MediaProbeResult
     from app.memorykeeper.models.file_state import MemoryKeeperFileState
 
 
@@ -32,6 +33,7 @@ class PluginContext:
     original_name: str | None = None
     extension: str | None = None
     mime_type: str | None = None
+    media: MediaProbeResult | None = None
     file_size: int | None = None
     width: int | None = None
     height: int | None = None

@@ -12,6 +12,7 @@ from app.common.repositories.metadata_repository import (
 from app.common.repositories.tag_repository import TagRepository
 from app.common.services.api_clients.base_client import ApiClientError
 from app.common.services.api_clients.google import VisionClient
+from app.common.services.media_probe import MediaCategory, MediaProbe
 from app.common.utils.perf import Stopwatch, log_perf
 from worker.plugins.base import BasePlugin, PluginContext
 
@@ -110,12 +111,47 @@ class VisionPlugin(BasePlugin):
 
     def _resolve_image_path(self, context: PluginContext) -> Path:
         """Vision 분석에 사용할 이미지 경로를 결정한다."""
-        if context.original_path is not None:
-            return context.original_path
-        if context.storage_path is not None:
-            return context.storage_path
-        if context.common_file is not None and context.common_file.original_path:
+        common_file = context.common_file
+        if common_file is None:
+            raise ValueError("common_file is required for vision analysis")
+
+        extension = (common_file.extension or "").lower()
+        mime_type = (common_file.mime_type or "").lower()
+        if extension in {".mp4", ".mov"} or mime_type.startswith("video/"):
+            raise ValueError("video files are not eligible for Vision analysis")
+
+        if extension in {".heic", ".heif"} or mime_type in {
+            "image/heic",
+            "image/heif",
+        }:
+            if not common_file.preview_path:
+                raise ValueError("HEIC Vision analysis requires a JPEG preview")
             return context.storage_service.resolve_storage_path(
-                context.common_file.original_path
+                common_file.preview_path
             )
-        raise ValueError("original image path is required for vision analysis")
+
+        source = context.original_path or context.storage_path
+        if source is None and common_file.original_path:
+            source = context.storage_service.resolve_storage_path(
+                common_file.original_path
+            )
+        if source is None:
+            raise ValueError("original image path is required for vision analysis")
+
+        # Legacy rows may lack extension/MIME because their encoded filename was
+        # never decoded. Probe those rows before any quota-reserving API call.
+        if not extension and not mime_type:
+            media = MediaProbe().probe_for_service(
+                source,
+                filename=common_file.original_name,
+                service_name="MemoryKeeper",
+            )
+            if media.category == MediaCategory.VIDEO:
+                raise ValueError("video files are not eligible for Vision analysis")
+            if media.category == MediaCategory.HEIC:
+                if not common_file.preview_path:
+                    raise ValueError("HEIC Vision analysis requires a JPEG preview")
+                return context.storage_service.resolve_storage_path(
+                    common_file.preview_path
+                )
+        return Path(source)

@@ -17,6 +17,7 @@ from app.common.repositories.vision_job_repository import (
     VisionProvider,
 )
 from app.common.services.priority_calculator import PriorityCalculator
+from app.common.services.media_probe import MediaCategory, MediaProbe
 from app.common.services.storage_service import StorageService
 from app.common.services.upload_metadata import decode_upload_metadata
 from app.common.utils.perf import Stopwatch, log_perf
@@ -177,16 +178,24 @@ def process_upload_job(
     resolved_worker_id = worker_id or resolve_upload_worker_id()
 
     incoming_path = storage_service.resolve_storage_path(job.incoming_path)
-    extension = incoming_path.suffix.lower()
+    original_name = _extract_original_name(incoming_path.name, job.job_id)
+    media = MediaProbe().probe_for_service(
+        incoming_path,
+        filename=original_name,
+        service_name=job.service_name or "MemoryKeeper",
+    )
     context = PluginContext(
         db=db,
         job=job,
         storage_service=storage_service,
         job_repository=repository,
         incoming_path=incoming_path,
-        original_name=_extract_original_name(incoming_path.name, job.job_id),
-        extension=extension,
-        mime_type=_guess_mime_type(extension),
+        original_name=original_name,
+        extension=media.extension,
+        mime_type=media.mime_type,
+        media=media,
+        width=media.width,
+        height=media.height,
         metadata=decode_upload_metadata(job.processing_log),
         plugin_enabled={},
         service_name=job.service_name or "MemoryKeeper",
@@ -235,6 +244,16 @@ def process_upload_job(
 def _enqueue_vision_job(db: Session, context: PluginContext) -> None:
     """Metadata/EXIF/GPS 완료 후 Vision Queue를 등록한다."""
     if context.common_file is None:
+        return
+    if context.media is not None and context.media.category == MediaCategory.VIDEO:
+        context.log("VISION_QUEUE_SKIPPED:VIDEO")
+        return
+    if (
+        context.media is not None
+        and context.media.category == MediaCategory.HEIC
+        and context.preview_path is None
+    ):
+        context.log("VISION_QUEUE_SKIPPED:HEIC_DERIVATIVE_UNAVAILABLE")
         return
 
     vision_repository = VisionJobRepository(db)
