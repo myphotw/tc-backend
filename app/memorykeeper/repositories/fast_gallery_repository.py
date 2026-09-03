@@ -254,6 +254,8 @@ class MemoryKeeperFastGalleryRepository:
                 CommonFile.id.label("common_file_id"),
                 CommonFile.file_id,
                 CommonFile.original_name.label("filename"),
+                CommonFile.extension,
+                CommonFile.mime_type,
                 CommonFile.preview_path,
                 CommonFile.thumb_path,
             )
@@ -307,6 +309,8 @@ class MemoryKeeperFastGalleryRepository:
             CommonFile.id.label("common_file_id"),
             CommonFile.file_id,
             CommonFile.original_name.label("filename"),
+            CommonFile.extension,
+            CommonFile.mime_type,
             CommonFile.preview_path,
             CommonFile.thumb_path,
         ).subquery("gallery_file")
@@ -375,6 +379,8 @@ class MemoryKeeperFastGalleryRepository:
                 candidates.c.common_file_id,
                 file_lookup.c.file_id,
                 file_lookup.c.filename,
+                file_lookup.c.extension,
+                file_lookup.c.mime_type,
                 file_lookup.c.preview_path,
                 file_lookup.c.thumb_path,
                 candidates.c.favorite,

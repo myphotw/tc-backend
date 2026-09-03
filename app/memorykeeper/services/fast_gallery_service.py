@@ -154,6 +154,8 @@ class MemoryKeeperFastGalleryService:
             common_file_id=int(row.common_file_id),  # type: ignore[attr-defined]
             file_id=str(row.file_id),  # type: ignore[attr-defined]
             filename=str(row.filename),  # type: ignore[attr-defined]
+            extension=row.extension,  # type: ignore[attr-defined]
+            mime_type=row.mime_type,  # type: ignore[attr-defined]
             preview_url=build_gallery_media_url(
                 str(row.file_id),  # type: ignore[attr-defined]
                 "preview",

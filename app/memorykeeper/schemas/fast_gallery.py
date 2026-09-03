@@ -13,6 +13,8 @@ class FastGalleryPhotoItem(BaseModel):
     common_file_id: int
     file_id: str
     filename: str
+    extension: str | None = None
+    mime_type: str | None = None
     preview_url: str | None = None
     thumbnail_url: str | None = None
     favorite: bool

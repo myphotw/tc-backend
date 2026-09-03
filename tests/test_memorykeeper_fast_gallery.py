@@ -220,6 +220,42 @@ class TestMemoryKeeperFastGallery:
         assert by_id[missing.id].thumbnail_url is None
         assert by_id[missing.id].preview_url is None
 
+    @pytest.mark.parametrize(
+        ("extension", "mime_type"),
+        [
+            (".jpg", "image/jpeg"),
+            (".png", "image/png"),
+            (".mp4", "video/mp4"),
+            (".mov", "video/quicktime"),
+            (None, None),
+        ],
+    )
+    def test_photo_items_preserve_optional_media_fields(
+        self, extension: str | None, mime_type: str | None,
+    ) -> None:
+        common_file = self._photo(datetime(2026, 1, 3, 10, 0))
+        common_file.extension = extension
+        common_file.mime_type = mime_type
+        self.db.commit()
+
+        response = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(),
+        )
+        item = response.items[0]
+        payload = item.model_dump(mode="json")
+        assert item.common_file_id == common_file.id
+        assert payload["extension"] == extension
+        assert payload["mime_type"] == mime_type
+
+        # Older payloads remain valid; the new fields are not required.
+        payload.pop("extension")
+        payload.pop("mime_type")
+        legacy_item = type(item).model_validate(payload)
+        assert legacy_item.extension is None
+        assert legacy_item.mime_type is None
+
     def test_invalid_cursor_and_invalid_date_range_return_clear_400(self) -> None:
         with pytest.raises(HTTPException) as invalid_cursor:
             self.service.photos(
@@ -365,4 +401,8 @@ class TestMemoryKeeperFastGallery:
         assert "LIMIT 51" in sql
         assert "EXISTS (SELECT common_file_services.id" in sql
         assert "JOIN LATERAL" in sql
+        assert "common_files.extension" in sql
+        assert "common_files.mime_type" in sql
+        assert "gallery_file.extension" in sql
+        assert "gallery_file.mime_type" in sql
         assert "ORDER BY gallery_candidates.effective_capture_datetime DESC" in sql
