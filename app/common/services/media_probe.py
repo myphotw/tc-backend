@@ -123,6 +123,7 @@ _HEIF_BRANDS = {
 }
 _QUICKTIME_BRANDS = {b"qt  "}
 _MP4_BRANDS = {
+    b"3gp5",
     b"isom",
     b"iso2",
     b"iso5",

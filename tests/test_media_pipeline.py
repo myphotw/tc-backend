@@ -132,6 +132,9 @@ def test_image_probe_uses_bytes_over_false_suffix(tmp_path: Path) -> None:
     ("brand", "filename", "extension", "mime_type"),
     [
         (b"isom", "clip", ".mp4", "video/mp4"),
+        (b"mp42", "clip.mp4", ".mp4", "video/mp4"),
+        (b"avc1", "clip.mp4", ".mp4", "video/mp4"),
+        (b"mp41", "clip.mp4", ".mp4", "video/mp4"),
         (b"qt  ", "clip.jpg", ".mov", "video/quicktime"),
     ],
 )
@@ -149,6 +152,49 @@ def test_video_probe_accepts_suffixless_and_mismatch(
     assert result.extension == extension
     assert result.mime_type == mime_type
     assert (result.width, result.height) == (1920, 1080)
+
+
+def test_3gp5_brand_uses_ffprobe_metadata(tmp_path: Path) -> None:
+    path = tmp_path / "20220319_133752_01.mp4"
+    path.write_bytes(b"\x00\x00\x00\x18ftyp3gp5" + b"\x00" * 4 + b"3gp5isom")
+    payload = MediaCommandResult(
+        0,
+        json.dumps({
+            "streams": [
+                {"codec_type": "video", "width": 1440, "height": 1080},
+                {"codec_type": "audio"},
+            ],
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "duration": "9.9",
+            },
+        }),
+        "",
+    )
+    runner = ProbeRunner()
+    with patch.object(runner, "run", return_value=payload) as run:
+        result = MediaProbe(command_runner=runner).probe(path, filename=path.name)
+    run.assert_called_once()
+    assert run.call_args.args[0][0] == "ffprobe"
+    assert run.call_args.args[0][-1] == str(path)
+    assert result.category == MediaCategory.VIDEO
+    assert (result.extension, result.mime_type) == (".mp4", "video/mp4")
+    assert (result.width, result.height) == (1440, 1080)
+    assert result.duration_seconds == 9.9
+    assert result.format_name == "mov,mp4,m4a,3gp,3g2,mj2"
+
+
+@pytest.mark.parametrize("brand", [b"3gp4", b"3gp6", b"zzzz"])
+def test_unapproved_major_brand_is_rejected_despite_mp4_suffix(
+    tmp_path: Path, brand: bytes,
+) -> None:
+    path = tmp_path / "clip.mp4"
+    _video_file(path, brand)
+    runner = ProbeRunner()
+    with patch.object(runner, "run") as run:
+        with pytest.raises(UnsupportedMediaError):
+            MediaProbe(command_runner=runner).probe(path, filename=path.name)
+    run.assert_not_called()
 
 
 def test_video_probe_applies_display_rotation(tmp_path: Path) -> None:
@@ -198,9 +244,10 @@ def test_heic_probe_uses_registered_pillow_decoder(tmp_path: Path) -> None:
         ),
     ],
 )
-def test_corrupt_or_audio_only_video_is_rejected(tmp_path: Path, payload) -> None:
+@pytest.mark.parametrize("brand", [b"isom", b"3gp5"])
+def test_corrupt_or_audio_only_video_is_rejected(tmp_path: Path, payload, brand) -> None:
     path = tmp_path / "bad.mp4"
-    _video_file(path)
+    _video_file(path, brand)
     runner = SimpleNamespace(run=lambda *_args, **_kwargs: payload)
     with pytest.raises(UnsupportedMediaError):
         MediaProbe(command_runner=runner).probe(path, filename=path.name)
