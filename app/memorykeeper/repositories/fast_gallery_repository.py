@@ -32,6 +32,7 @@ class MemoryKeeperFastGalleryRepository:
     """Use the MemoryKeeper capture projection, never common Gallery fallback."""
 
     SERVICE_NAME = "MemoryKeeper"
+    RECENT_SHORTCUT_LIMIT = 48
 
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -447,9 +448,40 @@ class MemoryKeeperFastGalleryRepository:
             .order_by(country.asc().nulls_last())
             .all()
         )
+        shortcut_counts = (
+            self.db.query(
+                func.count(CommonFile.id),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                CommonFileMetadata.memorykeeper_place_id.is_(None),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+            )
+            .select_from(CommonFile)
+            .join(CommonFileService, CommonFileService.file_id == CommonFile.id)
+            .outerjoin(
+                CommonFileMetadata,
+                CommonFileMetadata.file_id == CommonFile.id,
+            )
+            .filter(CommonFileService.service_name == self.SERVICE_NAME)
+            .filter(CommonFile.deleted.is_(False))
+            .one()
+        )
         return {
             "total_photos": int(overall[0] or 0),
             "favorite_count": int(overall[1] or 0),
+            "recent_count": min(
+                int(shortcut_counts[0] or 0),
+                self.RECENT_SHORTCUT_LIMIT,
+            ),
+            "pending_count": int(shortcut_counts[1] or 0),
             "gps_count": int(overall[2] or 0),
             "effective_date_min": overall[3],
             "effective_date_max": overall[4],

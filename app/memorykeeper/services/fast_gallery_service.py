@@ -77,6 +77,8 @@ class MemoryKeeperFastGalleryService:
         return FastGallerySummaryResponse(
             total_photos=payload["total_photos"],  # type: ignore[arg-type]
             favorite_count=payload["favorite_count"],  # type: ignore[arg-type]
+            recent_count=payload["recent_count"],  # type: ignore[arg-type]
+            pending_count=payload["pending_count"],  # type: ignore[arg-type]
             gps_count=payload["gps_count"],  # type: ignore[arg-type]
             effective_date_min=payload["effective_date_min"],  # type: ignore[arg-type]
             effective_date_max=payload["effective_date_max"],  # type: ignore[arg-type]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -336,6 +336,8 @@ class TestMemoryKeeperFastGallery:
 
         assert summary.total_photos == 3
         assert summary.favorite_count == 1
+        assert summary.recent_count == 3
+        assert summary.pending_count == 1
         assert summary.gps_count == 1
         assert summary.effective_date_min == date(2024, 4, 1)
         assert summary.effective_date_max == date(2025, 3, 2)
@@ -345,12 +347,53 @@ class TestMemoryKeeperFastGallery:
         ]
         assert ("대한민국", 2) in [(item.name, item.count) for item in summary.by_country]
         assert (None, 1) in [(item.name, item.count) for item in summary.by_country]
-        assert len(statements) == 4  # three summary aggregates + one hierarchy GROUP BY
+        assert len(statements) == 5  # four summary aggregates + one hierarchy GROUP BY
         assert len(hierarchy.items) == 2
         assert hierarchy.items[0].year == 2025
         assert hierarchy.items[0].count == 2
         assert hierarchy.items[0].countries[0].regions[0].places[0].display_name == "서울숲"
         assert hierarchy.items[1].countries[0].country is None
+
+    def test_summary_shortcut_counts_match_legacy_active_file_scope(self) -> None:
+        registered_without_country = self._place(country=None, city=None)
+        self._photo(
+            datetime(2025, 3, 1, 8, 0),
+            country="대한민국",
+            city="서울",
+        )
+        self._photo(
+            datetime(2025, 3, 2, 8, 0),
+            place=registered_without_country,
+            country=None,
+            city=None,
+        )
+        # Legacy Recent/Pending operate on active MemoryKeeper membership, not
+        # the capture-date projection used by the canonical fast photo list.
+        self._photo(None)
+        self._photo(datetime(2025, 3, 3, 8, 0), deleted=True)
+        self._photo(
+            datetime(2025, 3, 4, 8, 0),
+            service_name="AstroJournal",
+        )
+
+        summary = self.service.summary()
+        payload = summary.model_dump(mode="json")
+
+        assert summary.total_photos == 2
+        assert summary.recent_count == 3
+        assert summary.pending_count == 2
+        assert payload["favorite_count"] == 0
+        assert payload["recent_count"] == 3
+        assert payload["pending_count"] == 2
+
+    def test_summary_recent_count_is_capped_at_legacy_shortcut_limit(self) -> None:
+        for day in range(49):
+            self._photo(datetime(2025, 1, 1, 8, 0) + timedelta(days=day))
+
+        summary = self.service.summary()
+
+        assert summary.total_photos == 49
+        assert summary.recent_count == 48
 
     def test_fast_gallery_routes_are_registered_additively(self) -> None:
         from app.main import app
