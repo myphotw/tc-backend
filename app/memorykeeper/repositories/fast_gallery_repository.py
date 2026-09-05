@@ -14,6 +14,12 @@ from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_service import CommonFileService
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.place import MemoryKeeperPlace
+from app.memorykeeper.repositories.place_cleanup_repository import (
+    MemoryKeeperPlaceCleanupRepository,
+    memorykeeper_country_expression,
+    memorykeeper_place_display_expression,
+    memorykeeper_region_expression,
+)
 
 
 @dataclass(frozen=True)
@@ -39,26 +45,15 @@ class MemoryKeeperFastGalleryRepository:
 
     @staticmethod
     def _country_expression():
-        return func.coalesce(
-            MemoryKeeperPlace.country,
-            CommonFileMetadata.country,
-        )
+        return memorykeeper_country_expression()
 
     @staticmethod
     def _region_expression():
-        return func.coalesce(
-            MemoryKeeperPlace.city,
-            MemoryKeeperPlace.province,
-            CommonFileMetadata.city,
-            CommonFileMetadata.province,
-        )
+        return memorykeeper_region_expression()
 
     @staticmethod
     def _place_display_expression():
-        return func.coalesce(
-            MemoryKeeperPlace.display_name,
-            CommonFileMetadata.place_name,
-        )
+        return memorykeeper_place_display_expression()
 
     @staticmethod
     def _has_gps_expression():
@@ -448,32 +443,9 @@ class MemoryKeeperFastGalleryRepository:
             .order_by(country.asc().nulls_last())
             .all()
         )
-        shortcut_counts = (
-            self.db.query(
-                func.count(CommonFile.id),
-                func.coalesce(
-                    func.sum(
-                        case(
-                            (
-                                CommonFileMetadata.memorykeeper_place_id.is_(None),
-                                1,
-                            ),
-                            else_=0,
-                        )
-                    ),
-                    0,
-                ),
-            )
-            .select_from(CommonFile)
-            .join(CommonFileService, CommonFileService.file_id == CommonFile.id)
-            .outerjoin(
-                CommonFileMetadata,
-                CommonFileMetadata.file_id == CommonFile.id,
-            )
-            .filter(CommonFileService.service_name == self.SERVICE_NAME)
-            .filter(CommonFile.deleted.is_(False))
-            .one()
-        )
+        shortcut_counts = MemoryKeeperPlaceCleanupRepository(
+            self.db
+        ).summary_counts()
         return {
             "total_photos": int(overall[0] or 0),
             "favorite_count": int(overall[1] or 0),
@@ -482,6 +454,7 @@ class MemoryKeeperFastGalleryRepository:
                 self.RECENT_SHORTCUT_LIMIT,
             ),
             "pending_count": int(shortcut_counts[1] or 0),
+            "place_cleanup_count": int(shortcut_counts[2] or 0),
             "gps_count": int(overall[2] or 0),
             "effective_date_min": overall[3],
             "effective_date_max": overall[4],

@@ -48,6 +48,7 @@ class FastGallerySummaryResponse(BaseModel):
     favorite_count: int
     recent_count: int
     pending_count: int
+    place_cleanup_count: int
     gps_count: int
     effective_date_min: date | None = None
     effective_date_max: date | None = None

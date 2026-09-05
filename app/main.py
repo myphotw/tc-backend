@@ -18,6 +18,7 @@ from app.memorykeeper.routers import gallery as memorykeeper_gallery
 from app.memorykeeper.routers import travel as memorykeeper_travel
 from app.memorykeeper.routers import files as memorykeeper_files
 from app.memorykeeper.routers import pending as memorykeeper_pending
+from app.memorykeeper.routers import place_cleanup as memorykeeper_place_cleanup
 from app.memorykeeper.routers import tags as memorykeeper_tags
 from app.memorykeeper.routers import auto_tags as memorykeeper_auto_tags
 from app.memorykeeper.routers import reset as memorykeeper_reset
@@ -117,6 +118,7 @@ protected_api_router.include_router(memorykeeper_tags.router)
 protected_api_router.include_router(memorykeeper_auto_tags.router)
 protected_api_router.include_router(memorykeeper_reset.router)
 protected_api_router.include_router(memorykeeper_pending.router)
+protected_api_router.include_router(memorykeeper_place_cleanup.router)
 app.include_router(protected_api_router)
 
 

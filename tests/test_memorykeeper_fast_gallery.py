@@ -338,6 +338,7 @@ class TestMemoryKeeperFastGallery:
         assert summary.favorite_count == 1
         assert summary.recent_count == 3
         assert summary.pending_count == 1
+        assert summary.place_cleanup_count == 1
         assert summary.gps_count == 1
         assert summary.effective_date_min == date(2024, 4, 1)
         assert summary.effective_date_max == date(2025, 3, 2)
@@ -382,9 +383,11 @@ class TestMemoryKeeperFastGallery:
         assert summary.total_photos == 2
         assert summary.recent_count == 3
         assert summary.pending_count == 2
+        assert summary.place_cleanup_count == 3
         assert payload["favorite_count"] == 0
         assert payload["recent_count"] == 3
         assert payload["pending_count"] == 2
+        assert payload["place_cleanup_count"] == 3
 
     def test_summary_recent_count_is_capped_at_legacy_shortcut_limit(self) -> None:
         for day in range(49):
@@ -413,6 +416,7 @@ class TestMemoryKeeperFastGallery:
         assert "/api/memorykeeper/gallery/photos" in paths
         assert "/api/memorykeeper/gallery/summary" in paths
         assert "/api/memorykeeper/gallery/hierarchy" in paths
+        assert "/api/memorykeeper/place-cleanup" in paths
         assert "/api/common/gallery/search" in paths
 
     def test_postgresql_statement_uses_ordered_candidates_and_lateral_lookups(

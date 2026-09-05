@@ -486,6 +486,7 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
             "/api/memorykeeper/files/{file_id}/tags/{tag_id}": "post",
             "/api/memorykeeper/pending": "get",
             "/api/memorykeeper/pending/assign-place": "post",
+            "/api/memorykeeper/place-cleanup": "get",
             "/api/memorykeeper/gallery/photos": "get",
             "/api/memorykeeper/gallery/summary": "get",
             "/api/memorykeeper/gallery/hierarchy": "get",
