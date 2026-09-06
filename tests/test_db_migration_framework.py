@@ -8,6 +8,7 @@ from sqlalchemy import Column, Index, Integer, MetaData, String, Table
 
 from app.common.schema_sync import (
     bootstrap_metadata_projection,
+    is_migration_managed,
     migration_managed_schema_info,
 )
 from migrations.ownership import include_migration_managed_object
@@ -81,12 +82,12 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
             self.assertEqual(len(function.body), 1)
             self.assertIsInstance(function.body[0], ast.Pass)
 
-    def test_revision_graph_has_single_fast_gallery_index_head(self) -> None:
+    def test_revision_graph_has_single_plate_solve_wcs_head(self) -> None:
         checks = verify_revision_graph(build_alembic_config())
 
-        self.assertIn("single_head=20260901_0003", checks)
+        self.assertIn("single_head=20260906_0004", checks)
         self.assertIn(f"baseline={BASELINE_REVISION}", checks)
-        self.assertIn("revision_count=3", checks)
+        self.assertIn("revision_count=4", checks)
 
     def test_alembic_config_contains_no_database_url(self) -> None:
         content = (PROJECT_ROOT / "alembic.ini").read_text(encoding="utf-8")
@@ -255,6 +256,16 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
 
         self.assertIn("bootstrap_tables=1", checks)
         self.assertIn("migration_scoped_tables=1", checks)
+
+    def test_plate_solve_wcs_is_excluded_from_bootstrap_ddl(self) -> None:
+        from app.common.model_registry import Base
+
+        source = Base.metadata.tables["astro_plate_solve_jobs"]
+        projection = bootstrap_metadata_projection(Base.metadata)
+        projected = projection.tables["astro_plate_solve_jobs"]
+
+        self.assertTrue(is_migration_managed(source.c.wcs))
+        self.assertTrue(projected.c.wcs.system)
 
     def test_ownership_verification_rejects_leaked_migration_column(self) -> None:
         metadata = MetaData()

@@ -64,6 +64,8 @@ class AstroGalleryService:
             plate_solve_job,
             fallback_status=record.plate_solve_status,
             include_result=detail,
+            image_width=common_file.width,
+            image_height=common_file.height,
         )
         item_data = dict(
             record_id=record.id,

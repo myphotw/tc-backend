@@ -8,6 +8,7 @@ from app.astrojournal.repositories.plate_solve_job_repository import (
     PlateSolveJobStatus,
 )
 from app.astrojournal.schemas.plate_solve import PlateSolveReadProjection
+from app.common.models.file import CommonFile
 from app.common.schemas.external_api import PlateSolveResult
 
 
@@ -15,6 +16,7 @@ class PlateSolveReadService:
     """Build the shared Observation/Gallery Plate Solve read projection."""
 
     def __init__(self, db: Session) -> None:
+        self.db = db
         self.repository = PlateSolveJobRepository(db)
 
     def for_file(
@@ -24,10 +26,13 @@ class PlateSolveReadService:
         fallback_status: str | None,
         include_result: bool,
     ) -> PlateSolveReadProjection:
+        common_file = self.db.get(CommonFile, common_file_id)
         return self.from_job(
             self.repository.get_by_common_file_id(common_file_id),
             fallback_status=fallback_status,
             include_result=include_result,
+            image_width=(common_file.width if common_file is not None else None),
+            image_height=(common_file.height if common_file is not None else None),
         )
 
     @staticmethod
@@ -36,6 +41,8 @@ class PlateSolveReadService:
         *,
         fallback_status: str | None,
         include_result: bool,
+        image_width: int | None = None,
+        image_height: int | None = None,
     ) -> PlateSolveReadProjection:
         if job is None:
             return PlateSolveReadProjection(plate_solve_status=fallback_status)
@@ -50,6 +57,9 @@ class PlateSolveReadService:
                 field_width=job.field_width,
                 field_height=job.field_height,
                 parity=job.parity,
+                image_width=image_width,
+                image_height=image_height,
+                wcs=job.wcs,
             )
         return PlateSolveReadProjection(
             plate_solve_status=job.status,

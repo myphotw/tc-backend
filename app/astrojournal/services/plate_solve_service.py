@@ -72,6 +72,9 @@ class PlateSolveService:
                 "field_width": field_width,
                 "field_height": field_height,
                 "parity": provider.get("parity"),
+                "image_width": width,
+                "image_height": height,
+                "wcs": None,
             }
         return {
             "job_id": job_id,

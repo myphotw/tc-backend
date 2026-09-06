@@ -30,6 +30,7 @@ from app.common.services.api_clients.base_client import (
     ApiClientError,
     ExternalApiErrorCode,
 )
+from app.common.services.api_clients.astrometry.wcs_parser import parse_wcs_fits
 from app.common.services.key_resolver import ExternalServiceName, KeyResolver
 from app.common.services.storage_service import StorageService
 from worker.worker_monitor import WorkerMonitor
@@ -219,6 +220,7 @@ def process_next_plate_solve_job(
                 timeout=provider_timeout,
             )
         provider = _normalize_result(provider, width=work.width, height=work.height)
+        provider["wcs"] = _fetch_optional_wcs(client, provider=provider)
         result_db = session_factory()
         try:
             PlateSolveQueueService(result_db).complete(
@@ -521,6 +523,45 @@ def _normalize_result(
     if pixel_scale is not None and height:
         normalized["field_height"] = float(pixel_scale) * height / 3600.0
     return normalized
+
+
+def _fetch_optional_wcs(
+    client,
+    *,
+    provider: dict[str, object],
+) -> dict[str, object] | None:
+    """Best-effort WCS hydration that cannot invalidate scalar completion."""
+    provider_job_id = provider.get("provider_job_id")
+    fetch_wcs = getattr(client, "get_wcs_file", None)
+    if provider_job_id is None or not callable(fetch_wcs):
+        return None
+
+    try:
+        artifact = fetch_wcs(provider_job_id=int(provider_job_id))
+        wcs = parse_wcs_fits(artifact)
+    except Exception as exc:
+        logger.warning(
+            "Plate Solve WCS unavailable; completing scalar result "
+            "provider_job_id=%s error_type=%s error=%s",
+            provider_job_id,
+            type(exc).__name__,
+            str(exc)[:500],
+        )
+        return None
+
+    sip = wcs.get("sip")
+    logger.info(
+        "Plate Solve WCS fetched provider_job_id=%s bytes=%s raster=%sx%s "
+        "ctype=%s/%s sip=%s",
+        provider_job_id,
+        len(artifact),
+        wcs["raster_width"],
+        wcs["raster_height"],
+        wcs["ctype1"],
+        wcs["ctype2"],
+        sip is not None,
+    )
+    return wcs
 
 
 if __name__ == "__main__":

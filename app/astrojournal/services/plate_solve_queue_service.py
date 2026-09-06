@@ -12,6 +12,7 @@ from app.astrojournal.repositories.plate_solve_job_repository import (
     PlateSolveJobRepository,
     PlateSolveJobStatus,
 )
+from app.common.models.file import CommonFile
 from app.common.repositories.change_event_repository import (
     ChangeEventRepository,
     ChangeOperation,
@@ -57,6 +58,7 @@ class PlateSolveQueueService:
     def response(self, job: AstroPlateSolveJob) -> dict[str, object]:
         result = None
         if job.status == PlateSolveJobStatus.COMPLETED:
+            common_file = self.db.get(CommonFile, job.common_file_id)
             result = {
                 "ra": job.ra,
                 "dec": job.dec,
@@ -65,6 +67,13 @@ class PlateSolveQueueService:
                 "field_width": job.field_width,
                 "field_height": job.field_height,
                 "parity": job.parity,
+                "image_width": (
+                    common_file.width if common_file is not None else None
+                ),
+                "image_height": (
+                    common_file.height if common_file is not None else None
+                ),
+                "wcs": job.wcs,
             }
         return {
             "job_id": job.id,

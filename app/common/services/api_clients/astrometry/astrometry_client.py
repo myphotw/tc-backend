@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
 from typing import Any
 
 import requests
@@ -16,6 +17,10 @@ from app.common.services.api_clients.base_client import (
     ApiClientError,
     BaseClient,
     ExternalApiErrorCode,
+)
+from app.common.services.api_clients.astrometry.wcs_parser import (
+    FITS_BLOCK_SIZE,
+    MAX_WCS_FILE_BYTES,
 )
 
 
@@ -201,6 +206,123 @@ class AstrometryClient(BaseClient):
             "field_height": radius * 2 if radius is not None else None,
             "parity": self._number(calibration.get("parity")),
         }
+
+    def get_wcs_file(
+        self,
+        *,
+        provider_job_id: int,
+        max_bytes: int = MAX_WCS_FILE_BYTES,
+    ) -> bytes:
+        """Download an unmetered, bounded FITS WCS artifact.
+
+        The artifact belongs to an existing provider job, so this path neither
+        checks nor increments the Plate Solve submission quota.
+        """
+        url = self._build_url(f"/wcs_file/{provider_job_id}")
+        last_error: ApiClientError | None = None
+        for attempt in range(1, self.retry_count + 1):
+            response = None
+            try:
+                response = self.session.request(
+                    method="GET",
+                    url=url,
+                    timeout=self.timeout,
+                    stream=True,
+                )
+                if response.status_code >= 400:
+                    raise ApiClientError(
+                        "Astrometry WCS artifact returned an HTTP error",
+                        status_code=response.status_code,
+                    )
+                content_type = (
+                    response.headers.get("Content-Type", "")
+                    .partition(";")[0]
+                    .strip()
+                    .lower()
+                )
+                if content_type not in {
+                    "application/fits",
+                    "image/fits",
+                    "application/octet-stream",
+                }:
+                    raise ApiClientError(
+                        "Astrometry WCS artifact has an invalid content type",
+                        code=ExternalApiErrorCode.INVALID_REQUEST,
+                    )
+                content_length = response.headers.get("Content-Length")
+                if content_length is not None and int(content_length) > max_bytes:
+                    raise ApiClientError(
+                        "Astrometry WCS artifact is too large",
+                        code=ExternalApiErrorCode.INVALID_REQUEST,
+                    )
+
+                payload = bytearray()
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    payload.extend(chunk)
+                    if len(payload) > max_bytes:
+                        raise ApiClientError(
+                            "Astrometry WCS artifact is too large",
+                            code=ExternalApiErrorCode.INVALID_REQUEST,
+                        )
+                artifact = bytes(payload)
+                if len(artifact) < FITS_BLOCK_SIZE or not artifact.startswith(
+                    b"SIMPLE  ="
+                ):
+                    raise ApiClientError(
+                        "Astrometry WCS artifact is not a FITS primary HDU",
+                        code=ExternalApiErrorCode.INVALID_REQUEST,
+                    )
+                return artifact
+            except requests.Timeout:
+                last_error = ApiClientError(
+                    "Astrometry WCS artifact timed out",
+                    code=ExternalApiErrorCode.PROVIDER_TIMEOUT,
+                )
+            except requests.RequestException:
+                last_error = ApiClientError(
+                    "Astrometry WCS artifact request failed"
+                )
+            except (TypeError, ValueError) as exc:
+                raise ApiClientError(
+                    "Astrometry WCS artifact has invalid response metadata",
+                    code=ExternalApiErrorCode.INVALID_REQUEST,
+                ) from exc
+            except ApiClientError as exc:
+                last_error = exc
+            finally:
+                if response is not None:
+                    response.close()
+
+            status_code = last_error.status_code if last_error is not None else None
+            retryable = (
+                last_error is not None
+                and (
+                    last_error.code == ExternalApiErrorCode.PROVIDER_TIMEOUT
+                    or status_code in {404, 429}
+                    or (status_code is not None and status_code >= 500)
+                    or (
+                        last_error.code == ExternalApiErrorCode.PROVIDER_ERROR
+                        and status_code is None
+                    )
+                )
+            )
+            if not retryable or attempt >= self.retry_count:
+                break
+            self.logger.warning(
+                "Astrometry WCS fetch retry provider_job_id=%s attempt=%s/%s "
+                "status_code=%s",
+                provider_job_id,
+                attempt,
+                self.retry_count,
+                status_code,
+            )
+            time.sleep(1)
+
+        if last_error is not None:
+            raise last_error
+        raise ApiClientError("Astrometry WCS artifact request failed")
 
     def _get_unmetered(self, path: str) -> dict[str, Any]:
         """Read public provider job state without consuming a submit unit."""

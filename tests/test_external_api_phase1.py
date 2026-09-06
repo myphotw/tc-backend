@@ -514,6 +514,9 @@ class ExternalApiPhase1Tests(unittest.TestCase):
             self.assertEqual(result["status"], "COMPLETED")
             self.assertEqual(result["result"]["field_width"], 2)
             self.assertEqual(result["result"]["field_height"], 1)
+            self.assertEqual(result["result"]["image_width"], 3600)
+            self.assertEqual(result["result"]["image_height"], 1800)
+            self.assertIsNone(result["result"]["wcs"])
 
     def test_capabilities_openapi_and_configuration_error_contract(self):
         supported = capabilities()["capabilities"]

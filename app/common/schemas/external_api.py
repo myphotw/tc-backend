@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -90,6 +92,40 @@ class PlateSolveCreateRequest(BaseModel):
     common_file_id: int = Field(gt=0)
 
 
+class SipDistortion(BaseModel):
+    a_order: int | None = None
+    b_order: int | None = None
+    ap_order: int | None = None
+    bp_order: int | None = None
+    a: dict[str, float] = Field(default_factory=dict)
+    b: dict[str, float] = Field(default_factory=dict)
+    ap: dict[str, float] = Field(default_factory=dict)
+    bp: dict[str, float] = Field(default_factory=dict)
+
+
+class CanonicalWcs(BaseModel):
+    schema_version: Literal[1] = 1
+    ctype1: str
+    ctype2: str
+    cunit1: str | None = None
+    cunit2: str | None = None
+    radesys: str | None = None
+    equinox: float | None = None
+    lonpole: float | None = None
+    latpole: float | None = None
+    crval1: float
+    crval2: float
+    crpix1: float
+    crpix2: float
+    cd11: float
+    cd12: float
+    cd21: float
+    cd22: float
+    raster_width: int
+    raster_height: int
+    sip: SipDistortion | None = None
+
+
 class PlateSolveResult(BaseModel):
     ra: float | None = None
     dec: float | None = None
@@ -98,6 +134,9 @@ class PlateSolveResult(BaseModel):
     field_width: float | None = None
     field_height: float | None = None
     parity: float | None = None
+    image_width: int | None = None
+    image_height: int | None = None
+    wcs: CanonicalWcs | None = None
 
 
 class PlateSolveJobResponse(BaseModel):

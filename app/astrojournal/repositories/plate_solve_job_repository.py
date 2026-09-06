@@ -165,6 +165,7 @@ class PlateSolveJobRepository:
             return None
         job.provider_submission_id = submission_id
         job.provider_job_id = None
+        job.wcs = None
         job.attempts = int(job.attempts or 0) + 1
         self.db.flush()
         return job
@@ -212,6 +213,8 @@ class PlateSolveJobRepository:
         ):
             value = provider.get(field)
             setattr(job, field, float(value) if value is not None else None)
+        wcs = provider.get("wcs")
+        job.wcs = dict(wcs) if isinstance(wcs, dict) else None
         job.completed_at = datetime.now(timezone.utc)
         job.last_error = None
         job.worker_id = None
@@ -250,6 +253,7 @@ class PlateSolveJobRepository:
             "parity",
         ):
             setattr(job, field, None)
+        job.wcs = None
         job.started_at = None
         job.completed_at = None
         job.last_error = None

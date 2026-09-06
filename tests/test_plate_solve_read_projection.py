@@ -42,6 +42,8 @@ class PlateSolveReadProjectionTests(unittest.TestCase):
             file_id=digest,
             original_name="astro.fits",
             mime_type="image/fits",
+            width=1080,
+            height=1920,
             deleted=False,
         )
         self.session.add(common_file)
@@ -84,6 +86,37 @@ class PlateSolveReadProjectionTests(unittest.TestCase):
             job.field_width = 2.1
             job.field_height = 1.4
             job.parity = 1.0
+            job.wcs = {
+                "schema_version": 1,
+                "ctype1": "RA---TAN-SIP",
+                "ctype2": "DEC--TAN-SIP",
+                "cunit1": "deg",
+                "cunit2": "deg",
+                "radesys": "ICRS",
+                "equinox": 2000.0,
+                "lonpole": None,
+                "latpole": None,
+                "crval1": 83.822,
+                "crval2": -5.391,
+                "crpix1": 540.5,
+                "crpix2": 960.5,
+                "cd11": -0.001,
+                "cd12": 0.002,
+                "cd21": 0.002,
+                "cd22": 0.001,
+                "raster_width": 1080,
+                "raster_height": 1920,
+                "sip": {
+                    "a_order": 2,
+                    "b_order": 2,
+                    "ap_order": None,
+                    "bp_order": None,
+                    "a": {"0_2": 1.25e-7},
+                    "b": {"2_0": -2.5e-7},
+                    "ap": {},
+                    "bp": {},
+                },
+            }
         self.session.add(job)
         self.session.flush()
         return job
@@ -134,6 +167,28 @@ class PlateSolveReadProjectionTests(unittest.TestCase):
             self.assertEqual(detail.plate_solve_result.field_width, job.field_width)
             self.assertEqual(detail.plate_solve_result.field_height, job.field_height)
             self.assertEqual(detail.plate_solve_result.parity, job.parity)
+            self.assertEqual(detail.plate_solve_result.image_width, 1080)
+            self.assertEqual(detail.plate_solve_result.image_height, 1920)
+            self.assertEqual(detail.plate_solve_result.wcs.schema_version, 1)
+            self.assertEqual(detail.plate_solve_result.wcs.raster_width, 1080)
+            self.assertEqual(
+                detail.plate_solve_result.wcs.sip.a["0_2"],
+                1.25e-7,
+            )
+
+    def test_completed_legacy_row_with_null_wcs_keeps_scalar_detail(self) -> None:
+        common_file = self._file()
+        record = self._record(common_file, status=PlateSolveJobStatus.COMPLETED)
+        job = self._job(common_file, status=PlateSolveJobStatus.COMPLETED)
+        job.wcs = None
+        self.session.commit()
+
+        detail = self.records.get_detail(record.id)
+
+        self.assertEqual(detail.plate_solve_result.ra, job.ra)
+        self.assertEqual(detail.plate_solve_result.image_width, 1080)
+        self.assertEqual(detail.plate_solve_result.image_height, 1920)
+        self.assertIsNone(detail.plate_solve_result.wcs)
 
     def test_failed_detail_exposes_retryable_persistent_job_id(self) -> None:
         common_file = self._file()
@@ -236,6 +291,10 @@ class PlateSolveReadProjectionTests(unittest.TestCase):
             "plate_solve_result",
             components["AstroGalleryDetailItem"]["properties"],
         )
+        plate_solve = components["PlateSolveResult"]["properties"]
+        self.assertIn("image_width", plate_solve)
+        self.assertIn("image_height", plate_solve)
+        self.assertIn("wcs", plate_solve)
 
 
 if __name__ == "__main__":

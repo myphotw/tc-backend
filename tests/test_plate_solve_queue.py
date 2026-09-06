@@ -145,9 +145,17 @@ class PlateSolveQueueTests(unittest.TestCase):
                 "field_width": 2.0,
                 "field_height": 1.0,
                 "parity": 1.0,
+                "wcs": {
+                    "schema_version": 1,
+                    "ctype1": "RA---TAN",
+                    "ctype2": "DEC--TAN",
+                    "raster_width": 3600,
+                    "raster_height": 1800,
+                },
             },
         )
         self.assertEqual(completed.status, PlateSolveJobStatus.COMPLETED)
+        self.assertEqual(completed.wcs["raster_width"], 3600)
 
         _, created = queue.enqueue(
             common_file_id=common_file.id,
@@ -178,11 +186,14 @@ class PlateSolveQueueTests(unittest.TestCase):
         )
         self.assertEqual(failed.status, PlateSolveJobStatus.FAILED)
         self.assertEqual(failed.attempts, 1)
+        failed.wcs = {"schema_version": 1, "stale": True}
+        self.db.commit()
 
         retried = queue.retry(failed.id)
         self.assertEqual(retried.status, PlateSolveJobStatus.WAITING)
         self.assertEqual(retried.provider_submission_id, 41)
         self.assertEqual(retried.provider_job_id, 99)
+        self.assertIsNone(retried.wcs)
         self.db.refresh(record)
         self.assertEqual(record.plate_solve_status, PlateSolveJobStatus.WAITING)
         claimed_again = queue.claim_next(worker_id="test-worker", lease_seconds=60)
@@ -537,6 +548,132 @@ class PlateSolveQueueTests(unittest.TestCase):
         self.assertEqual(queued.attempts, 1)
         self.assertAlmostEqual(queued.field_width, 2.0)
         self.assertAlmostEqual(queued.field_height, 1.0)
+        self.assertIsNone(queued.wcs)
+
+    def test_worker_fetches_parses_and_persists_wcs_for_resolved_job(self) -> None:
+        common_file = self._file()
+        self._record(common_file)
+
+        class WcsClient:
+            fetched_job_id: int | None = None
+
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+            def submit(self, *, image_path: str):
+                return {"status": "WAITING", "submission_id": 15936728}
+
+            def get_submission_status(self, *, submission_id: int):
+                return {
+                    "status": "PROCESSING",
+                    "submission_id": submission_id,
+                    "provider_job_id": 16772218,
+                }
+
+            def get_job_status(self, *, submission_id: int, provider_job_id: int):
+                return {
+                    "status": "COMPLETED",
+                    "submission_id": submission_id,
+                    "provider_job_id": provider_job_id,
+                    "ra": 10.69977189608935,
+                    "dec": 41.26709404265329,
+                    "rotation": 73.4874169065784,
+                    "pixel_scale": 7.3292186740534815,
+                    "parity": 1,
+                }
+
+            def get_wcs_file(self, *, provider_job_id: int):
+                type(self).fetched_job_id = provider_job_id
+                return b"synthetic-fits"
+
+            def close(self) -> None:
+                pass
+
+        canonical_wcs = {
+            "schema_version": 1,
+            "ctype1": "RA---TAN-SIP",
+            "ctype2": "DEC--TAN-SIP",
+            "raster_width": 1080,
+            "raster_height": 1920,
+            "sip": {"a_order": 2},
+        }
+        with patch(
+            "worker.plate_solve_worker.parse_wcs_fits",
+            return_value=canonical_wcs,
+        ):
+            self.assertTrue(
+                process_next_plate_solve_job(
+                    session_factory=self.Session,
+                    client_factory=WcsClient,
+                    worker_id="wcs-worker",
+                    api_key="test-key",
+                    provider_poll_interval=0,
+                    provider_timeout=1,
+                )
+            )
+
+        job = self.db.query(AstroPlateSolveJob).one()
+        self.db.refresh(job)
+        self.assertEqual(job.status, PlateSolveJobStatus.COMPLETED)
+        self.assertEqual(WcsClient.fetched_job_id, 16772218)
+        self.assertEqual(job.wcs, canonical_wcs)
+        self.assertAlmostEqual(job.ra, 10.69977189608935)
+
+    def test_wcs_failure_keeps_existing_provider_and_scalar_completion(self) -> None:
+        common_file = self._file()
+        self._record(common_file)
+        job = self.db.query(AstroPlateSolveJob).one()
+        job.provider_submission_id = 15936728
+        job.provider_job_id = 16772218
+        job.attempts = 1
+        self.db.commit()
+
+        class MissingWcsClient:
+            def __init__(self, **_kwargs) -> None:
+                pass
+
+            def submit(self, *, image_path: str):
+                raise AssertionError("WCS fallback must not create a new upload")
+
+            def get_submission_status(self, *, submission_id: int):
+                raise AssertionError("resolved provider job must be reused")
+
+            def get_job_status(self, *, submission_id: int, provider_job_id: int):
+                return {
+                    "status": "COMPLETED",
+                    "submission_id": submission_id,
+                    "provider_job_id": provider_job_id,
+                    "ra": 10.0,
+                    "dec": 20.0,
+                    "rotation": 30.0,
+                    "pixel_scale": 2.0,
+                    "parity": 1.0,
+                }
+
+            def get_wcs_file(self, *, provider_job_id: int):
+                raise ApiClientError("WCS missing", status_code=404)
+
+            def close(self) -> None:
+                pass
+
+        self.assertTrue(
+            process_next_plate_solve_job(
+                session_factory=self.Session,
+                client_factory=MissingWcsClient,
+                worker_id="wcs-fallback-worker",
+                api_key="test-key",
+                provider_poll_interval=0,
+                provider_timeout=1,
+            )
+        )
+
+        self.db.refresh(job)
+        self.assertEqual(job.status, PlateSolveJobStatus.COMPLETED)
+        self.assertEqual(job.provider_submission_id, 15936728)
+        self.assertEqual(job.provider_job_id, 16772218)
+        self.assertEqual(job.attempts, 1)
+        self.assertEqual(job.ra, 10.0)
+        self.assertIsNone(job.wcs)
 
     def test_status_summary(self) -> None:
         first_file = self._file("1" * 64)
@@ -657,6 +794,10 @@ class PlateSolveQueueTests(unittest.TestCase):
                     "pixel_scale": 2,
                     "parity": 1,
                 }
+
+            def get_wcs_file(self, *, provider_job_id: int):
+                self._assert_no_transaction()
+                raise ApiClientError("WCS unavailable", status_code=404)
 
             def close(self) -> None:
                 pass

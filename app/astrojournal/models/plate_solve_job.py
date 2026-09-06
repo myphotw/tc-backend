@@ -2,10 +2,23 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func, text
 
 from app.common.model_base import Base
+from app.common.schema_sync import migration_managed_schema_info
 
 
 class AstroPlateSolveJob(Base):
@@ -62,6 +75,11 @@ class AstroPlateSolveJob(Base):
     field_width = Column(Float, nullable=True)
     field_height = Column(Float, nullable=True)
     parity = Column(Float, nullable=True)
+    wcs = Column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(
