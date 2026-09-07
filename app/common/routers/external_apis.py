@@ -58,6 +58,9 @@ def places_autocomplete(
     query: str = Query(min_length=1, max_length=300),
     language: str = Query(default="ko", min_length=2, max_length=10),
     session_token: str | None = Query(default=None, min_length=8, max_length=128),
+    latitude: float | None = Query(default=None, ge=-90, le=90),
+    longitude: float | None = Query(default=None, ge=-180, le=180),
+    radius_m: int | None = Query(default=None, ge=1),
     db: Session = Depends(get_db),
 ):
     items = _call(
@@ -65,6 +68,9 @@ def places_autocomplete(
         query=query.strip(),
         language=language,
         session_token=session_token,
+        latitude=latitude,
+        longitude=longitude,
+        radius_m=radius_m,
     )
     return PlacesAutocompleteResponse(
         items=[PlacesAutocompleteItem(**item) for item in items],
@@ -91,12 +97,18 @@ def place_details(
 def places_search(
     query: str = Query(min_length=1, max_length=300),
     language: str = Query(default="ko", min_length=2, max_length=10),
+    latitude: float | None = Query(default=None, ge=-90, le=90),
+    longitude: float | None = Query(default=None, ge=-180, le=180),
+    radius_m: int | None = Query(default=None, ge=1),
     db: Session = Depends(get_db),
 ):
     items = _call(
         ExternalApiService(db).places_search,
         query=query.strip(),
         language=language,
+        latitude=latitude,
+        longitude=longitude,
+        radius_m=radius_m,
     )
     return LocationCandidateList(items=[LocationCandidate(**item) for item in items])
 

@@ -94,11 +94,17 @@ class ExternalApiService:
         query: str,
         language: str,
         session_token: str | None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius_m: int | None = None,
     ) -> list[dict[str, object]]:
         return self._places_client().autocomplete(
             query=query,
             language=language,
             session_token=session_token,
+            latitude=latitude,
+            longitude=longitude,
+            radius_m=radius_m,
         )
 
     def place_details(
@@ -119,8 +125,17 @@ class ExternalApiService:
         *,
         query: str,
         language: str,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius_m: int | None = None,
     ) -> list[dict[str, object]]:
-        return self._places_client().search(query=query, language=language)
+        return self._places_client().search(
+            query=query,
+            language=language,
+            latitude=latitude,
+            longitude=longitude,
+            radius_m=radius_m,
+        )
 
     def current_weather(
         self,

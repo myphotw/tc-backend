@@ -13,6 +13,9 @@ from app.common.services.api_clients.google.geocoding_client import GeocodingCli
 
 
 class PlacesClient(BaseClient):
+    DEFAULT_LOCATION_BIAS_RADIUS_M = 50_000
+    MAX_LOCATION_BIAS_RADIUS_M = 50_000
+
     def __init__(
         self,
         *,
@@ -35,17 +38,24 @@ class PlacesClient(BaseClient):
         query: str,
         language: str = "ko",
         session_token: str | None = None,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius_m: int | None = None,
     ) -> list[dict[str, Any]]:
         params = {
             "input": query,
             "language": language,
-            "components": "country:kr",
-            "location": "37.5,127.0",
-            "radius": "500000",
             "key": self.api_key,
         }
         if session_token:
             params["sessiontoken"] = session_token
+        params.update(
+            self._location_bias_params(
+                latitude=latitude,
+                longitude=longitude,
+                radius_m=radius_m,
+            )
+        )
         payload = self.get("/maps/api/place/autocomplete/json", params=params)
         self._validate_status(payload)
         items = []
@@ -99,15 +109,25 @@ class PlacesClient(BaseClient):
         *,
         query: str,
         language: str = "ko",
+        latitude: float | None = None,
+        longitude: float | None = None,
+        radius_m: int | None = None,
     ) -> list[dict[str, Any]]:
+        params = {
+            "query": query,
+            "language": language,
+            "key": self.api_key,
+        }
+        params.update(
+            self._location_bias_params(
+                latitude=latitude,
+                longitude=longitude,
+                radius_m=radius_m,
+            )
+        )
         payload = self.get(
             "/maps/api/place/textsearch/json",
-            params={
-                "query": query,
-                "language": language,
-                "region": "kr",
-                "key": self.api_key,
-            },
+            params=params,
         )
         self._validate_status(payload)
         items = [
@@ -117,6 +137,27 @@ class PlacesClient(BaseClient):
         ]
         self.track_usage(units=1)
         return items
+
+    @classmethod
+    def _location_bias_params(
+        cls,
+        *,
+        latitude: float | None,
+        longitude: float | None,
+        radius_m: int | None,
+    ) -> dict[str, str]:
+        if latitude is None or longitude is None:
+            return {}
+        if radius_m is not None and radius_m < 1:
+            raise ValueError("radius_m must be at least 1")
+        effective_radius = min(
+            radius_m or cls.DEFAULT_LOCATION_BIAS_RADIUS_M,
+            cls.MAX_LOCATION_BIAS_RADIUS_M,
+        )
+        return {
+            "location": f"{latitude},{longitude}",
+            "radius": str(effective_radius),
+        }
 
     def nearby(
         self,

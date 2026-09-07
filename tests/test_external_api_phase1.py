@@ -259,9 +259,30 @@ class ExternalApiPhase1Tests(unittest.TestCase):
             ),
         )
         client = PlacesClient(api_key="test-google-value", db=self.db, session=session)
-        self.assertEqual(client.autocomplete(query="Seo")[0]["place_id"], "place-1")
-        self.assertEqual(client.details(place_id="place-1")["place_name"], "Seoul")
+        self.assertEqual(
+            client.autocomplete(query="Seo", session_token="places-session")[0][
+                "place_id"
+            ],
+            "place-1",
+        )
+        self.assertEqual(
+            client.details(place_id="place-1", session_token="places-session")[
+                "place_name"
+            ],
+            "Seoul",
+        )
         self.assertEqual(client.search(query="Seoul")[0]["longitude"], 127.0)
+        autocomplete_params = session.requests[0]["params"]
+        details_params = session.requests[1]["params"]
+        search_params = session.requests[2]["params"]
+        self.assertEqual(autocomplete_params["sessiontoken"], "places-session")
+        self.assertEqual(details_params["sessiontoken"], "places-session")
+        for params in (autocomplete_params, search_params):
+            self.assertNotIn("components", params)
+            self.assertNotIn("location", params)
+            self.assertNotIn("radius", params)
+            self.assertNotIn("strictbounds", params)
+        self.assertNotIn("region", search_params)
         usage = self.db.query(CommonApiUsage).filter_by(api_name=ApiName.PLACES).one()
         self.assertEqual(usage.used_unit, 3)
 
@@ -271,6 +292,161 @@ class ExternalApiPhase1Tests(unittest.TestCase):
         )
         with self.assertRaises(ApiClientError):
             denied.search(query="Seoul")
+
+    def test_places_global_autocomplete_preserves_queries_language_and_session(self):
+        session = FakeHttpSession(
+            *[
+                FakeResponse(
+                    {
+                        "status": "OK",
+                        "predictions": [
+                            {
+                                "place_id": place_id,
+                                "structured_formatting": {
+                                    "main_text": query,
+                                    "secondary_text": country,
+                                },
+                            }
+                        ],
+                    }
+                )
+                for query, place_id, country in (
+                    ("Okinawa World", "okinawa-world", "Japan"),
+                    ("서울대공원", "seoul-grand-park", "대한민국"),
+                )
+            ]
+        )
+        client = PlacesClient(api_key="test-google-value", db=self.db, session=session)
+
+        foreign = client.autocomplete(
+            query="Okinawa World",
+            language="ko",
+            session_token="global-search-session",
+        )[0]
+        domestic = client.autocomplete(
+            query="서울대공원",
+            language="ko",
+            latitude=37.4,
+        )[0]
+
+        self.assertEqual(foreign["place_id"], "okinawa-world")
+        self.assertEqual(foreign["secondary_text"], "Japan")
+        self.assertEqual(domestic["place_id"], "seoul-grand-park")
+        self.assertEqual(session.requests[0]["params"]["input"], "Okinawa World")
+        self.assertEqual(session.requests[0]["params"]["language"], "ko")
+        self.assertEqual(
+            session.requests[0]["params"]["sessiontoken"],
+            "global-search-session",
+        )
+        self.assertEqual(session.requests[1]["params"]["input"], "서울대공원")
+        for request in session.requests:
+            params = request["params"]
+            self.assertNotIn("components", params)
+            self.assertNotIn("location", params)
+            self.assertNotIn("radius", params)
+            self.assertNotIn("strictbounds", params)
+
+    def test_places_optional_location_bias_is_soft_and_radius_is_capped(self):
+        session = FakeHttpSession(
+            FakeResponse({"status": "ZERO_RESULTS", "predictions": []}),
+            FakeResponse(
+                {
+                    "status": "OK",
+                    "results": [
+                        {
+                            "place_id": "ozen-reserve",
+                            "name": "OZEN Reserve Bolifushi",
+                            "formatted_address": "South Male Atoll, Maldives",
+                            "geometry": {"location": {"lat": 4.096, "lng": 73.401}},
+                        }
+                    ],
+                }
+            ),
+        )
+        client = PlacesClient(api_key="test-google-value", db=self.db, session=session)
+
+        self.assertEqual(
+            client.autocomplete(
+                query="OZEN Reserve Bolifushi",
+                latitude=37.5,
+                longitude=127.0,
+                radius_m=500_000,
+            ),
+            [],
+        )
+        result = client.search(
+            query="OZEN Reserve Bolifushi",
+            language="ko",
+            latitude=4.1,
+            longitude=73.4,
+        )[0]
+
+        autocomplete_params = session.requests[0]["params"]
+        self.assertEqual(autocomplete_params["location"], "37.5,127.0")
+        self.assertEqual(autocomplete_params["radius"], "50000")
+        search_params = session.requests[1]["params"]
+        self.assertEqual(search_params["query"], "OZEN Reserve Bolifushi")
+        self.assertEqual(search_params["language"], "ko")
+        self.assertEqual(search_params["location"], "4.1,73.4")
+        self.assertEqual(search_params["radius"], "50000")
+        self.assertNotIn("region", search_params)
+        for params in (autocomplete_params, search_params):
+            self.assertNotIn("components", params)
+            self.assertNotIn("strictbounds", params)
+        self.assertEqual(result["place_id"], "ozen-reserve")
+        self.assertEqual(result["place_name"], "OZEN Reserve Bolifushi")
+
+    def test_places_zero_results_are_empty_and_still_accounted_once(self):
+        session = FakeHttpSession(
+            FakeResponse({"status": "ZERO_RESULTS", "predictions": []}),
+            FakeResponse({"status": "ZERO_RESULTS", "results": []}),
+        )
+        client = PlacesClient(api_key="test-google-value", db=self.db, session=session)
+
+        self.assertEqual(client.autocomplete(query="おきなわワールド"), [])
+        self.assertEqual(client.search(query="おきなわワールド"), [])
+
+        usage = self.db.query(CommonApiUsage).filter_by(api_name=ApiName.PLACES).one()
+        self.assertEqual(usage.used_unit, 2)
+
+    def test_places_service_forwards_optional_location_bias(self):
+        service = ExternalApiService(self.db)
+        with patch.object(service, "_places_client") as client_factory:
+            client = client_factory.return_value
+            client.autocomplete.return_value = []
+            client.search.return_value = []
+
+            service.places_autocomplete(
+                query="Okinawa World",
+                language="ko",
+                session_token="global-search-session",
+                latitude=26.1,
+                longitude=127.7,
+                radius_m=20_000,
+            )
+            service.places_search(
+                query="OZEN Reserve Bolifushi",
+                language="ko",
+                latitude=4.1,
+                longitude=73.4,
+                radius_m=10_000,
+            )
+
+        client.autocomplete.assert_called_once_with(
+            query="Okinawa World",
+            language="ko",
+            session_token="global-search-session",
+            latitude=26.1,
+            longitude=127.7,
+            radius_m=20_000,
+        )
+        client.search.assert_called_once_with(
+            query="OZEN Reserve Bolifushi",
+            language="ko",
+            latitude=4.1,
+            longitude=73.4,
+            radius_m=10_000,
+        )
 
     def test_places_nearby_uses_legacy_endpoint_and_normalizes_types(self):
         session = FakeHttpSession(
@@ -541,6 +717,21 @@ class ExternalApiPhase1Tests(unittest.TestCase):
             "/api/astro/plate-solve/{job_id}",
         ):
             self.assertIn(path, paths)
+
+        autocomplete_parameters = {
+            item["name"]
+            for item in paths["/api/common/places/autocomplete"]["get"]["parameters"]
+        }
+        search_parameters = {
+            item["name"]
+            for item in paths["/api/common/places/search"]["get"]["parameters"]
+        }
+        self.assertTrue(
+            {"latitude", "longitude", "radius_m"}.issubset(autocomplete_parameters)
+        )
+        self.assertTrue(
+            {"latitude", "longitude", "radius_m"}.issubset(search_parameters)
+        )
 
         with patch(
             "app.common.services.external_api_service.KeyResolver.resolve",

@@ -44,9 +44,9 @@ normalized and are never passed through verbatim.
 |--------|----------|-------|
 | GET | `/api/common/geocoding/reverse` | `latitude`, `longitude`, optional `language=ko` |
 | GET | `/api/common/geocoding/forward` | `query`, optional `language=ko` |
-| GET | `/api/common/places/autocomplete` | `query`, optional `language`, `session_token` |
+| GET | `/api/common/places/autocomplete` | `query`, optional `language`, `session_token`, `latitude`, `longitude`, `radius_m` |
 | GET | `/api/common/places/details` | `place_id`, optional `language`, `session_token` |
-| GET | `/api/common/places/search` | `query`, optional `language` |
+| GET | `/api/common/places/search` | `query`, optional `language`, `latitude`, `longitude`, `radius_m` |
 
 Forward geocoding, Place Details and Text Search return normalized location
 items with `display_name`, `latitude`, `longitude`, `country`, `province`,
@@ -54,6 +54,11 @@ items with `display_name`, `latitude`, `longitude`, `country`, `province`,
 Autocomplete returns `place_id`, `main_text`, `secondary_text`, and
 `display_name`. When the app uses an autocomplete billing session, it must send
 the same opaque `session_token` to Autocomplete and Place Details.
+
+Autocomplete and Text Search are global by default. When both `latitude` and
+`longitude` are supplied, they are used only as a soft location bias; results
+outside that area are not restricted. `radius_m` defaults to 50,000 meters for
+a supplied location and is capped at the provider's 50,000-meter limit.
 
 Reverse geocoding reuses `common_geocode_cache`. A cache hit does not consume a
 usage unit. Actual successful Geocoding and Places provider calls consume one
