@@ -28,6 +28,11 @@ def list_photos(
     country: str | None = Query(None, max_length=100),
     region: str | None = Query(None, max_length=100),
     place_id: str | None = Query(None, max_length=36),
+    location_key: str | None = Query(
+        None,
+        max_length=2048,
+        description="Opaque Fast Gallery place-leaf identity",
+    ),
     favorite: bool | None = Query(None),
     has_gps: bool | None = Query(None),
     date_from: date | None = Query(None),
@@ -38,6 +43,7 @@ def list_photos(
     return MemoryKeeperFastGalleryService(db).photos(
         cursor=cursor,
         limit=limit,
+        location_key=location_key,
         filters=FastGalleryFilters(
             year=year,
             country=country,

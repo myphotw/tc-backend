@@ -58,6 +58,7 @@ class FastGallerySummaryResponse(BaseModel):
 
 class FastGalleryPlaceNode(BaseModel):
     memorykeeper_place_id: str | None = None
+    location_key: str | None = None
     display_name: str | None = None
     count: int
 

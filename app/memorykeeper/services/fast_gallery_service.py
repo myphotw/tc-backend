@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
+from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
@@ -28,6 +30,12 @@ from app.memorykeeper.services.fast_gallery_cursor import (
     decode_cursor,
     encode_cursor,
 )
+from app.memorykeeper.services.fast_gallery_location import (
+    FastGalleryLocationIdentity,
+    decode_location_key,
+    encode_raw_location_key,
+    encode_registered_location_key,
+)
 
 
 class MemoryKeeperFastGalleryService:
@@ -42,8 +50,13 @@ class MemoryKeeperFastGalleryService:
         cursor: str | None,
         limit: int,
         filters: FastGalleryFilters,
+        location_key: str | None = None,
     ) -> FastGalleryPhotosResponse:
         self._validate_dates(filters)
+        location = decode_location_key(location_key) if location_key else None
+        self._validate_location_parameters(filters.place_id, location)
+        if location is not None:
+            filters = replace(filters, location=location)
         decoded = decode_cursor(cursor) if cursor else None
         rows = self.repository.photos(
             filters=filters,
@@ -100,6 +113,15 @@ class MemoryKeeperFastGalleryService:
             country = row.country
             region = row.region
             place_id = row.memorykeeper_place_id
+            location_key = (
+                encode_registered_location_key(place_id)
+                if place_id is not None
+                else encode_raw_location_key(
+                    country=country,
+                    region=region,
+                    place=row.place_display_name,
+                )
+            )
             count = int(row.count)
             year_bucket = years.setdefault(
                 year,
@@ -121,6 +143,7 @@ class MemoryKeeperFastGalleryService:
             region_bucket["places"].append(  # type: ignore[index]
                 FastGalleryPlaceNode(
                     memorykeeper_place_id=place_id,
+                    location_key=location_key,
                     display_name=row.place_display_name,
                     count=count,
                 )
@@ -192,3 +215,30 @@ class MemoryKeeperFastGalleryService:
                         "message": "date_from must be on or before date_to",
                     },
                 )
+
+    @staticmethod
+    def _validate_location_parameters(
+        place_id: str | None,
+        location: FastGalleryLocationIdentity | None,
+    ) -> None:
+        if place_id is None or location is None:
+            return
+        if location.kind == "raw":
+            MemoryKeeperFastGalleryService._raise_location_conflict()
+        try:
+            canonical_place_id = str(UUID(place_id))
+        except ValueError:
+            MemoryKeeperFastGalleryService._raise_location_conflict()
+            return
+        if canonical_place_id != location.place_id:
+            MemoryKeeperFastGalleryService._raise_location_conflict()
+
+    @staticmethod
+    def _raise_location_conflict() -> None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "GALLERY_LOCATION_FILTER_CONFLICT",
+                "message": "place_id conflicts with location_key",
+            },
+        )

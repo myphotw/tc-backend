@@ -20,6 +20,11 @@ from app.memorykeeper.repositories.fast_gallery_repository import (
     MemoryKeeperFastGalleryRepository,
 )
 from app.memorykeeper.services.fast_gallery_service import MemoryKeeperFastGalleryService
+from app.memorykeeper.services.fast_gallery_location import (
+    decode_location_key,
+    encode_raw_location_key,
+    encode_registered_location_key,
+)
 
 
 class TestMemoryKeeperFastGallery:
@@ -66,6 +71,7 @@ class TestMemoryKeeperFastGallery:
         place: MemoryKeeperPlace | None = None,
         country: str | None = "대한민국",
         city: str | None = "서울",
+        place_name: str | None = "원시 장소",
         date_basis: str | None = "EXIF",
         preview: bool = True,
         thumbnail: bool = True,
@@ -92,7 +98,7 @@ class TestMemoryKeeperFastGallery:
                 gps_lon=127.0 if gps else None,
                 country=country,
                 city=city,
-                place_name="원시 장소",
+                place_name=place_name,
                 memorykeeper_place_id=place.id if place else None,
             )
         )
@@ -353,7 +359,287 @@ class TestMemoryKeeperFastGallery:
         assert hierarchy.items[0].year == 2025
         assert hierarchy.items[0].count == 2
         assert hierarchy.items[0].countries[0].regions[0].places[0].display_name == "서울숲"
+        assert hierarchy.items[0].countries[0].regions[0].places[0].location_key == (
+            encode_registered_location_key(place.id)
+        )
         assert hierarchy.items[1].countries[0].country is None
+
+    def test_hierarchy_assigns_distinct_registered_and_raw_location_keys(self) -> None:
+        registered = self._place(
+            display_name="오리온 호텔",
+            country="일본",
+            city="Motobu",
+        )
+        self._photo(
+            datetime(2024, 1, 3, 8, 0),
+            place=registered,
+            country="raw-country",
+            city="raw-region",
+            place_name="raw-place",
+        )
+        self._photo(
+            datetime(2024, 1, 2, 8, 0),
+            country="일본",
+            city="Motobu",
+            place_name="40 Bise 海辺",
+        )
+
+        hierarchy = self.service.hierarchy()
+        leaves = [
+            place
+            for year in hierarchy.items
+            for country in year.countries
+            for region in country.regions
+            for place in region.places
+        ]
+        registered_leaf = next(
+            leaf for leaf in leaves if leaf.memorykeeper_place_id == registered.id
+        )
+        raw_leaf = next(
+            leaf
+            for leaf in leaves
+            if leaf.memorykeeper_place_id is None
+            and leaf.display_name == "40 Bise 海辺"
+        )
+
+        assert registered_leaf.location_key == encode_registered_location_key(
+            registered.id
+        )
+        raw_identity = decode_location_key(raw_leaf.location_key)
+        assert (raw_identity.country, raw_identity.region, raw_identity.place) == (
+            "일본",
+            "Motobu",
+            "40 Bise 海辺",
+        )
+
+    def test_raw_location_key_selects_one_leaf_and_excludes_registered_rows(self) -> None:
+        registered = self._place(
+            display_name="40 Bise 海辺",
+            country="일본",
+            city="Motobu",
+        )
+        registered_photo = self._photo(
+            datetime(2024, 1, 4, 8, 0),
+            place=registered,
+            country="일본",
+            city="Motobu",
+            place_name="40 Bise 海辺",
+        )
+        bise_new = self._photo(
+            datetime(2024, 1, 3, 8, 0),
+            country="일본",
+            city="Motobu",
+            place_name="40 Bise 海辺",
+        )
+        ishikawa = self._photo(
+            datetime(2024, 1, 2, 8, 0),
+            country="일본",
+            city="Motobu",
+            place_name="608 Ishikawa",
+        )
+        bise_old = self._photo(
+            datetime(2024, 1, 1, 8, 0),
+            country="일본",
+            city="Motobu",
+            place_name="40 Bise 海辺",
+        )
+        key = encode_raw_location_key(
+            country="일본",
+            region="Motobu",
+            place="40 Bise 海辺",
+        )
+
+        response = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(
+                year=2024,
+                country="ignored when location_key is present",
+                region="ignored when location_key is present",
+            ),
+            location_key=key,
+        )
+
+        ids = [item.common_file_id for item in response.items]
+        assert ids == [bise_new.id, bise_old.id]
+        assert registered_photo.id not in ids
+        assert ishikawa.id not in ids
+
+    def test_location_key_keeps_registered_place_id_compatibility_explicit(self) -> None:
+        place = self._place()
+        matched = self._photo(datetime(2025, 1, 2, 10, 0), place=place)
+        key = encode_registered_location_key(place.id)
+
+        legacy = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(place_id=place.id),
+        )
+        keyed = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(place_id=place.id),
+            location_key=key,
+        )
+
+        assert [item.common_file_id for item in legacy.items] == [matched.id]
+        assert [item.common_file_id for item in keyed.items] == [matched.id]
+
+        with pytest.raises(HTTPException) as mismatch:
+            self.service.photos(
+                cursor=None,
+                limit=50,
+                filters=FastGalleryFilters(place_id=str(uuid4())),
+                location_key=key,
+            )
+        assert mismatch.value.status_code == 400
+        assert mismatch.value.detail["code"] == "GALLERY_LOCATION_FILTER_CONFLICT"
+
+        with pytest.raises(HTTPException) as raw_conflict:
+            self.service.photos(
+                cursor=None,
+                limit=50,
+                filters=FastGalleryFilters(place_id=place.id),
+                location_key=encode_raw_location_key(
+                    country="대한민국",
+                    region="서울",
+                    place="원시 장소",
+                ),
+            )
+        assert raw_conflict.value.status_code == 400
+
+    def test_deleted_registered_place_becomes_one_raw_hierarchy_leaf(self) -> None:
+        deleted_place = self._place(
+            display_name="삭제 장소",
+            country="등록 국가",
+            city="등록 지역",
+        )
+        photo = self._photo(
+            datetime(2024, 1, 1, 8, 0),
+            place=deleted_place,
+            country="일본",
+            city="Motobu",
+            place_name="raw fallback",
+        )
+        deleted_place.deleted_at = datetime(2024, 1, 2, 8, 0)
+        self.db.commit()
+
+        hierarchy = self.service.hierarchy()
+        leaves = [
+            place
+            for year in hierarchy.items
+            for country in year.countries
+            for region in country.regions
+            for place in region.places
+        ]
+
+        assert len(leaves) == 1
+        assert leaves[0].memorykeeper_place_id is None
+        identity = decode_location_key(leaves[0].location_key)
+        assert identity.kind == "raw"
+        assert (identity.country, identity.region, identity.place) == (
+            "일본",
+            "Motobu",
+            "raw fallback",
+        )
+        response = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2024),
+            location_key=leaves[0].location_key,
+        )
+        assert [item.common_file_id for item in response.items] == [photo.id]
+
+    def test_raw_location_filter_preserves_keyset_pagination(self) -> None:
+        bise = [
+            self._photo(
+                datetime(2024, 1, day, 8, 0),
+                country="일본",
+                city="Motobu",
+                place_name="40 Bise",
+            )
+            for day in (5, 3, 1)
+        ]
+        self._photo(
+            datetime(2024, 1, 4, 8, 0),
+            country="일본",
+            city="Motobu",
+            place_name="608 Ishikawa",
+        )
+        self._photo(
+            datetime(2024, 1, 2, 8, 0),
+            country="일본",
+            city="Motobu",
+            place_name="608 Ishikawa",
+        )
+        key = encode_raw_location_key(
+            country="일본", region="Motobu", place="40 Bise"
+        )
+
+        page_one = self.service.photos(
+            cursor=None,
+            limit=2,
+            filters=FastGalleryFilters(year=2024),
+            location_key=key,
+        )
+        page_two = self.service.photos(
+            cursor=page_one.next_cursor,
+            limit=2,
+            filters=FastGalleryFilters(year=2024),
+            location_key=key,
+        )
+
+        delivered = [
+            item.common_file_id for item in [*page_one.items, *page_two.items]
+        ]
+        assert delivered == [photo.id for photo in bise]
+        assert len(delivered) == len(set(delivered))
+        assert page_one.has_more is True
+        assert page_two.has_more is False
+
+    def test_raw_location_filter_preserves_null_and_empty_semantics(self) -> None:
+        matched = self._photo(
+            datetime(2024, 1, 1, 8, 0),
+            country=None,
+            city="",
+            place_name=None,
+        )
+        response = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2024),
+            location_key=encode_raw_location_key(
+                country=None,
+                region="",
+                place=None,
+            ),
+        )
+
+        assert [item.common_file_id for item in response.items] == [matched.id]
+
+    def test_all_null_raw_location_key_includes_a_missing_metadata_row(self) -> None:
+        missing_metadata = self._photo(
+            datetime(2024, 1, 1, 8, 0),
+            country=None,
+            city=None,
+            place_name=None,
+        )
+        self.db.query(CommonFileMetadata).filter(
+            CommonFileMetadata.file_id == missing_metadata.id
+        ).delete(synchronize_session=False)
+        self.db.commit()
+        key = encode_raw_location_key(country=None, region=None, place=None)
+
+        response = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2024),
+            location_key=key,
+        )
+
+        assert [item.common_file_id for item in response.items] == [
+            missing_metadata.id
+        ]
 
     def test_summary_shortcut_counts_match_legacy_active_file_scope(self) -> None:
         registered_without_country = self._place(country=None, city=None)
@@ -418,6 +704,10 @@ class TestMemoryKeeperFastGallery:
         assert "/api/memorykeeper/gallery/hierarchy" in paths
         assert "/api/memorykeeper/place-cleanup" in paths
         assert "/api/common/gallery/search" in paths
+        parameters = app.openapi()["paths"]["/api/memorykeeper/gallery/photos"][
+            "get"
+        ]["parameters"]
+        assert "location_key" in {parameter["name"] for parameter in parameters}
 
     def test_postgresql_statement_uses_ordered_candidates_and_lateral_lookups(
         self,
@@ -453,3 +743,40 @@ class TestMemoryKeeperFastGallery:
         assert "gallery_file.extension" in sql
         assert "gallery_file.mime_type" in sql
         assert "ORDER BY gallery_candidates.effective_capture_datetime DESC" in sql
+
+    def test_postgresql_raw_location_predicates_are_inside_candidates_before_limit(
+        self,
+    ) -> None:
+        class PostgreSQLBind:
+            dialect = postgresql.dialect()
+
+        class StatementOnlySession:
+            @staticmethod
+            def get_bind():
+                return PostgreSQLBind()
+
+        location = decode_location_key(
+            encode_raw_location_key(
+                country="일본",
+                region="Motobu",
+                place="40 Bise",
+            )
+        )
+        repository = MemoryKeeperFastGalleryRepository(StatementOnlySession())
+        statement = repository.build_photos_statement(
+            filters=FastGalleryFilters(location=location),
+            limit=50,
+            cursor_datetime=datetime(2024, 1, 1, 8, 0),
+            cursor_file_id=123,
+        )
+        sql = str(
+            statement.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+
+        assert "memorykeeper_places.id IS NULL" in sql
+        assert "common_file_metadata.place_name" in sql
+        assert sql.index("memorykeeper_places.id IS NULL") < sql.index("LIMIT 51")
+        assert sql.index("common_file_metadata.place_name") < sql.index("LIMIT 51")

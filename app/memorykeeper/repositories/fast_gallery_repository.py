@@ -20,6 +20,9 @@ from app.memorykeeper.repositories.place_cleanup_repository import (
     memorykeeper_place_display_expression,
     memorykeeper_region_expression,
 )
+from app.memorykeeper.services.fast_gallery_location import (
+    FastGalleryLocationIdentity,
+)
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,7 @@ class FastGalleryFilters:
     has_gps: bool | None = None
     date_from: date | None = None
     date_to: date | None = None
+    location: FastGalleryLocationIdentity | None = None
 
 
 class MemoryKeeperFastGalleryRepository:
@@ -67,6 +71,10 @@ class MemoryKeeperFastGalleryRepository:
             ),
             else_=False,
         )
+
+    @staticmethod
+    def _nullable_location_match(expression, value: str | None):
+        return expression.is_(None) if value is None else expression == value
 
     def _base_query(self) -> Query:
         return (
@@ -155,30 +163,41 @@ class MemoryKeeperFastGalleryRepository:
             statement = statement.where(
                 MemoryKeeperFileState.effective_capture_date <= filters.date_to
             )
-        if cursor_datetime is not None and cursor_file_id is not None:
-            statement = statement.where(
-                or_(
-                    MemoryKeeperFileState.effective_capture_datetime
-                    < cursor_datetime,
-                    and_(
-                        MemoryKeeperFileState.effective_capture_datetime
-                        == cursor_datetime,
-                        MemoryKeeperFileState.file_id < cursor_file_id,
-                    ),
-                )
-            )
-
         location_conditions = []
-        if filters.country is not None:
-            location_conditions.append(
-                self._country_expression() == filters.country
-            )
-        if filters.region is not None:
-            location_conditions.append(self._region_expression() == filters.region)
-        if filters.place_id is not None:
-            location_conditions.append(
-                CommonFileMetadata.memorykeeper_place_id == filters.place_id
-            )
+        if filters.location is not None:
+            if filters.location.kind == "registered":
+                location_conditions.append(
+                    CommonFileMetadata.memorykeeper_place_id
+                    == filters.location.place_id
+                )
+            else:
+                location_conditions.extend(
+                    (
+                        MemoryKeeperPlace.id.is_(None),
+                        self._nullable_location_match(
+                            self._country_expression(), filters.location.country
+                        ),
+                        self._nullable_location_match(
+                            self._region_expression(), filters.location.region
+                        ),
+                        self._nullable_location_match(
+                            self._place_display_expression(), filters.location.place
+                        ),
+                    )
+                )
+        else:
+            if filters.country is not None:
+                location_conditions.append(
+                    self._country_expression() == filters.country
+                )
+            if filters.region is not None:
+                location_conditions.append(
+                    self._region_expression() == filters.region
+                )
+            if filters.place_id is not None:
+                location_conditions.append(
+                    CommonFileMetadata.memorykeeper_place_id == filters.place_id
+                )
         if location_conditions:
             location_match = self._correlated_exists(
                 select(CommonFileMetadata.id)
@@ -196,6 +215,20 @@ class MemoryKeeperFastGalleryRepository:
                     *location_conditions,
                 )
             )
+            if filters.location is not None and filters.location.kind == "raw":
+                raw_values = (
+                    filters.location.country,
+                    filters.location.region,
+                    filters.location.place,
+                )
+                if all(value is None for value in raw_values):
+                    metadata_exists = self._correlated_exists(
+                        select(CommonFileMetadata.id).where(
+                            CommonFileMetadata.file_id
+                            == MemoryKeeperFileState.file_id
+                        )
+                    )
+                    location_match = or_(location_match, ~metadata_exists)
             statement = statement.where(location_match)
         if filters.has_gps is not None:
             gps_match = self._correlated_exists(
@@ -207,6 +240,18 @@ class MemoryKeeperFastGalleryRepository:
             )
             statement = statement.where(
                 gps_match if filters.has_gps else ~gps_match
+            )
+        if cursor_datetime is not None and cursor_file_id is not None:
+            statement = statement.where(
+                or_(
+                    MemoryKeeperFileState.effective_capture_datetime
+                    < cursor_datetime,
+                    and_(
+                        MemoryKeeperFileState.effective_capture_datetime
+                        == cursor_datetime,
+                        MemoryKeeperFileState.file_id < cursor_file_id,
+                    ),
+                )
             )
 
         return (
@@ -472,7 +517,7 @@ class MemoryKeeperFastGalleryRepository:
                 MemoryKeeperFileState.effective_capture_year.label("year"),
                 country.label("country"),
                 region.label("region"),
-                CommonFileMetadata.memorykeeper_place_id,
+                MemoryKeeperPlace.id.label("memorykeeper_place_id"),
                 place_display_name.label("place_display_name"),
                 func.count(CommonFile.id).label("count"),
             )
@@ -480,7 +525,7 @@ class MemoryKeeperFastGalleryRepository:
                 MemoryKeeperFileState.effective_capture_year,
                 country,
                 region,
-                CommonFileMetadata.memorykeeper_place_id,
+                MemoryKeeperPlace.id,
                 place_display_name,
             )
             .order_by(
@@ -488,7 +533,7 @@ class MemoryKeeperFastGalleryRepository:
                 country.asc().nulls_last(),
                 region.asc().nulls_last(),
                 place_display_name.asc().nulls_last(),
-                CommonFileMetadata.memorykeeper_place_id.asc().nulls_last(),
+                MemoryKeeperPlace.id.asc().nulls_last(),
             )
             .all()
         )

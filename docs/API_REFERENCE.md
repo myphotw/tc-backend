@@ -195,6 +195,17 @@ present. `GET /api/common/gallery/{file_id}/thumbnail` may serve the persisted
 preview when the thumbnail file has drifted from storage; it never falls back
 to the original or performs an on-demand resize.
 
+`GET /api/memorykeeper/gallery/hierarchy` adds a nullable `location_key` to
+each place leaf. It is an opaque, versioned identity generated for both
+registered Places and raw metadata groups; clients must not parse its contents.
+`GET /api/memorykeeper/gallery/photos` accepts the key as an optional
+`location_key` query parameter and applies the represented leaf filter before
+keyset pagination. When present, it is authoritative for the location leaf;
+when omitted, the existing `country`, `region`, and
+`place_id` filters retain their prior behavior. A registered key may be sent
+with the same `place_id`; a conflicting `place_id`, or any `place_id` paired
+with a raw key, returns `400`.
+
 `GET /api/memorykeeper/travel/aggregates` remains a two-query set-based
 projection. Place items additionally expose nullable `latitude` and
 `longitude`, preferring the active `memorykeeper_places` coordinates and then
