@@ -446,6 +446,8 @@ All endpoints below use the protected Bearer-authenticated API router.
 |--------|----------|---------|
 | DELETE | `/api/memorykeeper/files/{file_id}` | Unlink MemoryKeeper and clean an unreferenced physical file |
 | PATCH | `/api/memorykeeper/files/{file_id}/metadata` | Update favorite, memo and raw geography with optimistic locking |
+| POST | `/api/memorykeeper/files/place-state/query` | Read mutation-ready Place state for up to 500 files |
+| POST | `/api/memorykeeper/files/assign-place` | Atomically assign one registered Place to up to 500 files |
 | GET/POST | `/api/memorykeeper/tags` | List/create the user tag catalog |
 | PATCH/DELETE | `/api/memorykeeper/tags/{tag_id}` | Rename, favorite or delete a tag |
 | POST | `/api/memorykeeper/tags/{tag_id}/merge` | Merge a source tag into a target tag |
@@ -466,6 +468,91 @@ list/search accept `incomplete=true|false` for the same projection.
 Pending suggestions are optional (`include_suggestions=true`) and reuse only
 the existing registered Place matcher; the default list performs no provider
 lookup and no automatic Place creation.
+
+### Batch Place state
+
+`POST /api/memorykeeper/files/place-state/query` accepts one to 500 unique SHA-256
+`file_ids` and returns items in the same order:
+
+```json
+{
+  "file_ids": ["<SHA-256 file_id>"]
+}
+```
+
+```json
+{
+  "items": [
+    {
+      "file_id": "<SHA-256 file_id>",
+      "common_file_id": 123,
+      "gps_lat": 37.5,
+      "gps_lon": 127.0,
+      "memorykeeper_place_id": null,
+      "place_match_revision": 0
+    }
+  ]
+}
+```
+
+The endpoint accepts both pending and registered MemoryKeeper files, including
+shared assets with a MemoryKeeper service link. GPS and Place values may be
+`null`. Deleted, missing, and files without a MemoryKeeper service link are
+rejected as a whole with the existing `MEMORYKEEPER_FILES_NOT_FOUND` batch
+error. The numeric
+`common_file_id` is `common_files.id`; `file_id` remains the SHA-256 identifier.
+
+### Generic atomic Place assignment
+
+`POST /api/memorykeeper/files/assign-place` accepts one to 500 unique SHA-256
+file IDs, one required active Place, and the current
+`common_file_metadata.place_match_revision` for every file:
+
+```json
+{
+  "file_ids": ["<SHA-256 file_id>"],
+  "memorykeeper_place_id": "<Place UUID>",
+  "expected_place_revisions": {
+    "<SHA-256 file_id>": 0
+  }
+}
+```
+
+The revision-map keys must exactly match `file_ids`, and every revision must be
+non-negative. The response keeps the existing `FilePlaceResponse` item shape
+and adds `assigned_count` around the batch:
+
+```json
+{
+  "items": [
+    {
+      "file_id": "<SHA-256 file_id>",
+      "memorykeeper_place_id": "<Place UUID>",
+      "place_display_name": "Example Place",
+      "place_canonical_name": "Example Place",
+      "geocoded_place_name": "Raw EXIF location",
+      "place_match_source": "USER",
+      "place_match_distance_m": 12.3,
+      "place_revision": 1
+    }
+  ],
+  "assigned_count": 1
+}
+```
+
+The service locks eligible files in deterministic numeric-ID order, validates
+all requested revisions before mutation, and commits the entire batch once. A
+missing file or `REVISION_CONFLICT` rolls the whole batch back. It supports
+pending-to-Place, registered Place A-to-B, and existing Place B-to-B changes;
+the last case keeps the existing `_set_relation()` no-op revision semantics.
+Manual assignment works without GPS (distance is `null`) and never enforces the
+Place radius. It changes only the registered Place relation and does not modify
+raw GPS/address metadata.
+
+This generic endpoint differs from
+`POST /api/memorykeeper/pending/assign-place`: the older endpoint remains
+Pending-only and continues to return `FILES_NOT_PENDING` for registered files.
+Its request, response, conflict, and atomicity contracts are unchanged.
 
 ---
 

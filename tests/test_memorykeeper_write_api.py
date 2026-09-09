@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 from sqlalchemy.orm import sessionmaker
@@ -31,11 +31,19 @@ from app.main import app
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.place import MemoryKeeperPlace
 from app.memorykeeper.models.tag import Tag
-from app.memorykeeper.schemas.file import MemoryKeeperFileMetadataUpdate
+from app.memorykeeper.schemas.file import (
+    MemoryKeeperBatchAssignPlaceRequest,
+    MemoryKeeperFileMetadataUpdate,
+    MemoryKeeperPlaceStateQueryRequest,
+)
 from app.memorykeeper.schemas.pending import PendingAssignPlaceRequest
 from app.memorykeeper.schemas.place import FilePlaceUpdate, PlaceCreate
 from app.memorykeeper.schemas.tag import TagCreate, TagMergeRequest, TagUpdate
 from app.memorykeeper.services.file_service import MemoryKeeperFileService
+from app.memorykeeper.services.file_place_batch_service import (
+    MemoryKeeperFilePlaceBatchService,
+)
+from app.memorykeeper.services.fast_gallery_service import MemoryKeeperFastGalleryService
 from app.memorykeeper.services.pending_service import MemoryKeeperPendingService
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from app.memorykeeper.services.tag_service import MemoryKeeperTagService
@@ -78,6 +86,7 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
         self.tags = MemoryKeeperTagService(self.db)
         self.places = MemoryKeeperPlaceService(self.db)
         self.pending = MemoryKeeperPendingService(self.db)
+        self.file_places = MemoryKeeperFilePlaceBatchService(self.db)
         self.counter = 0
 
     def tearDown(self) -> None:
@@ -476,11 +485,343 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
             2,
         )
 
+    def test_batch_place_state_is_set_based_ordered_and_covers_all_file_states(self) -> None:
+        place = self.place()
+        pending, pending_metadata, _ = self.file()
+        registered, registered_metadata, _ = self.file(gps=False, place=place)
+        shared, shared_metadata, _ = self.file(
+            services=("AstroJournal", "MemoryKeeper")
+        )
+        statements: list[str] = []
+
+        def capture_statement(_conn, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+
+        event.listen(self.engine, "before_cursor_execute", capture_statement)
+        try:
+            result = self.file_places.query_states(
+                MemoryKeeperPlaceStateQueryRequest(
+                    file_ids=[registered.file_id, pending.file_id, shared.file_id]
+                )
+            )
+        finally:
+            event.remove(self.engine, "before_cursor_execute", capture_statement)
+
+        self.assertEqual(len(statements), 1)
+        self.assertEqual(
+            [item.file_id for item in result.items],
+            [registered.file_id, pending.file_id, shared.file_id],
+        )
+        by_id = {item.file_id: item for item in result.items}
+        self.assertEqual(by_id[pending.file_id].common_file_id, pending.id)
+        self.assertEqual(by_id[pending.file_id].gps_lat, pending_metadata.gps_lat)
+        self.assertIsNone(by_id[pending.file_id].memorykeeper_place_id)
+        self.assertEqual(by_id[pending.file_id].place_match_revision, 0)
+        self.assertIsNone(by_id[registered.file_id].gps_lat)
+        self.assertIsNone(by_id[registered.file_id].gps_lon)
+        self.assertEqual(
+            str(by_id[registered.file_id].memorykeeper_place_id),
+            place.id,
+        )
+        self.assertEqual(
+            by_id[registered.file_id].place_match_revision,
+            registered_metadata.place_match_revision,
+        )
+        self.assertEqual(by_id[shared.file_id].common_file_id, shared.id)
+        self.assertEqual(by_id[shared.file_id].gps_lat, shared_metadata.gps_lat)
+
+    def test_batch_place_state_rejects_invalid_deleted_and_astro_only_files(self) -> None:
+        valid, _metadata, _ = self.file()
+        deleted, _deleted_metadata, _ = self.file()
+        deleted.deleted = True
+        astro, _astro_metadata, _ = self.file(services=("AstroJournal",))
+        self.db.commit()
+
+        for invalid_id in ("f" * 64, deleted.file_id, astro.file_id):
+            with self.subTest(invalid_id=invalid_id):
+                with self.assertRaises(HTTPException) as raised:
+                    self.file_places.query_states(
+                        MemoryKeeperPlaceStateQueryRequest(
+                            file_ids=[valid.file_id, invalid_id]
+                        )
+                    )
+                self.assertEqual(raised.exception.status_code, 404)
+                self.assertEqual(
+                    raised.exception.detail,
+                    {
+                        "code": "MEMORYKEEPER_FILES_NOT_FOUND",
+                        "file_ids": [invalid_id],
+                    },
+                )
+
+    def test_batch_place_request_validation_enforces_unique_bounded_exact_ids(self) -> None:
+        ids = [f"{index:064x}" for index in range(500)]
+        accepted = MemoryKeeperPlaceStateQueryRequest(file_ids=ids)
+        self.assertEqual(len(accepted.file_ids), 500)
+        with self.assertRaises(ValueError):
+            MemoryKeeperPlaceStateQueryRequest(file_ids=[])
+        with self.assertRaises(ValueError):
+            MemoryKeeperPlaceStateQueryRequest(file_ids=ids + ["f" * 64])
+        with self.assertRaises(ValueError):
+            MemoryKeeperPlaceStateQueryRequest(file_ids=[ids[0], f" {ids[0]} "])
+
+        place_id = self.place().id
+        accepted_assignment = MemoryKeeperBatchAssignPlaceRequest(
+            file_ids=ids,
+            memorykeeper_place_id=place_id,
+            expected_place_revisions={file_id: 0 for file_id in ids},
+        )
+        self.assertEqual(len(accepted_assignment.file_ids), 500)
+        with self.assertRaises(ValueError):
+            MemoryKeeperBatchAssignPlaceRequest(
+                file_ids=ids + ["f" * 64],
+                memorykeeper_place_id=place_id,
+                expected_place_revisions={
+                    **{file_id: 0 for file_id in ids},
+                    "f" * 64: 0,
+                },
+            )
+        with self.assertRaises(ValueError):
+            MemoryKeeperBatchAssignPlaceRequest(
+                file_ids=[ids[0], ids[0]],
+                memorykeeper_place_id=place_id,
+                expected_place_revisions={ids[0]: 0},
+            )
+        with self.assertRaises(ValueError):
+            MemoryKeeperBatchAssignPlaceRequest(
+                file_ids=[ids[0], ids[1]],
+                memorykeeper_place_id=place_id,
+                expected_place_revisions={ids[0]: 0},
+            )
+        with self.assertRaises(ValueError):
+            MemoryKeeperBatchAssignPlaceRequest(
+                file_ids=[ids[0]],
+                memorykeeper_place_id=place_id,
+                expected_place_revisions={ids[0]: -1},
+            )
+
+    def test_generic_batch_assign_supports_pending_registered_shared_and_missing_gps(self) -> None:
+        source = self.place("기존 장소", lat=35.0, lon=128.0)
+        target = self.place("새 장소", lat=37.6, lon=127.1)
+        pending, pending_metadata, _ = self.file()
+        registered, registered_metadata, _ = self.file(place=source)
+        no_gps, no_gps_metadata, _ = self.file(
+            services=("AstroJournal", "MemoryKeeper"),
+            gps=False,
+        )
+        raw_before = {
+            metadata.file_id: (
+                metadata.gps_lat,
+                metadata.gps_lon,
+                metadata.country,
+                metadata.province,
+                metadata.city,
+                metadata.district,
+                metadata.place_name,
+            )
+            for metadata in (pending_metadata, registered_metadata, no_gps_metadata)
+        }
+
+        result = self.file_places.assign_place(
+            MemoryKeeperBatchAssignPlaceRequest(
+                file_ids=[registered.file_id, pending.file_id, no_gps.file_id],
+                memorykeeper_place_id=target.id,
+                expected_place_revisions={
+                    registered.file_id: 1,
+                    pending.file_id: 0,
+                    no_gps.file_id: 0,
+                },
+            )
+        )
+
+        self.assertEqual(result.assigned_count, 3)
+        self.assertEqual(
+            [item.file_id for item in result.items],
+            [registered.file_id, pending.file_id, no_gps.file_id],
+        )
+        for metadata in (pending_metadata, registered_metadata, no_gps_metadata):
+            self.db.refresh(metadata)
+            self.assertEqual(metadata.memorykeeper_place_id, target.id)
+            self.assertEqual(metadata.place_match_source, "USER")
+            self.assertEqual(
+                raw_before[metadata.file_id],
+                (
+                    metadata.gps_lat,
+                    metadata.gps_lon,
+                    metadata.country,
+                    metadata.province,
+                    metadata.city,
+                    metadata.district,
+                    metadata.place_name,
+                ),
+            )
+        self.assertIsNone(no_gps_metadata.place_match_distance_m)
+        self.assertIsNotNone(pending_metadata.place_match_distance_m)
+
+        revision_before = int(registered_metadata.place_match_revision)
+        no_op = self.file_places.assign_place(
+            MemoryKeeperBatchAssignPlaceRequest(
+                file_ids=[registered.file_id],
+                memorykeeper_place_id=target.id,
+                expected_place_revisions={registered.file_id: revision_before},
+            )
+        )
+        self.db.refresh(registered_metadata)
+        self.assertEqual(registered_metadata.place_match_revision, revision_before)
+        self.assertEqual(no_op.items[0].place_revision, revision_before)
+
+    def test_generic_batch_assign_conflict_and_invalid_file_roll_back_every_file(self) -> None:
+        target = self.place()
+        first, first_metadata, _ = self.file()
+        second, second_metadata, _ = self.file()
+        astro, _astro_metadata, _ = self.file(services=("AstroJournal",))
+        deleted, _deleted_metadata, _ = self.file()
+        deleted.deleted = True
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as conflict:
+            self.file_places.assign_place(
+                MemoryKeeperBatchAssignPlaceRequest(
+                    file_ids=[first.file_id, second.file_id],
+                    memorykeeper_place_id=target.id,
+                    expected_place_revisions={first.file_id: 0, second.file_id: 1},
+                )
+            )
+        self.assertEqual(conflict.exception.status_code, 409)
+        self.assertEqual(conflict.exception.detail["code"], "REVISION_CONFLICT")
+        self.db.refresh(first_metadata)
+        self.db.refresh(second_metadata)
+        self.assertIsNone(first_metadata.memorykeeper_place_id)
+        self.assertIsNone(second_metadata.memorykeeper_place_id)
+
+        for invalid_id in ("f" * 64, astro.file_id, deleted.file_id):
+            with self.subTest(invalid_id=invalid_id):
+                with self.assertRaises(HTTPException) as missing:
+                    self.file_places.assign_place(
+                        MemoryKeeperBatchAssignPlaceRequest(
+                            file_ids=[first.file_id, invalid_id],
+                            memorykeeper_place_id=target.id,
+                            expected_place_revisions={
+                                first.file_id: 0,
+                                invalid_id: 0,
+                            },
+                        )
+                    )
+                self.assertEqual(missing.exception.status_code, 404)
+                self.db.refresh(first_metadata)
+                self.assertIsNone(first_metadata.memorykeeper_place_id)
+
+    def test_generic_batch_assign_rejects_inactive_deleted_and_unknown_places(self) -> None:
+        common_file, metadata, _ = self.file()
+        inactive = self.place("비활성")
+        inactive.active = False
+        deleted = self.place("삭제됨")
+        deleted.deleted_at = datetime.now(timezone.utc)
+        self.db.commit()
+
+        for place_id, expected_status in (
+            (inactive.id, 422),
+            (deleted.id, 404),
+            ("00000000-0000-0000-0000-000000000000", 404),
+        ):
+            with self.subTest(place_id=place_id):
+                with self.assertRaises(HTTPException) as raised:
+                    self.file_places.assign_place(
+                        MemoryKeeperBatchAssignPlaceRequest(
+                            file_ids=[common_file.file_id],
+                            memorykeeper_place_id=place_id,
+                            expected_place_revisions={common_file.file_id: 0},
+                        )
+                    )
+                self.assertEqual(raised.exception.status_code, expected_status)
+                self.db.refresh(metadata)
+                self.assertIsNone(metadata.memorykeeper_place_id)
+
+    def test_generic_batch_assign_query_uses_deterministic_postgres_row_lock(self) -> None:
+        statement = self.file_places._file_query(["a" * 64], lock=True).statement
+        sql = str(statement.compile(dialect=postgresql.dialect()))
+        self.assertIn("ORDER BY common_files.id ASC", sql)
+        self.assertIn("FOR UPDATE OF common_files", sql)
+
+    def test_pending_batch_contract_still_rejects_registered_and_is_atomic(self) -> None:
+        place = self.place()
+        pending, pending_metadata, _ = self.file()
+        registered, registered_metadata, _ = self.file(place=place)
+        with self.assertRaises(HTTPException) as raised:
+            self.pending.assign_place(
+                PendingAssignPlaceRequest(
+                    file_ids=[pending.file_id, registered.file_id],
+                    memorykeeper_place_id=place.id,
+                    expected_revisions={pending.file_id: 0, registered.file_id: 1},
+                )
+            )
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["code"], "FILES_NOT_PENDING")
+        self.db.refresh(pending_metadata)
+        self.db.refresh(registered_metadata)
+        self.assertIsNone(pending_metadata.memorykeeper_place_id)
+        self.assertEqual(registered_metadata.memorykeeper_place_id, place.id)
+
+    def test_generic_batch_assignment_updates_hierarchy_relation_only(self) -> None:
+        source = self.place("출발지")
+        target = self.place("도착지")
+        moved, metadata, _ = self.file(place=source)
+        stayed, _stayed_metadata, _ = self.file(place=target)
+        for common_file in (moved, stayed):
+            self.db.add(
+                MemoryKeeperFileState(
+                    file_id=common_file.id,
+                    effective_capture_datetime=datetime(2025, 1, 1),
+                    effective_capture_date=date(2025, 1, 1),
+                    effective_capture_year=2025,
+                    date_basis="EXIF",
+                )
+            )
+        self.db.commit()
+
+        before = MemoryKeeperFastGalleryService(self.db).hierarchy()
+        before_counts = {
+            leaf.memorykeeper_place_id: leaf.count
+            for year in before.items
+            for country in year.countries
+            for region in country.regions
+            for leaf in region.places
+        }
+        self.assertEqual(before_counts[source.id], 1)
+        self.assertEqual(before_counts[target.id], 1)
+
+        self.file_places.assign_place(
+            MemoryKeeperBatchAssignPlaceRequest(
+                file_ids=[moved.file_id],
+                memorykeeper_place_id=target.id,
+                expected_place_revisions={moved.file_id: 1},
+            )
+        )
+        hierarchy = MemoryKeeperFastGalleryService(self.db).hierarchy()
+        leaves = [
+            leaf
+            for year in hierarchy.items
+            for country in year.countries
+            for region in country.regions
+            for leaf in region.places
+        ]
+        target_leaf = next(
+            leaf for leaf in leaves if leaf.memorykeeper_place_id == target.id
+        )
+        self.assertEqual(target_leaf.count, 2)
+        self.assertFalse(
+            any(leaf.memorykeeper_place_id == source.id for leaf in leaves)
+        )
+        self.db.refresh(metadata)
+        self.assertEqual(metadata.place_name, "원시 주소")
+
     def test_new_routes_are_bearer_protected(self) -> None:
         paths = app.openapi()["paths"]
         expected = {
             "/api/memorykeeper/files/{file_id}": "delete",
             "/api/memorykeeper/files/{file_id}/metadata": "patch",
+            "/api/memorykeeper/files/place-state/query": "post",
+            "/api/memorykeeper/files/assign-place": "post",
             "/api/memorykeeper/tags": "get",
             "/api/memorykeeper/tags/{tag_id}/merge": "post",
             "/api/memorykeeper/files/{file_id}/tags/{tag_id}": "post",

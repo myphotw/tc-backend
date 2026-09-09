@@ -6,6 +6,65 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.memorykeeper.schemas.place import FilePlaceResponse
+
+
+def _normalize_file_ids(value: list[str]) -> list[str]:
+    normalized = [item.strip() for item in value]
+    if any(not item for item in normalized):
+        raise ValueError("file_id cannot be blank")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("file_ids must be unique")
+    return normalized
+
+
+class MemoryKeeperPlaceStateQueryRequest(BaseModel):
+    file_ids: list[str] = Field(min_length=1, max_length=500)
+
+    @field_validator("file_ids")
+    @classmethod
+    def unique_file_ids(cls, value: list[str]) -> list[str]:
+        return _normalize_file_ids(value)
+
+
+class MemoryKeeperPlaceStateItem(BaseModel):
+    file_id: str
+    common_file_id: int
+    gps_lat: float | None
+    gps_lon: float | None
+    memorykeeper_place_id: UUID | None
+    place_match_revision: int
+
+
+class MemoryKeeperPlaceStateQueryResponse(BaseModel):
+    items: list[MemoryKeeperPlaceStateItem]
+
+
+class MemoryKeeperBatchAssignPlaceRequest(BaseModel):
+    file_ids: list[str] = Field(min_length=1, max_length=500)
+    memorykeeper_place_id: UUID
+    expected_place_revisions: dict[str, int]
+
+    @field_validator("file_ids")
+    @classmethod
+    def unique_file_ids(cls, value: list[str]) -> list[str]:
+        return _normalize_file_ids(value)
+
+    @model_validator(mode="after")
+    def revisions_cover_files(self) -> "MemoryKeeperBatchAssignPlaceRequest":
+        if set(self.expected_place_revisions) != set(self.file_ids):
+            raise ValueError(
+                "expected_place_revisions must contain exactly every file_id"
+            )
+        if any(value < 0 for value in self.expected_place_revisions.values()):
+            raise ValueError("expected place revisions must be non-negative")
+        return self
+
+
+class MemoryKeeperBatchAssignPlaceResponse(BaseModel):
+    items: list[FilePlaceResponse]
+    assigned_count: int
+
 
 class MemoryKeeperFileMetadataUpdate(BaseModel):
     expected_revision: int = Field(ge=0)
