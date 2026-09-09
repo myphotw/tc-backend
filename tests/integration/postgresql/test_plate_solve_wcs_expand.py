@@ -27,7 +27,10 @@ def test_plate_solve_wcs_upgrade_reflection_ownership_and_downgrade(
 ) -> None:
     create_legacy_schema(postgresql_engine)
     run_with_engine_patch(migration_engine_factory, run_stamp_baseline)
-    run_with_engine_patch(migration_engine_factory, lambda: run_upgrade("head"))
+    run_with_engine_patch(
+        migration_engine_factory,
+        lambda: run_upgrade(WCS_REVISION),
+    )
 
     columns = {
         column["name"]: column

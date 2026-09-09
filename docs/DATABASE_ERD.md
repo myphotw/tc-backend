@@ -24,6 +24,12 @@ erDiagram
     common_files ||--o{ astro_observation_records : observed_as
     common_files ||--o| astro_plate_solve_jobs : solved_by
     astro_observation_records ||--o| astro_plate_solve_jobs : queues
+    astro_equipment ||--o{ astro_equipment_eyepieces : owns
+    astro_equipment ||--o{ astro_equipment_exposure_capabilities : owns
+    astro_equipment_exposure_capabilities ||--o{ astro_equipment_exposure_values : owns
+    astro_equipment ||--o{ astro_observation_sites : default_for
+    astro_observation_sites ||--o{ astro_observation_site_horizon_points : owns
+    astro_observation_sites ||--o{ astro_observation_site_blocked_azimuth_ranges : owns
     common_files ||--o| memorykeeper_file_states : has_memorykeeper_state
     common_files ||--o{ mk_file_tag_suppressions : suppresses_for_memorykeeper
     mk_tags ||--o{ common_file_tags : catalogs
@@ -141,6 +147,91 @@ erDiagram
         datetime started_at
         datetime completed_at
         datetime updated_at
+    }
+
+    astro_equipment {
+        uuid id PK
+        string name
+        string kind
+        string purpose
+        bool is_active
+        float focal_length_mm
+        float aperture_mm
+        float fov_width_degrees
+        float fov_height_degrees
+        int sort_order
+        int revision
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
+    }
+
+    astro_equipment_eyepieces {
+        uuid id PK
+        uuid equipment_id FK
+        string name
+        float focal_length_mm
+        float afov_degrees
+        int sort_order
+    }
+
+    astro_equipment_exposure_capabilities {
+        int id PK
+        uuid equipment_id FK
+        string tracking_mode
+        string capability_type
+        numeric min_seconds
+        numeric max_seconds
+        numeric step_seconds
+    }
+
+    astro_equipment_exposure_values {
+        int id PK
+        int capability_id FK
+        numeric value_seconds
+        int sort_order
+    }
+
+    astro_observation_sites {
+        uuid id PK
+        string name
+        float latitude
+        float longitude
+        string address
+        int bortle
+        float sqm
+        string brightness_grade
+        bool is_favorite
+        string tracking_mode
+        uuid default_equipment_id FK
+        float default_min_altitude
+        float default_max_altitude
+        string preferred_start
+        string preferred_end
+        text memo
+        int revision
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
+    }
+
+    astro_observation_site_horizon_points {
+        uuid id PK
+        uuid observation_site_id FK
+        float azimuth
+        float min_altitude
+        float max_altitude
+        int sort_order
+        string source
+    }
+
+    astro_observation_site_blocked_azimuth_ranges {
+        uuid id PK
+        uuid observation_site_id FK
+        float start_azimuth
+        float end_azimuth
+        string reason
+        string source
     }
 
     common_change_events {

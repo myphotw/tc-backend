@@ -325,10 +325,11 @@ class DatabaseStateClassificationTests(unittest.TestCase):
 class BaselineFingerprintTests(unittest.TestCase):
     def test_fingerprint_snapshot_matches_registered_baseline_models(self) -> None:
         from app.common.model_registry import Base
+        from app.common.schema_sync import bootstrap_managed_tables
 
         model_tables = {
             table.name
-            for table in Base.metadata.sorted_tables
+            for table in bootstrap_managed_tables(Base.metadata)
             if table.schema in (None, "public")
         }
         self.assertEqual(BASELINE_REQUIRED_TABLES, model_tables)

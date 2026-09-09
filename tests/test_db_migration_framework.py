@@ -82,12 +82,12 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
             self.assertEqual(len(function.body), 1)
             self.assertIsInstance(function.body[0], ast.Pass)
 
-    def test_revision_graph_has_single_plate_solve_wcs_head(self) -> None:
+    def test_revision_graph_has_single_astro_master_data_head(self) -> None:
         checks = verify_revision_graph(build_alembic_config())
 
-        self.assertIn("single_head=20260906_0004", checks)
+        self.assertIn("single_head=20260909_0005", checks)
         self.assertIn(f"baseline={BASELINE_REVISION}", checks)
-        self.assertIn("revision_count=4", checks)
+        self.assertIn("revision_count=5", checks)
 
     def test_alembic_config_contains_no_database_url(self) -> None:
         content = (PROJECT_ROOT / "alembic.ini").read_text(encoding="utf-8")
@@ -266,6 +266,27 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
 
         self.assertTrue(is_migration_managed(source.c.wcs))
         self.assertTrue(projected.c.wcs.system)
+
+    def test_astro_master_tables_are_excluded_from_bootstrap_ddl(self) -> None:
+        from app.common.model_registry import Base
+
+        projection = bootstrap_metadata_projection(Base.metadata)
+        table_names = {
+            "astro_equipment",
+            "astro_equipment_eyepieces",
+            "astro_equipment_exposure_capabilities",
+            "astro_equipment_exposure_values",
+            "astro_observation_sites",
+            "astro_observation_site_horizon_points",
+            "astro_observation_site_blocked_azimuth_ranges",
+        }
+
+        for table_name in table_names:
+            with self.subTest(table_name=table_name):
+                self.assertTrue(
+                    is_migration_managed(Base.metadata.tables[table_name])
+                )
+                self.assertNotIn(table_name, projection.tables)
 
     def test_ownership_verification_rejects_leaked_migration_column(self) -> None:
         metadata = MetaData()

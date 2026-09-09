@@ -8,9 +8,11 @@ from app.common.routers import (
     upload,
     upload_jobs,
 )
-from app.astrojournal.routers import gallery as astro_gallery
+from app.astrojournal.routers import equipment as astrojournal_equipment
 from app.astrojournal.routers import events as astrojournal_events
+from app.astrojournal.routers import gallery as astro_gallery
 from app.astrojournal.routers import observation_records
+from app.astrojournal.routers import observation_sites
 from app.astrojournal.routers import plate_solve
 from app.astrojournal.routers import reset as astrojournal_reset
 from app.memorykeeper.routers import places as memorykeeper_places
@@ -106,6 +108,8 @@ protected_api_router.include_router(external_apis.router)
 protected_api_router.include_router(monitoring.router)
 protected_api_router.include_router(gallery.router)
 protected_api_router.include_router(observation_records.router)
+protected_api_router.include_router(observation_sites.router)
+protected_api_router.include_router(astrojournal_equipment.router)
 protected_api_router.include_router(astro_gallery.router)
 protected_api_router.include_router(astrojournal_events.router)
 protected_api_router.include_router(plate_solve.router)

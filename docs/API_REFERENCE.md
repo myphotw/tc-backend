@@ -242,6 +242,111 @@ The record detail additionally returns `plate_solve_job_id` and
 job; all other job states return null result fields. A record without a job
 keeps its existing `plate_solve_status` and returns null job/result.
 
+## AstroJournal ObservationSite and Equipment master data
+
+All endpoints use the common Bearer authentication dependency.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET/POST | `/api/astro/observation-sites` | List active sites or create a client-UUID aggregate. |
+| GET/PATCH/DELETE | `/api/astro/observation-sites/{site_id}` | Read, revision-update, or tombstone one site. |
+| GET/POST | `/api/astro/equipment` | List active equipment or create a client-UUID aggregate. |
+| GET/PATCH/DELETE | `/api/astro/equipment/{equipment_id}` | Read, revision-update, or tombstone one equipment aggregate. |
+
+ObservationSite create example:
+
+```json
+{
+  "id": "0fe47df8-d932-470f-a93a-5ee1823fa942",
+  "name": "강원 관측지",
+  "latitude": 37.25,
+  "longitude": 128.25,
+  "address": "강원도",
+  "bortle": 3,
+  "sqm": 21.3,
+  "brightness_grade": "dark",
+  "is_favorite": true,
+  "tracking_mode": "altAz",
+  "default_equipment_id": null,
+  "default_min_altitude": 20,
+  "default_max_altitude": null,
+  "preferred_start": "20:30",
+  "preferred_end": "04:30",
+  "memo": "",
+  "horizon_points": [
+    {
+      "id": "68220537-8b17-4ed5-b46a-a9b670b6d384",
+      "observation_site_id": "0fe47df8-d932-470f-a93a-5ee1823fa942",
+      "azimuth": 0,
+      "min_altitude": 15,
+      "max_altitude": 70,
+      "sort_order": 0,
+      "source": "camera_scan"
+    }
+  ],
+  "blocked_azimuth_ranges": [
+    {
+      "id": "d41fcbad-80bd-4a5b-b560-a27d914ab6b8",
+      "observation_site_id": "0fe47df8-d932-470f-a93a-5ee1823fa942",
+      "start_azimuth": 350,
+      "end_azimuth": 20,
+      "reason": "북쪽 건물",
+      "source": "manual"
+    }
+  ]
+}
+```
+
+Equipment capabilities are independent per tracking mode:
+
+```json
+{
+  "id": "ce86ee83-a97c-424a-8d1b-f2473bacb172",
+  "name": "Smart telescope",
+  "kind": "smartTelescope",
+  "purpose": "imaging",
+  "is_active": true,
+  "focal_length_mm": 250,
+  "aperture_mm": 50,
+  "fov_width_degrees": 2.4,
+  "fov_height_degrees": 1.8,
+  "sort_order": 0,
+  "eyepieces": [],
+  "az_exposure_capability": {
+    "type": "discrete",
+    "values_seconds": [1, 1.3, 1.6, 2, 2.5, 3.2, 10, 20]
+  },
+  "eq_exposure_capability": {
+    "type": "range",
+    "min_seconds": 1,
+    "max_seconds": 300,
+    "step_seconds": 0.5
+  }
+}
+```
+
+Discrete values must be unique and positive and are returned in ascending
+order. Range values require positive minimum/step and `max_seconds >=
+min_seconds`. `kind` uses `smartTelescope`, `refractor`, `reflector`, or
+`other`; `purpose` uses `imaging` or `visual`. Exposure values are API numbers
+backed by exact `NUMERIC(12,6)` rows.
+
+PATCH is partial, but a supplied `horizon_points`,
+`blocked_azimuth_ranges`, or `eyepieces` list replaces that complete child
+collection. A supplied AZ/EQ capability replaces only that mode; explicit
+`null` clears it. Every PATCH requires `expected_revision` and increments the
+aggregate revision. DELETE takes `expected_revision` as a query parameter.
+Stale writes return `409 REVISION_CONFLICT` with the resource ID,
+`expected_revision`, and `current_revision`.
+
+DELETE removes aggregate children, increments the root revision, and appends a
+tombstone change event. Deleting Equipment also clears every active site's
+`default_equipment_id`, increments each affected site revision, and emits its
+`ObservationSite` UPDATE event in the same transaction. The FK additionally
+uses `ON DELETE SET NULL` as a hard-delete safety net. Active/current device
+selection and Flutter `lastUsedAt` are intentionally absent from server master
+data.
+
 ## AstroJournal Gallery Projection (B4-01)
 
 Common Gallery is the FileAsset read API. Astro Gallery is the canonical

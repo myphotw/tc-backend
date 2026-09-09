@@ -106,6 +106,21 @@ UPDATE, and soft DELETE write events in the same transaction as the mutation.
 DELETE events set `tombstone=true`; clients advance using `next_cursor` while
 `has_more` is true.
 
+## AstroJournal Canonical Master Data
+
+`/api/astro/observation-sites` and `/api/astro/equipment` provide
+Bearer-protected canonical master data for mobile and desktop clients.
+Client-generated UUIDs are accepted as server IDs and replaying an active UUID
+returns the existing aggregate. PATCH and DELETE use `expected_revision`;
+changes emit `ObservationSite` or `Equipment` events through the common cursor
+feed, and DELETE creates a tombstone.
+
+ObservationSite owns horizon points and circular blocked-azimuth ranges.
+Equipment owns eyepieces and independent AZ/EQ exposure capabilities. Child
+lists use full-replacement semantics under the aggregate revision. Exposure
+seconds are stored as `NUMERIC(12,6)` and returned as JSON numbers. Current or
+active device selection and `lastUsedAt` remain client-local state.
+
 ## MemoryKeeper Semantic Reset
 
 `POST /api/memorykeeper/reset/preview` and `/execute` support the PC client's
@@ -266,7 +281,10 @@ PHOTO_PLATFORM_ROOT/
 
 [docs/DATABASE_ERD.md](docs/DATABASE_ERD.md)
 
-주요 테이블: `common_files`, `common_file_metadata`, `common_file_tags`, `common_upload_jobs`, `common_vision_jobs`, `common_api_usage`, `common_geocode_cache`, `common_metadata_history`, `common_worker_status`
+주요 테이블: `common_files`, `common_file_metadata`, `common_file_tags`,
+`common_upload_jobs`, `common_vision_jobs`, `common_api_usage`,
+`common_geocode_cache`, `common_metadata_history`, `common_worker_status`,
+`astro_observation_sites`, `astro_equipment`
 
 ## MemoryKeeper 자동 태그
 

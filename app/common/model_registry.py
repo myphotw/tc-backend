@@ -24,7 +24,9 @@ from app.memorykeeper.models import photo_tag as _photo_tag
 from app.memorykeeper.models import place as _place
 from app.memorykeeper.models import tag as _tag
 from app.memorykeeper.models import tag_canonical_override as _tag_canonical_override
+from app.astrojournal.models import equipment as _astro_equipment
 from app.astrojournal.models import observation_record as _observation_record
+from app.astrojournal.models import observation_site as _astro_observation_site
 from app.astrojournal.models import plate_solve_job as _plate_solve_job
 
 
