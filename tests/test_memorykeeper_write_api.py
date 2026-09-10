@@ -31,6 +31,7 @@ from app.main import app
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.place import MemoryKeeperPlace
 from app.memorykeeper.models.tag import Tag
+from app.memorykeeper.repositories.fast_gallery_repository import FastGalleryFilters
 from app.memorykeeper.schemas.file import (
     MemoryKeeperBatchAssignPlaceRequest,
     MemoryKeeperFileMetadataUpdate,
@@ -814,6 +815,88 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
         )
         self.db.refresh(metadata)
         self.assertEqual(metadata.place_name, "원시 주소")
+
+    def test_generic_batch_assignment_removes_photo_from_unclassified_reads(
+        self,
+    ) -> None:
+        target = self.place("등록 장소")
+        common_file, metadata, _ = self.file()
+        self.db.add(
+            MemoryKeeperFileState(
+                file_id=common_file.id,
+                effective_capture_datetime=datetime(2025, 1, 1),
+                effective_capture_date=date(2025, 1, 1),
+                effective_capture_year=2025,
+                date_basis="EXIF",
+            )
+        )
+        self.db.commit()
+        raw_snapshot = (
+            metadata.gps_lat,
+            metadata.gps_lon,
+            metadata.country,
+            metadata.province,
+            metadata.city,
+            metadata.district,
+            metadata.place_name,
+        )
+
+        before = MemoryKeeperFastGalleryService(self.db).photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, unclassified=True),
+        )
+        self.assertEqual(
+            [item.common_file_id for item in before.items],
+            [common_file.id],
+        )
+
+        self.file_places.assign_place(
+            MemoryKeeperBatchAssignPlaceRequest(
+                file_ids=[common_file.file_id],
+                memorykeeper_place_id=target.id,
+                expected_place_revisions={common_file.file_id: 0},
+            )
+        )
+
+        after = MemoryKeeperFastGalleryService(self.db).photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, unclassified=True),
+        )
+        hierarchy = MemoryKeeperFastGalleryService(self.db).hierarchy()
+        leaves = [
+            leaf
+            for year in hierarchy.items
+            for country in year.countries
+            for region in country.regions
+            for leaf in region.places
+        ]
+        self.assertEqual(after.items, [])
+        self.assertFalse(
+            any(leaf.memorykeeper_place_id is None for leaf in leaves)
+        )
+        self.assertEqual(
+            next(
+                leaf.count
+                for leaf in leaves
+                if leaf.memorykeeper_place_id == target.id
+            ),
+            1,
+        )
+        self.db.refresh(metadata)
+        self.assertEqual(
+            (
+                metadata.gps_lat,
+                metadata.gps_lon,
+                metadata.country,
+                metadata.province,
+                metadata.city,
+                metadata.district,
+                metadata.place_name,
+            ),
+            raw_snapshot,
+        )
 
     def test_new_routes_are_bearer_protected(self) -> None:
         paths = app.openapi()["paths"]

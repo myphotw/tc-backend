@@ -195,6 +195,138 @@ class TestMemoryKeeperFastGallery:
         assert item.preview_url == f"/api/common/gallery/{matched.file_id}/preview"
         assert item.thumbnail_url == f"/api/common/gallery/{matched.file_id}/thumbnail"
 
+    def test_unclassified_uses_registered_relation_and_matches_hierarchy_count(
+        self,
+    ) -> None:
+        registered_place = self._place(display_name="등록 장소")
+        registered = self._photo(
+            datetime(2025, 1, 3, 10, 0),
+            place=registered_place,
+            country=None,
+            city=None,
+            place_name=None,
+        )
+        unclassified_with_raw_location = self._photo(
+            datetime(2025, 1, 2, 10, 0),
+            country="대한민국",
+            city="강릉",
+            place_name="원시 장소",
+        )
+        self._photo(datetime(2024, 1, 1, 10, 0))
+
+        response = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, unclassified=True),
+        )
+
+        assert [item.common_file_id for item in response.items] == [
+            unclassified_with_raw_location.id
+        ]
+        assert registered.id not in {item.common_file_id for item in response.items}
+        assert set(response.model_dump()) == {
+            "items",
+            "next_cursor",
+            "has_more",
+            "sync_cursor",
+        }
+
+        hierarchy = self.service.hierarchy()
+        year = next(item for item in hierarchy.items if item.year == 2025)
+        leaves = [
+            leaf
+            for country in year.countries
+            for region in country.regions
+            for leaf in region.places
+        ]
+        unclassified_leaf = next(
+            leaf for leaf in leaves if leaf.memorykeeper_place_id is None
+        )
+        assert unclassified_leaf.count == len(response.items) == 1
+        assert unclassified_leaf.display_name is None
+        assert decode_location_key(unclassified_leaf.location_key) == (
+            decode_location_key(
+                encode_raw_location_key(country=None, region=None, place=None)
+            )
+        )
+
+    def test_unclassified_preserves_keyset_pagination_and_raw_refinement(self) -> None:
+        expected = [
+            self._photo(
+                datetime(2025, 1, day, 10, 0),
+                country="대한민국",
+                city="강릉",
+                place_name=f"원시 장소 {day}",
+            )
+            for day in (5, 3, 1)
+        ]
+        registered_place = self._place()
+        self._photo(datetime(2025, 1, 4, 10, 0), place=registered_place)
+
+        first = self.service.photos(
+            cursor=None,
+            limit=2,
+            filters=FastGalleryFilters(year=2025, unclassified=True),
+        )
+        second = self.service.photos(
+            cursor=first.next_cursor,
+            limit=2,
+            filters=FastGalleryFilters(year=2025, unclassified=True),
+        )
+        refined = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(
+                year=2025,
+                country="대한민국",
+                region="강릉",
+                unclassified=True,
+            ),
+        )
+
+        delivered = [item.common_file_id for item in [*first.items, *second.items]]
+        assert delivered == [photo.id for photo in expected]
+        assert len(delivered) == len(set(delivered))
+        assert first.has_more is True
+        assert second.has_more is False
+        assert [item.common_file_id for item in refined.items] == delivered
+        hierarchy = self.service.hierarchy()
+        year = next(item for item in hierarchy.items if item.year == 2025)
+        unclassified_count = next(
+            leaf.count
+            for country in year.countries
+            for region in country.regions
+            for leaf in region.places
+            if leaf.memorykeeper_place_id is None
+        )
+        assert unclassified_count == len(delivered)
+
+    def test_unclassified_rejects_place_and_location_key_combinations(self) -> None:
+        place = self._place()
+        for filters, location_key in (
+            (FastGalleryFilters(unclassified=True, place_id=place.id), None),
+            (
+                FastGalleryFilters(unclassified=True),
+                encode_raw_location_key(
+                    country=None,
+                    region=None,
+                    place=None,
+                ),
+            ),
+        ):
+            with pytest.raises(HTTPException) as conflict:
+                self.service.photos(
+                    cursor=None,
+                    limit=50,
+                    filters=filters,
+                    location_key=location_key,
+                )
+            assert conflict.value.status_code == 422
+            assert (
+                conflict.value.detail["code"]
+                == "GALLERY_UNCLASSIFIED_FILTER_CONFLICT"
+            )
+
     def test_media_urls_follow_persisted_derivative_paths_without_filesystem_io(
         self,
     ) -> None:
@@ -364,7 +496,9 @@ class TestMemoryKeeperFastGallery:
         )
         assert hierarchy.items[1].countries[0].country is None
 
-    def test_hierarchy_assigns_distinct_registered_and_raw_location_keys(self) -> None:
+    def test_hierarchy_collapses_raw_rows_into_authoritative_unclassified_leaf(
+        self,
+    ) -> None:
         registered = self._place(
             display_name="오리온 호텔",
             country="일본",
@@ -396,20 +530,18 @@ class TestMemoryKeeperFastGallery:
             leaf for leaf in leaves if leaf.memorykeeper_place_id == registered.id
         )
         raw_leaf = next(
-            leaf
-            for leaf in leaves
-            if leaf.memorykeeper_place_id is None
-            and leaf.display_name == "40 Bise 海辺"
+            leaf for leaf in leaves if leaf.memorykeeper_place_id is None
         )
 
         assert registered_leaf.location_key == encode_registered_location_key(
             registered.id
         )
+        assert raw_leaf.display_name is None
         raw_identity = decode_location_key(raw_leaf.location_key)
         assert (raw_identity.country, raw_identity.region, raw_identity.place) == (
-            "일본",
-            "Motobu",
-            "40 Bise 海辺",
+            None,
+            None,
+            None,
         )
 
     def test_raw_location_key_selects_one_leaf_and_excludes_registered_rows(self) -> None:
@@ -508,7 +640,9 @@ class TestMemoryKeeperFastGallery:
             )
         assert raw_conflict.value.status_code == 400
 
-    def test_deleted_registered_place_becomes_one_raw_hierarchy_leaf(self) -> None:
+    def test_non_null_relation_remains_classified_if_place_join_is_unavailable(
+        self,
+    ) -> None:
         deleted_place = self._place(
             display_name="삭제 장소",
             country="등록 국가",
@@ -534,14 +668,10 @@ class TestMemoryKeeperFastGallery:
         ]
 
         assert len(leaves) == 1
-        assert leaves[0].memorykeeper_place_id is None
+        assert leaves[0].memorykeeper_place_id == deleted_place.id
         identity = decode_location_key(leaves[0].location_key)
-        assert identity.kind == "raw"
-        assert (identity.country, identity.region, identity.place) == (
-            "일본",
-            "Motobu",
-            "raw fallback",
-        )
+        assert identity.kind == "registered"
+        assert identity.place_id == deleted_place.id
         response = self.service.photos(
             cursor=None,
             limit=50,
@@ -707,7 +837,9 @@ class TestMemoryKeeperFastGallery:
         parameters = app.openapi()["paths"]["/api/memorykeeper/gallery/photos"][
             "get"
         ]["parameters"]
-        assert "location_key" in {parameter["name"] for parameter in parameters}
+        parameter_names = {parameter["name"] for parameter in parameters}
+        assert "location_key" in parameter_names
+        assert "unclassified" in parameter_names
 
     def test_postgresql_statement_uses_ordered_candidates_and_lateral_lookups(
         self,
@@ -743,6 +875,49 @@ class TestMemoryKeeperFastGallery:
         assert "gallery_file.extension" in sql
         assert "gallery_file.mime_type" in sql
         assert "ORDER BY gallery_candidates.effective_capture_datetime DESC" in sql
+
+    def test_postgresql_unclassified_predicate_is_before_candidate_limit(
+        self,
+    ) -> None:
+        class PostgreSQLBind:
+            dialect = postgresql.dialect()
+
+        class StatementOnlySession:
+            @staticmethod
+            def get_bind():
+                return PostgreSQLBind()
+
+        repository = MemoryKeeperFastGalleryRepository(StatementOnlySession())
+        baseline_statement = repository.build_photos_statement(
+            filters=FastGalleryFilters(year=2025),
+            limit=50,
+            cursor_datetime=None,
+            cursor_file_id=None,
+        )
+        statement = repository.build_photos_statement(
+            filters=FastGalleryFilters(year=2025, unclassified=True),
+            limit=50,
+            cursor_datetime=None,
+            cursor_file_id=None,
+        )
+        sql = str(
+            statement.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        baseline_sql = str(
+            baseline_statement.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+
+        relation_column = "common_file_metadata.memorykeeper_place_id"
+        assert relation_column in sql
+        assert ") IS NULL" in sql
+        assert sql.index(relation_column) < sql.index("LIMIT 51")
+        assert baseline_sql.index("LIMIT 51") < baseline_sql.index(relation_column)
 
     def test_postgresql_raw_location_predicates_are_inside_candidates_before_limit(
         self,

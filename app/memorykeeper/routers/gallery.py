@@ -28,6 +28,12 @@ def list_photos(
     country: str | None = Query(None, max_length=100),
     region: str | None = Query(None, max_length=100),
     place_id: str | None = Query(None, max_length=36),
+    unclassified: bool = Query(
+        False,
+        description=(
+            "Only photos without a registered MemoryKeeper Place relation"
+        ),
+    ),
     location_key: str | None = Query(
         None,
         max_length=2048,
@@ -49,6 +55,7 @@ def list_photos(
             country=country,
             region=region,
             place_id=place_id,
+            unclassified=unclassified,
             favorite=favorite,
             has_gps=has_gps,
             date_from=date_from,

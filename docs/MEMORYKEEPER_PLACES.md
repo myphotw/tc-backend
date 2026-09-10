@@ -24,6 +24,12 @@ Pending is a derived state: a MemoryKeeper-linked file is incomplete whenever
 Batch assignment validates every file and expected Place revision before any
 relation is changed, then commits all assignments in one transaction.
 
+Fast Gallery uses the same authoritative relation for its unclassified node.
+`GET /api/memorykeeper/gallery/photos?unclassified=true` returns only rows whose
+`memorykeeper_place_id` is null; raw country, region, place name, and GPS values
+do not classify a photo as a registered Place. The hierarchy collapses those
+rows into one unclassified leaf per capture year using the same predicate.
+
 ## Matching and display
 
 Automatic matching considers active places in this order: provider place ID,

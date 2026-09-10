@@ -54,6 +54,7 @@ class MemoryKeeperFastGalleryService:
     ) -> FastGalleryPhotosResponse:
         self._validate_dates(filters)
         location = decode_location_key(location_key) if location_key else None
+        self._validate_unclassified_parameters(filters, location)
         self._validate_location_parameters(filters.place_id, location)
         if location is not None:
             filters = replace(filters, location=location)
@@ -232,6 +233,26 @@ class MemoryKeeperFastGalleryService:
             return
         if canonical_place_id != location.place_id:
             MemoryKeeperFastGalleryService._raise_location_conflict()
+
+    @staticmethod
+    def _validate_unclassified_parameters(
+        filters: FastGalleryFilters,
+        location: FastGalleryLocationIdentity | None,
+    ) -> None:
+        if not filters.unclassified:
+            return
+        if filters.place_id is None and location is None:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "GALLERY_UNCLASSIFIED_FILTER_CONFLICT",
+                "message": (
+                    "unclassified cannot be combined with place_id or "
+                    "location_key"
+                ),
+            },
+        )
 
     @staticmethod
     def _raise_location_conflict() -> None:

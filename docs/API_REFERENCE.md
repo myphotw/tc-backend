@@ -196,8 +196,10 @@ preview when the thumbnail file has drifted from storage; it never falls back
 to the original or performs an on-demand resize.
 
 `GET /api/memorykeeper/gallery/hierarchy` adds a nullable `location_key` to
-each place leaf. It is an opaque, versioned identity generated for both
-registered Places and raw metadata groups; clients must not parse its contents.
+each place leaf. It is an opaque, versioned identity; clients must not parse
+its contents. Rows without a registered MemoryKeeper Place relation are
+collapsed into one unclassified leaf per year, regardless of raw country,
+region, place name, or GPS values.
 `GET /api/memorykeeper/gallery/photos` accepts the key as an optional
 `location_key` query parameter and applies the represented leaf filter before
 keyset pagination. When present, it is authoritative for the location leaf;
@@ -205,6 +207,15 @@ when omitted, the existing `country`, `region`, and
 `place_id` filters retain their prior behavior. A registered key may be sent
 with the same `place_id`; a conflicting `place_id`, or any `place_id` paired
 with a raw key, returns `400`.
+
+The photos endpoint also accepts `unclassified=true`. Its authoritative
+predicate is an absent `common_file_metadata.memorykeeper_place_id` relation;
+it does not mean that raw country, region, place name, or GPS is missing. The
+predicate is applied before keyset pagination, and the number of rows obtained
+by paging a year with this filter matches that year's unclassified hierarchy
+leaf count. `country` and `region` may refine raw metadata within this set.
+Combining `unclassified=true` with `place_id` or `location_key` is contradictory
+and returns `422 GALLERY_UNCLASSIFIED_FILTER_CONFLICT`.
 
 `GET /api/memorykeeper/travel/aggregates` remains a two-query set-based
 projection. Place items additionally expose nullable `latitude` and
