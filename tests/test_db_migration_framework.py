@@ -82,12 +82,12 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
             self.assertEqual(len(function.body), 1)
             self.assertIsInstance(function.body[0], ast.Pass)
 
-    def test_revision_graph_has_single_astro_master_data_head(self) -> None:
+    def test_revision_graph_has_single_multi_night_reference_head(self) -> None:
         checks = verify_revision_graph(build_alembic_config())
 
-        self.assertIn("single_head=20260909_0005", checks)
+        self.assertIn("single_head=20260910_0006", checks)
         self.assertIn(f"baseline={BASELINE_REVISION}", checks)
-        self.assertIn("revision_count=5", checks)
+        self.assertIn("revision_count=6", checks)
 
     def test_alembic_config_contains_no_database_url(self) -> None:
         content = (PROJECT_ROOT / "alembic.ini").read_text(encoding="utf-8")
@@ -287,6 +287,15 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
                     is_migration_managed(Base.metadata.tables[table_name])
                 )
                 self.assertNotIn(table_name, projection.tables)
+
+    def test_multi_night_reference_is_excluded_from_bootstrap_ddl(self) -> None:
+        from app.common.model_registry import Base
+
+        table_name = "astro_multi_night_framing_references"
+        projection = bootstrap_metadata_projection(Base.metadata)
+
+        self.assertTrue(is_migration_managed(Base.metadata.tables[table_name]))
+        self.assertNotIn(table_name, projection.tables)
 
     def test_ownership_verification_rejects_leaked_migration_column(self) -> None:
         metadata = MetaData()

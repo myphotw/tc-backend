@@ -44,7 +44,8 @@ base
   -> 20260901_0002 (capture-date nullable expand)
   -> 20260901_0003 (MemoryKeeper fast Gallery index)
   -> 20260906_0004 (Plate Solve WCS JSONB)
-  -> 20260909_0005 (AstroJournal master data, head)
+  -> 20260909_0005 (AstroJournal master data)
+  -> 20260910_0006 (multi-night framing reference, head)
 ```
 
 The baseline `upgrade()` and `downgrade()` are both no-ops. It does not create,

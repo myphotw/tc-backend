@@ -121,6 +121,13 @@ lists use full-replacement semantics under the aggregate revision. Exposure
 seconds are stored as `NUMERIC(12,6)` and returned as JSON numbers. Current or
 active device selection and `lastUsedAt` remain client-local state.
 
+`/api/astro/multi-night-framing-references` stores one canonical framing
+snapshot per active `(catalog_object_id, equipment_id)`. It preserves the
+timezone-aware reference capture time, site/equipment UUIDs, signed HA/PA
+degrees, and rising/setting branch. Recommendation calculations and current
+session choices remain client-owned. The resource follows the same client UUID,
+revision, tombstone, and common changes-feed contract as Astro master data.
+
 ## MemoryKeeper Semantic Reset
 
 `POST /api/memorykeeper/reset/preview` and `/execute` support the PC client's
@@ -284,7 +291,8 @@ PHOTO_PLATFORM_ROOT/
 주요 테이블: `common_files`, `common_file_metadata`, `common_file_tags`,
 `common_upload_jobs`, `common_vision_jobs`, `common_api_usage`,
 `common_geocode_cache`, `common_metadata_history`, `common_worker_status`,
-`astro_observation_sites`, `astro_equipment`
+`astro_observation_sites`, `astro_equipment`,
+`astro_multi_night_framing_references`
 
 ## MemoryKeeper 자동 태그
 

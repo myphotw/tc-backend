@@ -36,7 +36,10 @@ def test_astro_master_data_upgrade_schema_ownership_and_downgrade(
 ) -> None:
     create_legacy_schema(postgresql_engine)
     run_with_engine_patch(migration_engine_factory, run_stamp_baseline)
-    run_with_engine_patch(migration_engine_factory, lambda: run_upgrade("head"))
+    run_with_engine_patch(
+        migration_engine_factory,
+        lambda: run_upgrade(MASTER_DATA_REVISION),
+    )
 
     inspector = inspect(postgresql_engine)
     for table_name in MASTER_TABLES:

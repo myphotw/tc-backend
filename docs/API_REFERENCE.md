@@ -347,6 +347,122 @@ uses `ON DELETE SET NULL` as a hard-delete safety net. Active/current device
 selection and Flutter `lastUsedAt` are intentionally absent from server master
 data.
 
+## AstroJournal MultiNightFramingReference
+
+This canonical resource stores the original framing snapshot used by the
+client to calculate a matching composition on another night. It does not store
+photos, later sessions, recommendation results, weather, or WCS data.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/astro/multi-night-framing-references` | List active references; optional `catalog_object_id` and `equipment_id` filters. |
+| POST | `/api/astro/multi-night-framing-references` | Create a client-UUID reference. |
+| GET | `/api/astro/multi-night-framing-references/{reference_id}` | Read one active reference. |
+| PATCH | `/api/astro/multi-night-framing-references/{reference_id}` | Partial update with `expected_revision`. |
+| DELETE | `/api/astro/multi-night-framing-references/{reference_id}` | Tombstone using query `expected_revision`. |
+
+Create:
+
+```json
+{
+  "id": "d2943c12-2d74-45e5-82f3-3d71e59fc176",
+  "catalog_object_id": "M16",
+  "reference_captured_at": "2026-07-15T21:10:00+09:00",
+  "site_id": "0fe47df8-d932-470f-a93a-5ee1823fa942",
+  "equipment_id": "ce86ee83-a97c-424a-8d1b-f2473bacb172",
+  "reference_hour_angle_deg": -9.25,
+  "reference_parallactic_angle_deg": 132.4,
+  "reference_branch": "rising"
+}
+```
+
+Response adds `revision`, `created_at`, `updated_at`, and `deleted_at` to those
+fields. Both angle fields use signed degrees in the inclusive `-180..180`
+range. Branch is `rising` or `setting`. The client calculates HA, PA, and branch;
+the Backend validates and preserves the snapshot but runs no astronomy engine.
+`reference_captured_at` must include a timezone offset and may be at most 15
+minutes ahead of server time to tolerate ordinary device clock skew.
+`reference_captured_at` must include a timezone offset and may be at most 15
+minutes ahead of server time to tolerate ordinary device clock skew.
+
+```json
+{
+  "id": "d2943c12-2d74-45e5-82f3-3d71e59fc176",
+  "catalog_object_id": "M16",
+  "reference_captured_at": "2026-07-15T21:10:00+09:00",
+  "site_id": "0fe47df8-d932-470f-a93a-5ee1823fa942",
+  "equipment_id": "ce86ee83-a97c-424a-8d1b-f2473bacb172",
+  "reference_hour_angle_deg": -9.25,
+  "reference_parallactic_angle_deg": 132.4,
+  "reference_branch": "rising",
+  "revision": 1,
+  "created_at": "2026-09-10T01:00:00+00:00",
+  "updated_at": "2026-09-10T01:00:00+00:00",
+  "deleted_at": null
+}
+```
+
+Target lookup:
+
+```http
+GET /api/astro/multi-night-framing-references?catalog_object_id=M16
+GET /api/astro/multi-night-framing-references?catalog_object_id=M16&equipment_id=ce86ee83-a97c-424a-8d1b-f2473bacb172
+```
+
+PATCH is partial. `catalog_object_id` is intentionally immutable; correcting a
+wrong target requires tombstoning and recreating the reference.
+
+```json
+{
+  "expected_revision": 1,
+  "reference_captured_at": "2026-07-15T22:00:00+09:00",
+  "reference_hour_angle_deg": 3.5,
+  "reference_parallactic_angle_deg": -20.25,
+  "reference_branch": "setting"
+}
+```
+
+Delete:
+
+```http
+DELETE /api/astro/multi-night-framing-references/d2943c12-2d74-45e5-82f3-3d71e59fc176?expected_revision=2
+```
+
+Stale revision conflict:
+
+```json
+{
+  "detail": {
+    "code": "REVISION_CONFLICT",
+    "reference_id": "d2943c12-2d74-45e5-82f3-3d71e59fc176",
+    "expected_revision": 1,
+    "current_revision": 2
+  }
+}
+```
+
+A different client UUID for an existing active `(catalog_object_id,
+equipment_id)` returns `409 REFERENCE_ALREADY_EXISTS`. A soft-deleted identity
+may be registered again using a new UUID. Site must not be tombstoned and
+Equipment must be both non-tombstoned and `is_active=true` for create or when
+replacing those fields. Their later deactivation or soft deletion preserves the
+historical reference.
+
+Changes use the existing common feed:
+
+```json
+{
+  "cursor": 301,
+  "service_name": "AstroJournal",
+  "resource_type": "MultiNightFramingReference",
+  "resource_id": "d2943c12-2d74-45e5-82f3-3d71e59fc176",
+  "operation": "DELETE",
+  "revision": 3,
+  "tombstone": true,
+  "changed_at": "2026-09-10T01:00:00+00:00"
+}
+```
+
 ## AstroJournal Gallery Projection (B4-01)
 
 Common Gallery is the FileAsset read API. Astro Gallery is the canonical

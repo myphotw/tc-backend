@@ -24,7 +24,7 @@ from tests.integration.postgresql.support import (
 
 pytestmark = pytest.mark.postgresql_integration
 
-HEAD_REVISION = "20260909_0005"
+HEAD_REVISION = "20260910_0006"
 
 
 def test_capture_date_expand_upgrade_generated_values_and_downgrade(

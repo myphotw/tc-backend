@@ -27,6 +27,9 @@ from app.memorykeeper.models import tag_canonical_override as _tag_canonical_ove
 from app.astrojournal.models import equipment as _astro_equipment
 from app.astrojournal.models import observation_record as _observation_record
 from app.astrojournal.models import observation_site as _astro_observation_site
+from app.astrojournal.models import (
+    multi_night_framing_reference as _astro_multi_night_framing_reference,
+)
 from app.astrojournal.models import plate_solve_job as _plate_solve_job
 
 

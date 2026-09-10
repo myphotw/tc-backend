@@ -30,6 +30,8 @@ erDiagram
     astro_equipment ||--o{ astro_observation_sites : default_for
     astro_observation_sites ||--o{ astro_observation_site_horizon_points : owns
     astro_observation_sites ||--o{ astro_observation_site_blocked_azimuth_ranges : owns
+    astro_equipment ||--o{ astro_multi_night_framing_references : frames_with
+    astro_observation_sites ||--o{ astro_multi_night_framing_references : frames_at
     common_files ||--o| memorykeeper_file_states : has_memorykeeper_state
     common_files ||--o{ mk_file_tag_suppressions : suppresses_for_memorykeeper
     mk_tags ||--o{ common_file_tags : catalogs
@@ -232,6 +234,21 @@ erDiagram
         float end_azimuth
         string reason
         string source
+    }
+
+    astro_multi_night_framing_references {
+        uuid id PK
+        string catalog_object_id
+        datetime reference_captured_at
+        uuid site_id FK
+        uuid equipment_id FK
+        float reference_hour_angle_deg
+        float reference_parallactic_angle_deg
+        string reference_branch
+        int revision
+        datetime created_at
+        datetime updated_at
+        datetime deleted_at
     }
 
     common_change_events {

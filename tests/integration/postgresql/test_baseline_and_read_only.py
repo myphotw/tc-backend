@@ -103,7 +103,7 @@ def test_valid_legacy_preflight_stamp_upgrade_and_verify(
 
     run_with_engine_patch(migration_engine_factory, run_verify)
     verify_output = capsys.readouterr().out
-    assert "ok database_head=20260909_0005" in verify_output
+    assert "ok database_head=20260910_0006" in verify_output
 
 
 def _prepare_state(engine: Engine, state_name: str) -> None:
