@@ -282,6 +282,23 @@ class GalleryService:
                 favorite=(bool(state.favorite) if state is not None else bool(common_file.favorite)),
                 memo=state.memo if state is not None else None,
                 metadata_revision=int(state.revision or 0) if state is not None else 0,
+                user_capture_datetime=(
+                    state.user_capture_datetime if state is not None else None
+                ),
+                user_capture_precision=(
+                    state.user_capture_precision if state is not None else None
+                ),
+                effective_capture_datetime=(
+                    state.effective_capture_datetime if state is not None else None
+                ),
+                effective_capture_date=(
+                    state.effective_capture_date if state is not None else None
+                ),
+                effective_capture_year=(
+                    state.effective_capture_year if state is not None else None
+                ),
+                date_basis=state.date_basis if state is not None else None,
+                date_revision=(int(state.revision or 0) if state is not None else None),
                 incomplete=(
                     effective_service.casefold() == "memorykeeper"
                     and (metadata is None or metadata.memorykeeper_place_id is None)

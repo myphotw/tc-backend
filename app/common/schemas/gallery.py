@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -82,6 +82,13 @@ class GalleryDetailResponse(BaseModel):
     favorite: bool = False
     memo: str | None = None
     metadata_revision: int = 0
+    user_capture_datetime: datetime | None = None
+    user_capture_precision: str | None = None
+    effective_capture_datetime: datetime | None = None
+    effective_capture_date: date | None = None
+    effective_capture_year: int | None = None
+    date_basis: str | None = None
+    date_revision: int | None = None
     incomplete: bool = False
     service_name: str = "MemoryKeeper"
     memorykeeper_place_id: str | None = None

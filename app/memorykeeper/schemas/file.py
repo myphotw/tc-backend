@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
+import re
 from typing import Any
 from uuid import UUID
 
@@ -64,6 +65,54 @@ class MemoryKeeperBatchAssignPlaceRequest(BaseModel):
 class MemoryKeeperBatchAssignPlaceResponse(BaseModel):
     items: list[FilePlaceResponse]
     assigned_count: int
+
+
+class MemoryKeeperCaptureDateUpdateRequest(BaseModel):
+    file_ids: list[str] = Field(min_length=1, max_length=500)
+    user_capture_date: date | None
+    expected_date_revisions: dict[str, int]
+
+    @field_validator("file_ids")
+    @classmethod
+    def valid_unique_file_ids(cls, value: list[str]) -> list[str]:
+        normalized = [item.lower() for item in _normalize_file_ids(value)]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("file_ids must be unique")
+        if any(re.fullmatch(r"[0-9a-fA-F]{64}", item) is None for item in normalized):
+            raise ValueError("file_ids must contain SHA-256 identifiers")
+        return normalized
+
+    @model_validator(mode="after")
+    def revisions_cover_files(self) -> "MemoryKeeperCaptureDateUpdateRequest":
+        normalized_keys = [key.strip().lower() for key in self.expected_date_revisions]
+        if len(set(normalized_keys)) != len(normalized_keys):
+            raise ValueError("expected_date_revisions keys must be unique")
+        normalized_revisions = {
+            key.strip().lower(): value
+            for key, value in self.expected_date_revisions.items()
+        }
+        if set(normalized_revisions) != set(self.file_ids):
+            raise ValueError("expected_date_revisions must contain exactly every file_id")
+        if any(value < 0 for value in normalized_revisions.values()):
+            raise ValueError("expected date revisions must be non-negative")
+        self.expected_date_revisions = normalized_revisions
+        return self
+
+
+class MemoryKeeperCaptureDateUpdateItem(BaseModel):
+    file_id: str
+    user_capture_datetime: datetime | None
+    user_capture_precision: str | None
+    effective_capture_datetime: datetime | None
+    effective_capture_date: date | None
+    effective_capture_year: int | None
+    date_basis: str | None
+    date_revision: int
+
+
+class MemoryKeeperCaptureDateUpdateResponse(BaseModel):
+    items: list[MemoryKeeperCaptureDateUpdateItem]
+    updated_count: int
 
 
 class MemoryKeeperFileMetadataUpdate(BaseModel):

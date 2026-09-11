@@ -156,6 +156,9 @@ class MemoryKeeperFastGalleryRepository:
                 MemoryKeeperFileState.effective_capture_date,
                 MemoryKeeperFileState.effective_capture_year,
                 MemoryKeeperFileState.date_basis,
+                MemoryKeeperFileState.user_capture_datetime,
+                MemoryKeeperFileState.user_capture_precision,
+                MemoryKeeperFileState.revision.label("date_revision"),
             )
             .where(MemoryKeeperFileState.effective_capture_datetime.isnot(None))
             .where(active_file)
@@ -445,6 +448,9 @@ class MemoryKeeperFastGalleryRepository:
                 candidates.c.effective_capture_date,
                 candidates.c.effective_capture_year,
                 candidates.c.date_basis,
+                candidates.c.user_capture_datetime,
+                candidates.c.user_capture_precision,
+                candidates.c.date_revision,
                 metadata_lookup.c.memorykeeper_place_id,
                 place_display_name,
                 country,

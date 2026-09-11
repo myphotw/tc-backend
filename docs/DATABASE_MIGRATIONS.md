@@ -218,6 +218,13 @@ Before a future production migration, the operator must confirm:
 
 ## Phase 1 limitations
 
+The MemoryKeeper cleanup-group and capture-date override APIs add no migration.
+They reuse the migration-owned capture-date columns introduced by
+`20260901_0002`; the existing `memorykeeper_file_states.revision` is exposed as
+`date_revision`. Cleanup groups are set-based read projections and therefore
+do not own persistent schema objects. The revision graph remains single-head at
+`20260910_0006`.
+
 - The capture-date nullable expand migration deliberately contains no
   dual-write, backfill, read-path switch, constraint, or index work. Those
   rollout phases remain separate reviewed migrations and application changes.

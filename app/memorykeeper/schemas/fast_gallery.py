@@ -23,6 +23,9 @@ class FastGalleryPhotoItem(BaseModel):
     effective_capture_date: date
     effective_capture_year: int
     date_basis: str | None = None
+    user_capture_datetime: datetime | None = None
+    user_capture_precision: str | None = None
+    date_revision: int = 0
     memorykeeper_place_id: str | None = None
     place_display_name: str | None = None
     country: str | None = None

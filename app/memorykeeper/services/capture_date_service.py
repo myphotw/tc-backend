@@ -110,7 +110,21 @@ class MemoryKeeperCaptureDateService:
         state.effective_capture_datetime = projection.effective_capture_datetime
         state.date_basis = projection.date_basis
         # effective_capture_date/year are PostgreSQL stored generated columns.
-        # user_capture_precision and revision are intentionally untouched.
+        # Portable unit databases do not implement the production generated
+        # expressions, so keep their projection coherent without assigning to
+        # PostgreSQL generated columns.
+        if self.db.get_bind().dialect.name != "postgresql":
+            state.effective_capture_date = (
+                projection.effective_capture_datetime.date()
+                if projection.effective_capture_datetime is not None
+                else None
+            )
+            state.effective_capture_year = (
+                projection.effective_capture_datetime.year
+                if projection.effective_capture_datetime is not None
+                else None
+            )
+        # user_capture_precision and revision are intentionally caller-owned.
         self.db.flush()
         return state
 

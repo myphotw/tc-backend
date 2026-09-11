@@ -69,6 +69,12 @@ erDiagram
         bool favorite
         text memo
         int revision
+        datetime user_capture_datetime
+        string user_capture_precision
+        datetime effective_capture_datetime
+        date effective_capture_date GENERATED
+        int effective_capture_year GENERATED
+        string date_basis
         datetime created_at
         datetime updated_at
     }
@@ -371,6 +377,24 @@ erDiagram
 | file_id | FK → common_files.id, UNIQUE |
 | datetime_original / gps_* / location / camera / astro_* | nullable |
 | locked | NOT NULL default false |
+
+### memorykeeper_file_states
+| Column | Constraints / meaning |
+|--------|-----------------------|
+| file_id | PK, FK → common_files.id |
+| favorite / memo | MemoryKeeper-only user state |
+| revision | optimistic revision; exposed as `date_revision` by capture-date contracts |
+| user_capture_datetime | nullable naive wall-clock user override |
+| user_capture_precision | nullable; `DATE` marks a date-only override |
+| effective_capture_datetime | nullable precedence projection: USER → EXIF → IMPORTED → CREATED |
+| effective_capture_date / effective_capture_year | PostgreSQL GENERATED STORED projections |
+| date_basis | `USER`, `EXIF`, `IMPORTED`, `CREATED`, or null |
+
+Cleanup groups are query projections over this table, `common_files`,
+`common_file_services`, `common_file_metadata`, and `memorykeeper_places`.
+They do not add a group table. Capture-date override history is appended to
+`common_metadata_history`; sync notification is appended to
+`common_change_events` as `MemoryKeeperCaptureDate`.
 
 ### common_file_tags
 | Column | Constraints |

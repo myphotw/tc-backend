@@ -680,6 +680,11 @@ All endpoints below use the protected Bearer-authenticated API router.
 | PATCH | `/api/memorykeeper/files/{file_id}/metadata` | Update favorite, memo and raw geography with optimistic locking |
 | POST | `/api/memorykeeper/files/place-state/query` | Read mutation-ready Place state for up to 500 files |
 | POST | `/api/memorykeeper/files/assign-place` | Atomically assign one registered Place to up to 500 files |
+| POST | `/api/memorykeeper/files/capture-date` | Atomically set or clear a date-only user capture override for up to 500 files |
+| GET | `/api/memorykeeper/place-cleanup/groups` | List authoritative Place cleanup groups with an opaque cursor |
+| GET | `/api/memorykeeper/place-cleanup/groups/{group_id}/photos` | Page through one authoritative Place cleanup group |
+| GET | `/api/memorykeeper/capture-date-cleanup/groups` | List authoritative capture-date cleanup groups |
+| GET | `/api/memorykeeper/capture-date-cleanup/groups/{group_id}/photos` | Page through one capture-date cleanup group |
 | GET/POST | `/api/memorykeeper/tags` | List/create the user tag catalog |
 | PATCH/DELETE | `/api/memorykeeper/tags/{tag_id}` | Rename, favorite or delete a tag |
 | POST | `/api/memorykeeper/tags/{tag_id}/merge` | Merge a source tag into a target tag |
@@ -693,6 +698,147 @@ raw geography writes. Blank memo/address strings are normalized to `null`.
 `gps_lat` and `gps_lon` must be supplied together. Raw geography remains common
 photo metadata, while favorite/memo are stored in the MemoryKeeper-only file
 state so shared AstroJournal records are not changed.
+
+### Cleanup group queues
+
+The legacy photo-level `GET /api/memorykeeper/place-cleanup` endpoint remains
+unchanged. The additive group endpoints accept `limit` plus an opaque
+`cursor`; group-photo endpoints use an independent opaque photo cursor. A
+client must not parse either `group_id` or `cursor`. Cursors are scoped to the
+Place/CaptureDate queue and group/photo level; cross-queue or cross-level use
+is rejected with `400 INVALID_CLEANUP_CURSOR`.
+
+Place groups reuse the legacy `place_cleanup_condition()` predicate. Their
+stable identity is the canonical tuple of issue type, effective capture-date
+bucket, GPS coordinates, and raw location fields. Date groups are keyed by
+`cleanup_reason`, `date_basis`, and effective date. Both projections are
+set-based SQL aggregates; no persistent group table or client-side full-list
+grouping is required. Group order is last effective capture time descending,
+then the numeric file tie-breaker descending. Cursors are valid for an
+unchanged queue snapshot; after a mutation clients reload page one.
+
+Date cleanup currently emits:
+
+- `MISSING_CAPTURE_DATE` when the effective datetime or basis is absent.
+- `FALLBACK_DATE_REQUIRES_REVIEW` for `IMPORTED` or `CREATED` fallback dates.
+- `INVALID_CAPTURE_DATE` is reserved for a future persisted invalid-date state
+  and is not synthesized from current rows.
+
+Canonical `date_basis` values are `USER`, `EXIF`, `IMPORTED`, and `CREATED`.
+`USER` and `EXIF` are not cleanup candidates. Place and date queues are
+independent, so one file may occur in both.
+
+Place group list example (`GET .../place-cleanup/groups?limit=5`):
+
+```json
+{
+  "items": [{
+    "group_id": "<opaque>",
+    "issue_type": "PLACE_UNASSIGNED",
+    "title": "서울숲",
+    "media_count": 12,
+    "first_effective_capture_datetime": "2023-10-14T08:10:00",
+    "last_effective_capture_datetime": "2023-10-14T09:20:00",
+    "estimated_location": "서울숲",
+    "processing_status": "WAITING",
+    "representative_file_id": "<SHA-256 file_id>",
+    "representative_thumbnail_url": "/api/common/gallery/<SHA-256 file_id>/thumbnail"
+  }],
+  "next_cursor": "<opaque-or-null>",
+  "has_more": true,
+  "total_groups": 8,
+  "total_photos": 74
+}
+```
+
+`GET .../place-cleanup/groups/{group_id}/photos?limit=50` returns
+`items` containing `file_id`, `thumbnail_url`,
+`effective_capture_datetime`, GPS/raw location fields,
+`memorykeeper_place_id`, and `place_revision`, plus `next_cursor`,
+`has_more`, and authoritative `total_photos`.
+
+Capture-date group list uses the same page envelope. Each item contains
+`group_id`, `issue_type="CAPTURE_DATE_REVIEW"`, `title`, `media_count`,
+first/last effective datetime, `cleanup_reason`, `date_basis`, and the
+representative file/thumbnail. Its photos endpoint returns `file_id`, raw,
+user, and effective capture values, `date_cleanup_required`,
+`date_cleanup_reason`, `date_revision`, and the same photo-page envelope.
+
+### Capture-date override
+
+`POST /api/memorykeeper/files/capture-date` uses one atomic batch contract:
+
+```json
+{
+  "file_ids": ["<SHA-256 file_id>"],
+  "user_capture_date": "2023-10-14",
+  "expected_date_revisions": {
+    "<SHA-256 file_id>": 4
+  }
+}
+```
+
+`user_capture_date` is a calendar date. It is stored as a naive midnight value
+only together with `user_capture_precision="DATE"`; clients must not present
+that midnight as a known capture time. Send `user_capture_date: null` to clear
+the override and restore the existing EXIF/import/created fallback projection.
+Raw EXIF, GPS/location metadata, file timestamps, and the Place relation are
+never changed.
+
+The public `date_revision` is the existing MemoryKeeper file-state `revision`.
+This deliberately serializes capture-date edits with favorite/memo state edits
+instead of adding another persistence column. A stale item rejects the entire
+batch with no partial success:
+
+```json
+{
+  "detail": {
+    "code": "REVISION_CONFLICT",
+    "files": [
+      {
+        "file_id": "<SHA-256 file_id>",
+        "expected_revision": 4,
+        "current_revision": 5
+      }
+    ]
+  }
+}
+```
+
+Success returns canonical read-after-write state:
+
+```json
+{
+  "items": [
+    {
+      "file_id": "<SHA-256 file_id>",
+      "user_capture_datetime": "2023-10-14T00:00:00",
+      "user_capture_precision": "DATE",
+      "effective_capture_datetime": "2023-10-14T00:00:00",
+      "effective_capture_date": "2023-10-14",
+      "effective_capture_year": 2023,
+      "date_basis": "USER",
+      "date_revision": 5
+    }
+  ],
+  "updated_count": 1
+}
+```
+
+The mutation writes `memorykeeper_user_capture_datetime` history and a
+`MemoryKeeperCaptureDate` change event in the same transaction. Fast Gallery
+card rows add `user_capture_datetime`, `user_capture_precision`, and
+`date_revision`; all year/count/filter/order projections continue to use the
+effective capture columns. Clients reload both capture-date and Place group
+page one after a date mutation because the Place group key contains the date
+bucket. A Place-only mutation does not affect the date cleanup predicate.
+
+For single-photo editing, `GET /api/common/gallery/{file_id}?service_name=MemoryKeeper`
+additively returns `user_capture_datetime`, `user_capture_precision`,
+`effective_capture_datetime`, `effective_capture_date`,
+`effective_capture_year`, `date_basis`, and `date_revision`. For other
+services these optional fields are null. Existing Gallery detail fields keep
+their prior meanings.
 
 Pending is derived from `common_file_metadata.memorykeeper_place_id IS NULL`;
 GPS and reverse-geocoded address values do not make a file complete. Gallery

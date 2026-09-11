@@ -5,6 +5,8 @@ from app.common.database import get_db
 from app.memorykeeper.schemas.file import (
     MemoryKeeperBatchAssignPlaceRequest,
     MemoryKeeperBatchAssignPlaceResponse,
+    MemoryKeeperCaptureDateUpdateRequest,
+    MemoryKeeperCaptureDateUpdateResponse,
     MemoryKeeperFileDeleteResponse,
     MemoryKeeperFileMetadataResponse,
     MemoryKeeperFileMetadataUpdate,
@@ -15,9 +17,20 @@ from app.memorykeeper.services.file_place_batch_service import (
     MemoryKeeperFilePlaceBatchService,
 )
 from app.memorykeeper.services.file_service import MemoryKeeperFileService
+from app.memorykeeper.services.capture_date_override_service import (
+    MemoryKeeperCaptureDateOverrideService,
+)
 
 
 router = APIRouter(prefix="/api/memorykeeper/files", tags=["MemoryKeeper Files"])
+
+
+@router.post("/capture-date", response_model=MemoryKeeperCaptureDateUpdateResponse)
+def update_capture_date(
+    payload: MemoryKeeperCaptureDateUpdateRequest,
+    db: Session = Depends(get_db),
+) -> MemoryKeeperCaptureDateUpdateResponse:
+    return MemoryKeeperCaptureDateOverrideService(db).update(payload)
 
 
 @router.post("/place-state/query", response_model=MemoryKeeperPlaceStateQueryResponse)
