@@ -12,11 +12,16 @@ from app.memorykeeper.schemas.file import (
     MemoryKeeperFileMetadataUpdate,
     MemoryKeeperPlaceStateQueryRequest,
     MemoryKeeperPlaceStateQueryResponse,
+    MemoryKeeperPhotoCategoryUpdateRequest,
+    MemoryKeeperPhotoCategoryUpdateResponse,
 )
 from app.memorykeeper.services.file_place_batch_service import (
     MemoryKeeperFilePlaceBatchService,
 )
 from app.memorykeeper.services.file_service import MemoryKeeperFileService
+from app.memorykeeper.services.photo_category_service import (
+    MemoryKeeperPhotoCategoryService,
+)
 from app.memorykeeper.services.capture_date_override_service import (
     MemoryKeeperCaptureDateOverrideService,
 )
@@ -47,6 +52,14 @@ def assign_files_to_place(
     db: Session = Depends(get_db),
 ) -> MemoryKeeperBatchAssignPlaceResponse:
     return MemoryKeeperFilePlaceBatchService(db).assign_place(payload)
+
+
+@router.post("/category", response_model=MemoryKeeperPhotoCategoryUpdateResponse)
+def update_photo_category(
+    payload: MemoryKeeperPhotoCategoryUpdateRequest,
+    db: Session = Depends(get_db),
+) -> MemoryKeeperPhotoCategoryUpdateResponse:
+    return MemoryKeeperPhotoCategoryService(db).update(payload)
 
 
 @router.patch("/{file_id}/metadata", response_model=MemoryKeeperFileMetadataResponse)

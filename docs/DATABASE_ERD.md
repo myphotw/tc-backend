@@ -69,6 +69,8 @@ erDiagram
         bool favorite
         text memo
         int revision
+        string photo_category
+        int photo_category_revision
         datetime user_capture_datetime
         string user_capture_precision
         datetime effective_capture_datetime
@@ -384,6 +386,8 @@ erDiagram
 | file_id | PK, FK → common_files.id |
 | favorite / memo | MemoryKeeper-only user state |
 | revision | optimistic revision; exposed as `date_revision` by capture-date contracts |
+| photo_category | `NORMAL` or `DAILY`; NOT NULL default `NORMAL`, CHECK constrained |
+| photo_category_revision | independent category optimistic revision; NOT NULL default 0 |
 | user_capture_datetime | nullable naive wall-clock user override |
 | user_capture_precision | nullable; `DATE` marks a date-only override |
 | effective_capture_datetime | nullable precedence projection: USER → EXIF → IMPORTED → CREATED |
@@ -395,6 +399,12 @@ Cleanup groups are query projections over this table, `common_files`,
 They do not add a group table. Capture-date override history is appended to
 `common_metadata_history`; sync notification is appended to
 `common_change_events` as `MemoryKeeperCaptureDate`.
+
+Photo-category mutations append `memorykeeper_photo_category` history and a
+`MemoryKeeperPhotoCategory` change event. DAILY is orthogonal to capture-date
+state: it removes the effective registered Place projection and is excluded
+from Place cleanup/pending/hierarchy, but raw GPS/address metadata and
+capture-date cleanup eligibility remain unchanged.
 
 ### common_file_tags
 | Column | Constraints |

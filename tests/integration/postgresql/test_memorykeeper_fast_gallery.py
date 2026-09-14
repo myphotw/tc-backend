@@ -23,7 +23,7 @@ from tests.integration.postgresql.support import create_legacy_schema, run_with_
 
 pytestmark = pytest.mark.postgresql_integration
 
-FAST_GALLERY_REVISION = "20260901_0003"
+HEAD_REVISION = "20260914_0007"
 FAST_GALLERY_INDEX = "ix_memorykeeper_file_states_effective_capture_desc"
 
 
@@ -88,7 +88,7 @@ def test_fast_gallery_migration_creates_partial_keyset_index(
         ).scalar_one()
         connection.rollback()
     assert "effective_capture_datetime" in predicate
-    assert revision == FAST_GALLERY_REVISION
+    assert revision == HEAD_REVISION
 
 
 def test_fast_gallery_keyset_uses_generated_capture_projection(

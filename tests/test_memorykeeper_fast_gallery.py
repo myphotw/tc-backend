@@ -73,6 +73,8 @@ class TestMemoryKeeperFastGallery:
         city: str | None = "서울",
         place_name: str | None = "원시 장소",
         date_basis: str | None = "EXIF",
+        photo_category: str = "NORMAL",
+        category_revision: int = 0,
         preview: bool = True,
         thumbnail: bool = True,
     ) -> CommonFile:
@@ -113,6 +115,8 @@ class TestMemoryKeeperFastGallery:
                 effective_capture_date=(captured_at.date() if captured_at else None),
                 effective_capture_year=(captured_at.year if captured_at else None),
                 date_basis=date_basis if captured_at else None,
+                photo_category=photo_category,
+                photo_category_revision=category_revision,
             )
         )
         self.db.commit()
@@ -486,7 +490,7 @@ class TestMemoryKeeperFastGallery:
         ]
         assert ("대한민국", 2) in [(item.name, item.count) for item in summary.by_country]
         assert (None, 1) in [(item.name, item.count) for item in summary.by_country]
-        assert len(statements) == 5  # four summary aggregates + one hierarchy GROUP BY
+        assert len(statements) == 5  # four summary queries + one hierarchy GROUP BY
         assert len(hierarchy.items) == 2
         assert hierarchy.items[0].year == 2025
         assert hierarchy.items[0].count == 2
@@ -495,6 +499,95 @@ class TestMemoryKeeperFastGallery:
             encode_registered_location_key(place.id)
         )
         assert hierarchy.items[1].countries[0].country is None
+
+    def test_daily_is_separate_from_place_and_unclassified_projections(self) -> None:
+        place = self._place(display_name="등록 장소", country="대한민국", city="서울")
+        registered = self._photo(
+            datetime(2025, 6, 3, 8, 0),
+            place=place,
+            gps=True,
+        )
+        unclassified = self._photo(
+            datetime(2025, 6, 2, 8, 0),
+            gps=True,
+            country="대한민국",
+            city="부산",
+            place_name="원시 장소",
+        )
+        daily = self._photo(
+            datetime(2025, 6, 1, 8, 0),
+            gps=True,
+            place=place,
+            country="대한민국",
+            city="서울",
+            photo_category="DAILY",
+            category_revision=2,
+        )
+
+        daily_page = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(photo_category="DAILY"),
+        )
+        unclassified_page = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(unclassified=True),
+        )
+        place_page = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(place_id=place.id),
+        )
+        summary = self.service.summary()
+        hierarchy = self.service.hierarchy()
+
+        assert [item.common_file_id for item in daily_page.items] == [daily.id]
+        assert daily_page.items[0].photo_category == "DAILY"
+        assert daily_page.items[0].category_revision == 2
+        assert daily_page.items[0].memorykeeper_place_id is None
+        assert daily_page.items[0].place_display_name is None
+        assert daily_page.items[0].country is None
+        assert daily_page.items[0].region is None
+        assert daily_page.items[0].has_gps is True
+        assert [item.common_file_id for item in unclassified_page.items] == [
+            unclassified.id
+        ]
+        assert [item.common_file_id for item in place_page.items] == [registered.id]
+        assert summary.total_photos == 3
+        assert summary.daily_count == 1
+        assert ("대한민국", 2) in [
+            (item.name, item.count) for item in summary.by_country
+        ]
+        year = hierarchy.items[0]
+        assert year.year == 2025
+        assert year.count == 3
+        assert year.daily_count == 1
+        assert year.unclassified_count == 1
+        assert sum(country.count for country in year.countries) == 2
+
+    def test_daily_rejects_place_hierarchy_filter_combinations(self) -> None:
+        for filters, location_key in (
+            (FastGalleryFilters(photo_category="DAILY", unclassified=True), None),
+            (FastGalleryFilters(photo_category="DAILY", country="대한민국"), None),
+            (
+                FastGalleryFilters(photo_category="DAILY"),
+                encode_raw_location_key(
+                    country="대한민국",
+                    region="서울",
+                    place="원시 장소",
+                ),
+            ),
+        ):
+            with pytest.raises(HTTPException) as conflict:
+                self.service.photos(
+                    cursor=None,
+                    limit=50,
+                    filters=filters,
+                    location_key=location_key,
+                )
+            assert conflict.value.status_code == 422
+            assert conflict.value.detail["code"] == "GALLERY_CATEGORY_FILTER_CONFLICT"
 
     def test_hierarchy_collapses_raw_rows_into_authoritative_unclassified_leaf(
         self,
@@ -951,7 +1044,8 @@ class TestMemoryKeeperFastGallery:
             )
         )
 
-        assert "memorykeeper_places.id IS NULL" in sql
+        relation_predicate = "common_file_metadata.memorykeeper_place_id IS NULL"
+        assert relation_predicate in sql
         assert "common_file_metadata.place_name" in sql
-        assert sql.index("memorykeeper_places.id IS NULL") < sql.index("LIMIT 51")
+        assert sql.index(relation_predicate) < sql.index("LIMIT 51")
         assert sql.index("common_file_metadata.place_name") < sql.index("LIMIT 51")

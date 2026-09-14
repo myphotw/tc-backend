@@ -36,7 +36,15 @@ def memorykeeper_place_display_expression():
 
 
 def pending_condition():
-    return CommonFileMetadata.memorykeeper_place_id.is_(None)
+    return and_(
+        normal_photo_condition(),
+        CommonFileMetadata.memorykeeper_place_id.is_(None),
+    )
+
+
+def normal_photo_condition():
+    """Missing legacy state remains NORMAL for backward-compatible reads."""
+    return func.coalesce(MemoryKeeperFileState.photo_category, "NORMAL") == "NORMAL"
 
 
 def _missing_hierarchy_value(expression):
@@ -46,6 +54,7 @@ def _missing_hierarchy_value(expression):
 def hierarchy_unclassified_condition():
     """Match canonical Gallery rows without a usable hierarchy label."""
     return and_(
+        normal_photo_condition(),
         MemoryKeeperFileState.effective_capture_datetime.isnot(None),
         or_(
             _missing_hierarchy_value(memorykeeper_country_expression()),

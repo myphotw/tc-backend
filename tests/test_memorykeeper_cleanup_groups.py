@@ -47,6 +47,7 @@ class TestMemoryKeeperCleanupGroups:
         raw_capture: datetime | None = None,
         gps: tuple[float, float] | None = None,
         raw_place: str | None = None,
+        photo_category: str = "NORMAL",
         service_name: str = "MemoryKeeper",
         deleted: bool = False,
     ) -> tuple[CommonFile, CommonFileMetadata, MemoryKeeperFileState]:
@@ -78,6 +79,7 @@ class TestMemoryKeeperCleanupGroups:
             effective_capture_date=captured_at.date() if captured_at else None,
             effective_capture_year=captured_at.year if captured_at else None,
             date_basis=basis,
+            photo_category=photo_category,
         )
         self.db.add_all((metadata, state))
         self.db.commit()
@@ -173,6 +175,43 @@ class TestMemoryKeeperCleanupGroups:
         assert fallback.file_id in place_ids
         assert missing.file_id in place_ids
         assert authoritative.file_id in place_ids
+
+    def test_daily_is_excluded_from_place_cleanup_but_not_date_cleanup(self) -> None:
+        daily, _, _ = self._photo(
+            datetime(2026, 2, 3, 4),
+            basis="IMPORTED",
+            raw_place="원시 장소",
+            photo_category="DAILY",
+        )
+        normal, _, _ = self._photo(
+            datetime(2026, 2, 4, 4),
+            basis="IMPORTED",
+            raw_place="다른 장소",
+        )
+
+        place_ids = {
+            photo.file_id
+            for group in self.groups.place_groups(limit=10, cursor=None).items
+            for photo in self.groups.place_group_photos(
+                group_id=group.group_id,
+                limit=50,
+                cursor=None,
+            ).items
+        }
+        date_ids = {
+            photo.file_id
+            for group in self.groups.date_groups(limit=10, cursor=None).items
+            for photo in self.groups.date_group_photos(
+                group_id=group.group_id,
+                limit=50,
+                cursor=None,
+            ).items
+        }
+
+        assert daily.file_id not in place_ids
+        assert normal.file_id in place_ids
+        assert daily.file_id in date_ids
+        assert normal.file_id in date_ids
 
     def test_capture_date_override_and_removal_preserve_raw_metadata_and_place(self) -> None:
         raw = datetime(2010, 5, 6, 7, 8)
@@ -302,7 +341,7 @@ class TestMemoryKeeperCleanupGroups:
     def test_group_routes_and_legacy_endpoint_are_registered(self) -> None:
         from app.main import app
 
-        paths = {route.path for route in app.routes if hasattr(route, "path")}
+        paths = set(app.openapi()["paths"])
         assert "/api/memorykeeper/place-cleanup" in paths
         assert "/api/memorykeeper/place-cleanup/groups" in paths
         assert "/api/memorykeeper/place-cleanup/groups/{group_id}/photos" in paths

@@ -33,6 +33,10 @@ from app.memorykeeper.services.place_matcher import PlaceMatchSource
 from app.memorykeeper.services.capture_date_service import (
     MemoryKeeperCaptureDateService,
 )
+from app.memorykeeper.services.photo_classification_policy import (
+    is_daily_photo,
+    is_user_place_decision,
+)
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 
 logger = logging.getLogger(__name__)
@@ -114,7 +118,7 @@ class MemoryKeeperFileService:
             self.history.create_histories(items=history_items, commit=False)
 
         if gps_changed:
-            self._reconcile_place_after_gps_patch(common_file, metadata)
+            self._reconcile_place_after_gps_patch(common_file, metadata, state)
 
         state.revision = int(state.revision or 0) + 1
         state.updated_at = datetime.now(timezone.utc)
@@ -299,10 +303,13 @@ class MemoryKeeperFileService:
         self,
         common_file: CommonFile,
         metadata: CommonFileMetadata,
+        state: MemoryKeeperFileState,
     ) -> None:
         place_service = MemoryKeeperPlaceService(self.db)
+        if is_daily_photo(state):
+            return
         if metadata.gps_lat is None or metadata.gps_lon is None:
-            if metadata.place_match_source == PlaceMatchSource.USER:
+            if is_user_place_decision(metadata):
                 current = (
                     place_service.repository.get(metadata.memorykeeper_place_id)
                     if metadata.memorykeeper_place_id
@@ -333,7 +340,7 @@ class MemoryKeeperFileService:
             if metadata.memorykeeper_place_id
             else None
         )
-        if metadata.place_match_source == PlaceMatchSource.USER:
+        if is_user_place_decision(metadata):
             if current is not None:
                 place_service._set_relation(
                     metadata=metadata,

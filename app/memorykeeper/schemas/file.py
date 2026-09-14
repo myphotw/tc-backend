@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 import re
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -35,6 +35,8 @@ class MemoryKeeperPlaceStateItem(BaseModel):
     gps_lon: float | None
     memorykeeper_place_id: UUID | None
     place_match_revision: int
+    photo_category: Literal["NORMAL", "DAILY"] = "NORMAL"
+    category_revision: int = 0
 
 
 class MemoryKeeperPlaceStateQueryResponse(BaseModel):
@@ -65,6 +67,41 @@ class MemoryKeeperBatchAssignPlaceRequest(BaseModel):
 class MemoryKeeperBatchAssignPlaceResponse(BaseModel):
     items: list[FilePlaceResponse]
     assigned_count: int
+
+
+class MemoryKeeperPhotoCategoryUpdateRequest(BaseModel):
+    file_ids: list[str] = Field(min_length=1, max_length=500)
+    photo_category: Literal["NORMAL", "DAILY"]
+    expected_category_revisions: dict[str, int]
+
+    @field_validator("file_ids")
+    @classmethod
+    def unique_file_ids(cls, value: list[str]) -> list[str]:
+        return _normalize_file_ids(value)
+
+    @model_validator(mode="after")
+    def revisions_cover_files(self) -> "MemoryKeeperPhotoCategoryUpdateRequest":
+        if set(self.expected_category_revisions) != set(self.file_ids):
+            raise ValueError(
+                "expected_category_revisions must contain exactly every file_id"
+            )
+        if any(value < 0 for value in self.expected_category_revisions.values()):
+            raise ValueError("expected category revisions must be non-negative")
+        return self
+
+
+class MemoryKeeperPhotoCategoryUpdateItem(BaseModel):
+    file_id: str
+    photo_category: Literal["NORMAL", "DAILY"]
+    category_revision: int
+    memorykeeper_place_id: UUID | None
+    place_match_source: str | None
+    place_revision: int
+
+
+class MemoryKeeperPhotoCategoryUpdateResponse(BaseModel):
+    items: list[MemoryKeeperPhotoCategoryUpdateItem]
+    updated_count: int
 
 
 class MemoryKeeperCaptureDateUpdateRequest(BaseModel):

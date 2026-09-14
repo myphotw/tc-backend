@@ -209,13 +209,23 @@ with the same `place_id`; a conflicting `place_id`, or any `place_id` paired
 with a raw key, returns `400`.
 
 The photos endpoint also accepts `unclassified=true`. Its authoritative
-predicate is an absent `common_file_metadata.memorykeeper_place_id` relation;
+predicate is `photo_category=NORMAL` plus an absent
+`common_file_metadata.memorykeeper_place_id` relation;
 it does not mean that raw country, region, place name, or GPS is missing. The
 predicate is applied before keyset pagination, and the number of rows obtained
 by paging a year with this filter matches that year's unclassified hierarchy
 leaf count. `country` and `region` may refine raw metadata within this set.
 Combining `unclassified=true` with `place_id` or `location_key` is contradictory
 and returns `422 GALLERY_UNCLASSIFIED_FILTER_CONFLICT`.
+
+MemoryKeeper's final photo categories are `NORMAL` and `DAILY`. Fast Gallery
+cards add `photo_category` and the independent optimistic
+`category_revision`; `photo_category=...` filters the card stream before
+keyset pagination. DAILY photos remain in the year and total counts, but are
+reported through `daily_count` and do not appear in country/region/Place or
+unclassified hierarchy counts. Their card Place projection is null while raw
+GPS presence remains available. Combining `photo_category=DAILY` with a Place
+hierarchy filter returns `422 GALLERY_CATEGORY_FILTER_CONFLICT`.
 
 `GET /api/memorykeeper/travel/aggregates` remains a two-query set-based
 projection. Place items additionally expose nullable `latitude` and
@@ -681,6 +691,7 @@ All endpoints below use the protected Bearer-authenticated API router.
 | POST | `/api/memorykeeper/files/place-state/query` | Read mutation-ready Place state for up to 500 files |
 | POST | `/api/memorykeeper/files/assign-place` | Atomically assign one registered Place to up to 500 files |
 | POST | `/api/memorykeeper/files/capture-date` | Atomically set or clear a date-only user capture override for up to 500 files |
+| POST | `/api/memorykeeper/files/category` | Atomically classify up to 500 files as `NORMAL` or `DAILY` |
 | GET | `/api/memorykeeper/place-cleanup/groups` | List authoritative Place cleanup groups with an opaque cursor |
 | GET | `/api/memorykeeper/place-cleanup/groups/{group_id}/photos` | Page through one authoritative Place cleanup group |
 | GET | `/api/memorykeeper/capture-date-cleanup/groups` | List authoritative capture-date cleanup groups |
@@ -708,7 +719,8 @@ client must not parse either `group_id` or `cursor`. Cursors are scoped to the
 Place/CaptureDate queue and group/photo level; cross-queue or cross-level use
 is rejected with `400 INVALID_CLEANUP_CURSOR`.
 
-Place groups reuse the legacy `place_cleanup_condition()` predicate. Their
+Place groups reuse the legacy `place_cleanup_condition()` predicate and
+exclude DAILY photos. Their
 stable identity is the canonical tuple of issue type, effective capture-date
 bucket, GPS coordinates, and raw location fields. Date groups are keyed by
 `cleanup_reason`, `date_basis`, and effective date. Both projections are
@@ -726,7 +738,8 @@ Date cleanup currently emits:
 
 Canonical `date_basis` values are `USER`, `EXIF`, `IMPORTED`, and `CREATED`.
 `USER` and `EXIF` are not cleanup candidates. Place and date queues are
-independent, so one file may occur in both.
+independent, so a NORMAL file may occur in both. DAILY affects only Place
+classification and remains eligible for capture-date cleanup.
 
 Place group list example (`GET .../place-cleanup/groups?limit=5`):
 
@@ -837,11 +850,13 @@ For single-photo editing, `GET /api/common/gallery/{file_id}?service_name=Memory
 additively returns `user_capture_datetime`, `user_capture_precision`,
 `effective_capture_datetime`, `effective_capture_date`,
 `effective_capture_year`, `date_basis`, and `date_revision`. For other
-services these optional fields are null. Existing Gallery detail fields keep
-their prior meanings.
+services these optional fields are null. `photo_category` and
+`category_revision` follow the same MemoryKeeper-only rule. Existing Gallery
+detail fields keep their prior meanings.
 
-Pending is derived from `common_file_metadata.memorykeeper_place_id IS NULL`;
-GPS and reverse-geocoded address values do not make a file complete. Gallery
+Pending is derived from `photo_category=NORMAL` and
+`common_file_metadata.memorykeeper_place_id IS NULL`; GPS and reverse-geocoded
+address values do not make a file complete. Gallery
 list/search accept `incomplete=true|false` for the same projection.
 Pending suggestions are optional (`include_suggestions=true`) and reuse only
 the existing registered Place matcher; the default list performs no provider
@@ -867,7 +882,9 @@ lookup and no automatic Place creation.
       "gps_lat": 37.5,
       "gps_lon": 127.0,
       "memorykeeper_place_id": null,
-      "place_match_revision": 0
+      "place_match_revision": 0,
+      "photo_category": "NORMAL",
+      "category_revision": 0
     }
   ]
 }
@@ -932,6 +949,71 @@ This generic endpoint differs from
 Pending-only and continues to return `FILES_NOT_PENDING` for registered files.
 Its request, response, conflict, and atomicity contracts are unchanged.
 
+### Final photo category
+
+`POST /api/memorykeeper/files/category` accepts one to 500 unique SHA-256 file
+IDs, one final category, and the current independent category revision for
+every file:
+
+```json
+{
+  "file_ids": ["<SHA-256 file_id>"],
+  "photo_category": "DAILY",
+  "expected_category_revisions": {
+    "<SHA-256 file_id>": 0
+  }
+}
+```
+
+The revision-map keys must exactly match `file_ids`. The service locks files,
+category state, and Place metadata in deterministic numeric-ID order and
+validates every revision before writing. Any stale item rejects the entire
+batch:
+
+```json
+{
+  "detail": {
+    "code": "REVISION_CONFLICT",
+    "files": [{
+      "file_id": "<SHA-256 file_id>",
+      "expected_revision": 0,
+      "current_revision": 1
+    }]
+  }
+}
+```
+
+Success returns the canonical category and Place projection:
+
+```json
+{
+  "items": [{
+    "file_id": "<SHA-256 file_id>",
+    "photo_category": "DAILY",
+    "category_revision": 1,
+    "memorykeeper_place_id": null,
+    "place_match_source": "USER",
+    "place_revision": 1
+  }],
+  "updated_count": 1
+}
+```
+
+Setting DAILY clears only the registered MemoryKeeper Place relation and marks
+the no-Place decision as USER-owned. It never alters raw GPS, reverse-geocoded
+address, EXIF, or original file metadata. Setting DAILY back to NORMAL leaves
+the relation empty, makes it eligible for Place cleanup and future automatic
+matching, and does not immediately run matching. Explicitly assigning a Place
+to a DAILY photo atomically returns it to NORMAL. Repeating the same category
+is idempotent and does not increment `category_revision`.
+
+Automatic upload matching, GPS reconciliation, explicit reclassification, and
+the Place backfill utility preserve both USER Place decisions and DAILY
+photos. Category changes append `memorykeeper_photo_category` history and a
+`MemoryKeeperPhotoCategory` common change event. After mutation, clients reload
+Fast Gallery photos/summary/hierarchy plus the Place cleanup/pending queues;
+capture-date cleanup needs reloading only when its own date state changes.
+
 ---
 
 ## Gallery
@@ -959,7 +1041,7 @@ Legacy Gallery list/search/map/timeline/statistics endpoints default to
 
 ### List Item Schema
 
-`file_id`, `filename`, `preview_url`, `thumbnail_url`, `capture_datetime`, `country`, `city`, `place_name`, `camera_model`, `favorite`, `memo`, `metadata_revision`, `incomplete`, `has_gps`, `has_ai_tag`, `service_name`
+`file_id`, `filename`, `preview_url`, `thumbnail_url`, `capture_datetime`, `country`, `city`, `place_name`, `camera_model`, `favorite`, `memo`, `metadata_revision`, `photo_category`, `category_revision`, `incomplete`, `has_gps`, `has_ai_tag`, `service_name`
 
 ### Search Query
 
@@ -967,7 +1049,7 @@ Legacy Gallery list/search/map/timeline/statistics endpoints default to
 
 ### Detail Schema
 
-Metadata 전체, `ai_tags`, `user_tags`, 통합 `tags`, `storage_path`, preview/thumbnail/original URL, `history_count`
+Metadata 전체, `ai_tags`, `user_tags`, 통합 `tags`, `storage_path`, preview/thumbnail/original URL, `history_count`, `photo_category`, `category_revision`
 
 - `service_name=MemoryKeeper`: `ai_tags`는 curation V1의 한국어 자동 태그이며
   `tags`는 USER 우선 사용자-facing 통합 목록이다. 자동 태그에는

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,8 @@ class FastGalleryPhotoItem(BaseModel):
     user_capture_datetime: datetime | None = None
     user_capture_precision: str | None = None
     date_revision: int = 0
+    photo_category: Literal["NORMAL", "DAILY"] = "NORMAL"
+    category_revision: int = 0
     memorykeeper_place_id: str | None = None
     place_display_name: str | None = None
     country: str | None = None
@@ -52,6 +55,7 @@ class FastGallerySummaryResponse(BaseModel):
     recent_count: int
     pending_count: int
     place_cleanup_count: int
+    daily_count: int = 0
     gps_count: int
     effective_date_min: date | None = None
     effective_date_max: date | None = None
@@ -81,6 +85,8 @@ class FastGalleryCountryNode(BaseModel):
 class FastGalleryYearNode(BaseModel):
     year: int
     count: int
+    daily_count: int = 0
+    unclassified_count: int = 0
     countries: list[FastGalleryCountryNode] = Field(default_factory=list)
 
 

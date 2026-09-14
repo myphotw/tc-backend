@@ -18,6 +18,10 @@ from app.memorykeeper.schemas.file import (
 from app.memorykeeper.schemas.place import FilePlaceResponse
 from app.memorykeeper.services.place_matcher import PlaceMatchSource
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
+from app.memorykeeper.services.photo_classification_policy import (
+    effective_photo_category,
+)
 
 
 class MemoryKeeperFilePlaceBatchService:
@@ -34,17 +38,21 @@ class MemoryKeeperFilePlaceBatchService:
         payload: MemoryKeeperPlaceStateQueryRequest,
     ) -> MemoryKeeperPlaceStateQueryResponse:
         rows = (
-            self.db.query(CommonFile, CommonFileMetadata)
+            self.db.query(CommonFile, CommonFileMetadata, MemoryKeeperFileState)
             .join(CommonFileService, CommonFileService.file_id == CommonFile.id)
             .outerjoin(CommonFileMetadata, CommonFileMetadata.file_id == CommonFile.id)
+            .outerjoin(
+                MemoryKeeperFileState,
+                MemoryKeeperFileState.file_id == CommonFile.id,
+            )
             .filter(CommonFile.file_id.in_(payload.file_ids))
             .filter(CommonFile.deleted.is_(False))
             .filter(CommonFileService.service_name == self.SERVICE_NAME)
             .all()
         )
         by_public_id = {
-            common_file.file_id: (common_file, metadata)
-            for common_file, metadata in rows
+            common_file.file_id: (common_file, metadata, state)
+            for common_file, metadata, state in rows
         }
         self._raise_missing(payload.file_ids, by_public_id)
 
@@ -71,6 +79,14 @@ class MemoryKeeperFilePlaceBatchService:
                     place_match_revision=(
                         int(by_public_id[public_id][1].place_match_revision or 0)
                         if by_public_id[public_id][1] is not None
+                        else 0
+                    ),
+                    photo_category=effective_photo_category(
+                        by_public_id[public_id][2]
+                    ),
+                    category_revision=(
+                        int(by_public_id[public_id][2].photo_category_revision or 0)
+                        if by_public_id[public_id][2] is not None
                         else 0
                     ),
                 )
@@ -134,6 +150,10 @@ class MemoryKeeperFilePlaceBatchService:
                     self.db.add(metadata)
                     self.db.flush()
                     metadata_by_file[common_file.id] = metadata
+                self.places._set_photo_category_normal(
+                    common_file=common_file,
+                    metadata=metadata,
+                )
                 self.places._set_relation(
                     metadata=metadata,
                     common_file=common_file,

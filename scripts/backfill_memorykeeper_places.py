@@ -15,6 +15,10 @@ from app.memorykeeper.services.place_candidate_service import (
     MemoryKeeperPlaceCandidateService,
 )
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
+from app.memorykeeper.services.photo_classification_policy import (
+    blocks_automatic_place_change,
+)
 
 
 @dataclass
@@ -51,6 +55,10 @@ def backfill_memorykeeper_places(
     for common_file, metadata in rows:
         stats.scanned += 1
         try:
+            state = db.get(MemoryKeeperFileState, common_file.id)
+            if blocks_automatic_place_change(metadata, state):
+                stats.unchanged += 1
+                continue
             match = matcher.match(
                 gps_lat=float(metadata.gps_lat),
                 gps_lon=float(metadata.gps_lon),

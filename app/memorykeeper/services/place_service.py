@@ -11,8 +11,10 @@ from sqlalchemy.exc import IntegrityError
 from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
 from app.common.repositories.change_event_repository import ChangeEventRepository, ChangeOperation
+from app.common.repositories.file_service_repository import FileServiceRepository
 from app.common.repositories.history_repository import HistoryRepository
 from app.common.repositories.metadata_priority import MetadataPriority
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.place import MemoryKeeperPlace
 from app.memorykeeper.repositories.place_repository import MemoryKeeperPlaceRepository
 from app.memorykeeper.schemas.place import (
@@ -29,6 +31,11 @@ from app.memorykeeper.schemas.place import (
     ReclassifyResponse,
 )
 from app.memorykeeper.services.place_matcher import MemoryKeeperPlaceMatcher, PlaceMatchSource
+from app.memorykeeper.services.capture_date_service import MemoryKeeperCaptureDateService
+from app.memorykeeper.services.photo_classification_policy import (
+    MemoryKeeperPhotoCategory,
+    blocks_automatic_place_change,
+)
 from app.memorykeeper.services.place_candidate_service import (
     AutoPlaceCandidate,
     MemoryKeeperPlaceCandidateService,
@@ -39,6 +46,7 @@ class MemoryKeeperPlaceService:
     SERVICE_NAME = "MemoryKeeper"
     PLACE_RESOURCE = "MemoryKeeperPlace"
     FILE_PLACE_RESOURCE = "MemoryKeeperFilePlace"
+    PHOTO_CATEGORY_RESOURCE = "MemoryKeeperPhotoCategory"
 
     def __init__(
         self,
@@ -95,11 +103,16 @@ class MemoryKeeperPlaceService:
         )
         for metadata in metadata_rows:
             common_file = self.db.get(CommonFile, metadata.file_id)
+            source = (
+                PlaceMatchSource.USER
+                if metadata.place_match_source == PlaceMatchSource.USER
+                else PlaceMatchSource.PLACE_DELETED
+            )
             self._set_relation(
                 metadata=metadata,
                 common_file=common_file,
                 place=None,
-                source=PlaceMatchSource.PLACE_DELETED,
+                source=source,
                 distance_m=None,
                 touch_usage=False,
             )
@@ -137,6 +150,7 @@ class MemoryKeeperPlaceService:
             self.db.query(CommonFile)
             .filter(CommonFile.file_id == public_file_id)
             .filter(CommonFile.deleted.is_(False))
+            .with_for_update()
             .first()
         )
         if common_file is None or not self.repository.has_memorykeeper_link(common_file.id):
@@ -144,6 +158,7 @@ class MemoryKeeperPlaceService:
         metadata = (
             self.db.query(CommonFileMetadata)
             .filter(CommonFileMetadata.file_id == common_file.id)
+            .with_for_update()
             .first()
         )
         if metadata is None:
@@ -158,6 +173,11 @@ class MemoryKeeperPlaceService:
             )
         place = self.get(place_id) if place_id is not None else None
         distance = self._distance(metadata, place)
+        if place is not None:
+            self._set_photo_category_normal(
+                common_file=common_file,
+                metadata=metadata,
+            )
         self._set_relation(metadata=metadata, common_file=common_file, place=place, source=PlaceMatchSource.USER, distance_m=distance)
         self.db.commit()
         self.db.refresh(metadata)
@@ -174,8 +194,9 @@ class MemoryKeeperPlaceService:
         metadata = self.db.query(CommonFileMetadata).filter(CommonFileMetadata.file_id == file_id).first()
         if metadata is None or metadata.gps_lat is None or metadata.gps_lon is None:
             return False
-        # A user's explicit assignment or explicit unlink is authoritative.
-        if metadata.place_match_source == PlaceMatchSource.USER:
+        state = self.db.get(MemoryKeeperFileState, file_id)
+        # A user's explicit Place decision or DAILY classification is authoritative.
+        if blocks_automatic_place_change(metadata, state):
             return False
         match = self.matcher.match(
             gps_lat=float(metadata.gps_lat),
@@ -246,8 +267,11 @@ class MemoryKeeperPlaceService:
         if not place.active:
             raise HTTPException(status_code=422, detail="Inactive place cannot be reclassified")
         scanned = assigned = reassigned = outside = unchanged = 0
-        for common_file, metadata in self.repository.memorykeeper_files_with_gps():
+        for common_file, metadata, state in self.repository.memorykeeper_files_with_gps_and_state():
             scanned += 1
+            if blocks_automatic_place_change(metadata, state):
+                unchanged += 1
+                continue
             distance = self.matcher.distance_m(float(metadata.gps_lat), float(metadata.gps_lon), place.latitude, place.longitude)
             current = metadata.memorykeeper_place_id
             if current == place.id and distance > place.radius_m:
@@ -344,6 +368,58 @@ class MemoryKeeperPlaceService:
             self.repository.touch_usage(place)
         if common_file is not None:
             self.changes.append(service_name=self.SERVICE_NAME, resource_type=self.FILE_PLACE_RESOURCE, resource_id=common_file.file_id, operation=ChangeOperation.UPDATE, revision=new_revision)
+
+    def _set_photo_category_normal(
+        self,
+        *,
+        common_file: CommonFile,
+        metadata: CommonFileMetadata | None,
+    ) -> None:
+        """Manual Place assignment makes the photo exclusively NORMAL."""
+        state = self.db.get(MemoryKeeperFileState, common_file.id)
+        if state is None:
+            service_link = FileServiceRepository(self.db).get(
+                file_id=common_file.id,
+                service_name=self.SERVICE_NAME,
+            )
+            if service_link is None:
+                raise ValueError("MemoryKeeper service link is required")
+            state = MemoryKeeperCaptureDateService(self.db).synchronize(
+                common_file=common_file,
+                service_link=service_link,
+                metadata=metadata,
+                state_missing_known=True,
+                initial_favorite=bool(common_file.favorite),
+            )
+        if state.photo_category == MemoryKeeperPhotoCategory.NORMAL:
+            return
+
+        old_category = state.photo_category or MemoryKeeperPhotoCategory.NORMAL
+        state.photo_category = MemoryKeeperPhotoCategory.NORMAL
+        state.photo_category_revision = int(state.photo_category_revision or 0) + 1
+        state.updated_at = datetime.now(timezone.utc)
+        self.history.create_histories(
+            items=[
+                {
+                    "file_id": common_file.id,
+                    "field_name": "memorykeeper_photo_category",
+                    "old_value": old_category,
+                    "new_value": MemoryKeeperPhotoCategory.NORMAL,
+                    "source": "USER",
+                    "priority": MetadataPriority.USER,
+                    "modified_by": self.__class__.__name__,
+                    "approved": True,
+                }
+            ],
+            commit=False,
+        )
+        self.changes.append(
+            service_name=self.SERVICE_NAME,
+            resource_type=self.PHOTO_CATEGORY_RESOURCE,
+            resource_id=common_file.file_id,
+            operation=ChangeOperation.UPDATE,
+            revision=state.photo_category_revision,
+        )
 
     def _distance(self, metadata: CommonFileMetadata, place: MemoryKeeperPlace | None) -> float | None:
         if place is None or metadata.gps_lat is None or metadata.gps_lon is None:

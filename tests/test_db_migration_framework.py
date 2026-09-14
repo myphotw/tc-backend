@@ -82,12 +82,12 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
             self.assertEqual(len(function.body), 1)
             self.assertIsInstance(function.body[0], ast.Pass)
 
-    def test_revision_graph_has_single_multi_night_reference_head(self) -> None:
+    def test_revision_graph_has_single_photo_category_head(self) -> None:
         checks = verify_revision_graph(build_alembic_config())
 
-        self.assertIn("single_head=20260910_0006", checks)
+        self.assertIn("single_head=20260914_0007", checks)
         self.assertIn(f"baseline={BASELINE_REVISION}", checks)
-        self.assertIn("revision_count=6", checks)
+        self.assertIn("revision_count=7", checks)
 
     def test_alembic_config_contains_no_database_url(self) -> None:
         content = (PROJECT_ROOT / "alembic.ini").read_text(encoding="utf-8")
@@ -296,6 +296,19 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
 
         self.assertTrue(is_migration_managed(Base.metadata.tables[table_name]))
         self.assertNotIn(table_name, projection.tables)
+
+    def test_photo_category_columns_are_excluded_from_bootstrap_ddl(self) -> None:
+        from app.common.model_registry import Base
+
+        table_name = "memorykeeper_file_states"
+        source = Base.metadata.tables[table_name]
+        projection = bootstrap_metadata_projection(Base.metadata)
+        projected = projection.tables[table_name]
+
+        self.assertTrue(is_migration_managed(source.c.photo_category))
+        self.assertTrue(is_migration_managed(source.c.photo_category_revision))
+        self.assertTrue(projected.c.photo_category.system)
+        self.assertTrue(projected.c.photo_category_revision.system)
 
     def test_ownership_verification_rejects_leaked_migration_column(self) -> None:
         metadata = MetaData()

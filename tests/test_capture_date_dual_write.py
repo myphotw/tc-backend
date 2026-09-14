@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import unittest
@@ -208,8 +208,8 @@ class CaptureDateDualWriteTests(unittest.TestCase):
         self.assertEqual(state.date_basis, CaptureDateBasis.USER)
         self.assertEqual(state.user_capture_precision, "DATE")
         self.assertEqual(state.revision, 7)
-        self.assertIsNone(state.effective_capture_date)
-        self.assertIsNone(state.effective_capture_year)
+        self.assertEqual(state.effective_capture_date, date(2019, 5, 6))
+        self.assertEqual(state.effective_capture_year, 2019)
 
     def test_original_capture_fact_is_null_only_and_rejects_aware(self) -> None:
         item = self._file("2" * 64)

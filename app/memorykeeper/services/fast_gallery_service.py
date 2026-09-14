@@ -54,6 +54,7 @@ class MemoryKeeperFastGalleryService:
     ) -> FastGalleryPhotosResponse:
         self._validate_dates(filters)
         location = decode_location_key(location_key) if location_key else None
+        self._validate_category_parameters(filters, location)
         self._validate_unclassified_parameters(filters, location)
         self._validate_location_parameters(filters.place_id, location)
         if location is not None:
@@ -94,6 +95,7 @@ class MemoryKeeperFastGalleryService:
             recent_count=payload["recent_count"],  # type: ignore[arg-type]
             pending_count=payload["pending_count"],  # type: ignore[arg-type]
             place_cleanup_count=payload["place_cleanup_count"],  # type: ignore[arg-type]
+            daily_count=payload["daily_count"],  # type: ignore[arg-type]
             gps_count=payload["gps_count"],  # type: ignore[arg-type]
             effective_date_min=payload["effective_date_min"],  # type: ignore[arg-type]
             effective_date_max=payload["effective_date_max"],  # type: ignore[arg-type]
@@ -111,6 +113,21 @@ class MemoryKeeperFastGalleryService:
         years: dict[int, dict[object, object]] = {}
         for row in self.repository.hierarchy():
             year = int(row.year)
+            category = str(row.photo_category or "NORMAL")
+            year_bucket = years.setdefault(
+                year,
+                {
+                    "count": 0,
+                    "daily_count": 0,
+                    "unclassified_count": 0,
+                    "countries": {},
+                },
+            )
+            count = int(row.count)
+            year_bucket["count"] += count  # type: ignore[index]
+            if category == "DAILY":
+                year_bucket["daily_count"] += count  # type: ignore[index]
+                continue
             country = row.country
             region = row.region
             place_id = row.memorykeeper_place_id
@@ -123,12 +140,8 @@ class MemoryKeeperFastGalleryService:
                     place=row.place_display_name,
                 )
             )
-            count = int(row.count)
-            year_bucket = years.setdefault(
-                year,
-                {"count": 0, "countries": {}},
-            )
-            year_bucket["count"] += count  # type: ignore[index]
+            if place_id is None:
+                year_bucket["unclassified_count"] += count  # type: ignore[index]
             countries = year_bucket["countries"]  # type: ignore[index]
             country_bucket = countries.setdefault(  # type: ignore[union-attr]
                 country,
@@ -155,6 +168,8 @@ class MemoryKeeperFastGalleryService:
                 FastGalleryYearNode(
                     year=year,
                     count=year_bucket["count"],  # type: ignore[index]
+                    daily_count=year_bucket["daily_count"],  # type: ignore[index]
+                    unclassified_count=year_bucket["unclassified_count"],  # type: ignore[index]
                     countries=[
                         FastGalleryCountryNode(
                             country=country,
@@ -202,6 +217,8 @@ class MemoryKeeperFastGalleryService:
             user_capture_datetime=row.user_capture_datetime,  # type: ignore[attr-defined]
             user_capture_precision=row.user_capture_precision,  # type: ignore[attr-defined]
             date_revision=int(row.date_revision or 0),  # type: ignore[attr-defined]
+            photo_category=str(row.photo_category or "NORMAL"),  # type: ignore[attr-defined]
+            category_revision=int(row.category_revision or 0),  # type: ignore[attr-defined]
             memorykeeper_place_id=row.memorykeeper_place_id,  # type: ignore[attr-defined]
             place_display_name=row.place_display_name,  # type: ignore[attr-defined]
             country=row.country,  # type: ignore[attr-defined]
@@ -236,6 +253,31 @@ class MemoryKeeperFastGalleryService:
             return
         if canonical_place_id != location.place_id:
             MemoryKeeperFastGalleryService._raise_location_conflict()
+
+    @staticmethod
+    def _validate_category_parameters(
+        filters: FastGalleryFilters,
+        location: FastGalleryLocationIdentity | None,
+    ) -> None:
+        if filters.photo_category != "DAILY":
+            return
+        if not any(
+            (
+                filters.unclassified,
+                filters.country is not None,
+                filters.region is not None,
+                filters.place_id is not None,
+                location is not None,
+            )
+        ):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "GALLERY_CATEGORY_FILTER_CONFLICT",
+                "message": "DAILY cannot be combined with Place hierarchy filters",
+            },
+        )
 
     @staticmethod
     def _validate_unclassified_parameters(

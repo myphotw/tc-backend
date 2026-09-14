@@ -125,6 +125,8 @@ or `scripts/db_migrate.py`. Test revisions must never be copied into
   mismatch, malformed, multi-row, and unknown-version states;
 - real Inspector handling of varchar length, integer/bigint, boolean,
   timestamptz/timestamp, nullability, PK, UNIQUE, and schema-qualified FK;
+- MemoryKeeper photo-category additive defaults, CHECK constraint, existing-row
+  compatibility, ownership markers, and downgrade removal;
 - wrapper masking during a real SQLAlchemy/psycopg2 authentication failure when
   password authentication is enabled.
 

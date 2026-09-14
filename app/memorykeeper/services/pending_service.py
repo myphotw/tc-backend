@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from fastapi import HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_service import CommonFileService
 from app.common.services.gallery_media import build_gallery_media_url
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.schemas.pending import (
     PendingAssignPlaceRequest,
     PendingAssignPlaceResponse,
@@ -14,6 +16,7 @@ from app.memorykeeper.schemas.pending import (
     PendingListResponse,
 )
 from app.memorykeeper.services.place_matcher import PlaceMatchSource
+from app.memorykeeper.services.photo_classification_policy import is_daily_photo
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 
 
@@ -35,9 +38,17 @@ class MemoryKeeperPendingService:
             self.db.query(CommonFile, CommonFileMetadata)
             .join(CommonFileService, CommonFileService.file_id == CommonFile.id)
             .outerjoin(CommonFileMetadata, CommonFileMetadata.file_id == CommonFile.id)
+            .outerjoin(
+                MemoryKeeperFileState,
+                MemoryKeeperFileState.file_id == CommonFile.id,
+            )
             .filter(CommonFile.deleted.is_(False))
             .filter(CommonFileService.service_name == self.SERVICE_NAME)
             .filter(CommonFileMetadata.memorykeeper_place_id.is_(None))
+            .filter(
+                func.coalesce(MemoryKeeperFileState.photo_category, "NORMAL")
+                == "NORMAL"
+            )
         )
         total = query.count()
         rows = (
@@ -124,6 +135,14 @@ class MemoryKeeperPendingService:
                 .all()
             )
         }
+        states_by_file = {
+            item.file_id: item
+            for item in (
+                self.db.query(MemoryKeeperFileState)
+                .filter(MemoryKeeperFileState.file_id.in_([row.id for row in rows]))
+                .all()
+            )
+        }
         conflicts: list[dict[str, object]] = []
         not_pending: list[str] = []
         for public_id in payload.file_ids:
@@ -139,7 +158,10 @@ class MemoryKeeperPendingService:
                         "current_revision": current_revision,
                     }
                 )
-            if metadata is not None and metadata.memorykeeper_place_id is not None:
+            if (
+                metadata is not None
+                and metadata.memorykeeper_place_id is not None
+            ) or is_daily_photo(states_by_file.get(common_file.id)):
                 not_pending.append(public_id)
         if conflicts:
             raise HTTPException(
@@ -161,6 +183,10 @@ class MemoryKeeperPendingService:
                 self.db.add(metadata)
                 self.db.flush()
                 metadata_by_file[common_file.id] = metadata
+            self.places._set_photo_category_normal(
+                common_file=common_file,
+                metadata=metadata,
+            )
             self.places._set_relation(
                 metadata=metadata,
                 common_file=common_file,

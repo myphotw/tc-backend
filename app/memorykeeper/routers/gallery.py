@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -43,6 +44,7 @@ def list_photos(
     has_gps: bool | None = Query(None),
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
+    photo_category: Literal["NORMAL", "DAILY"] | None = Query(None),
     db: Session = Depends(get_db),
 ) -> FastGalleryPhotosResponse:
     """Return one lightweight card page without an OFFSET or total COUNT."""
@@ -60,6 +62,7 @@ def list_photos(
             has_gps=has_gps,
             date_from=date_from,
             date_to=date_to,
+            photo_category=photo_category,
         ),
     )
 

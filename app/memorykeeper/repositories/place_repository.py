@@ -9,6 +9,7 @@ from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_service import CommonFileService
 from app.memorykeeper.models.place import MemoryKeeperPlace
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
 
 
 class MemoryKeeperPlaceRepository:
@@ -122,6 +123,25 @@ class MemoryKeeperPlaceRepository:
             self.db.query(CommonFile, CommonFileMetadata)
             .join(CommonFileMetadata, CommonFileMetadata.file_id == CommonFile.id)
             .join(CommonFileService, CommonFileService.file_id == CommonFile.id)
+            .filter(CommonFile.deleted.is_(False))
+            .filter(CommonFileService.service_name == self.SERVICE_NAME)
+            .filter(CommonFileMetadata.gps_lat.isnot(None))
+            .filter(CommonFileMetadata.gps_lon.isnot(None))
+            .order_by(CommonFile.id.asc())
+            .all()
+        )
+
+    def memorykeeper_files_with_gps_and_state(
+        self,
+    ) -> list[tuple[CommonFile, CommonFileMetadata, MemoryKeeperFileState | None]]:
+        return (
+            self.db.query(CommonFile, CommonFileMetadata, MemoryKeeperFileState)
+            .join(CommonFileMetadata, CommonFileMetadata.file_id == CommonFile.id)
+            .join(CommonFileService, CommonFileService.file_id == CommonFile.id)
+            .outerjoin(
+                MemoryKeeperFileState,
+                MemoryKeeperFileState.file_id == CommonFile.id,
+            )
             .filter(CommonFile.deleted.is_(False))
             .filter(CommonFileService.service_name == self.SERVICE_NAME)
             .filter(CommonFileMetadata.gps_lat.isnot(None))

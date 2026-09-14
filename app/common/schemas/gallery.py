@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -36,6 +36,8 @@ class GalleryListItem(BaseModel):
     favorite: bool = False
     memo: str | None = None
     metadata_revision: int = 0
+    photo_category: Literal["NORMAL", "DAILY"] | None = None
+    category_revision: int | None = None
     incomplete: bool = False
     has_gps: bool = False
     has_ai_tag: bool = False
@@ -89,6 +91,8 @@ class GalleryDetailResponse(BaseModel):
     effective_capture_year: int | None = None
     date_basis: str | None = None
     date_revision: int | None = None
+    photo_category: Literal["NORMAL", "DAILY"] | None = None
+    category_revision: int | None = None
     incomplete: bool = False
     service_name: str = "MemoryKeeper"
     memorykeeper_place_id: str | None = None

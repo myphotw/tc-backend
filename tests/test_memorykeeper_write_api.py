@@ -6,6 +6,7 @@ import unittest
 from datetime import date, datetime, timezone
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
@@ -36,6 +37,7 @@ from app.memorykeeper.schemas.file import (
     MemoryKeeperBatchAssignPlaceRequest,
     MemoryKeeperFileMetadataUpdate,
     MemoryKeeperPlaceStateQueryRequest,
+    MemoryKeeperPhotoCategoryUpdateRequest,
 )
 from app.memorykeeper.schemas.pending import PendingAssignPlaceRequest
 from app.memorykeeper.schemas.place import FilePlaceUpdate, PlaceCreate
@@ -46,6 +48,9 @@ from app.memorykeeper.services.file_place_batch_service import (
 )
 from app.memorykeeper.services.fast_gallery_service import MemoryKeeperFastGalleryService
 from app.memorykeeper.services.pending_service import MemoryKeeperPendingService
+from app.memorykeeper.services.photo_category_service import (
+    MemoryKeeperPhotoCategoryService,
+)
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from app.memorykeeper.services.tag_service import MemoryKeeperTagService
 
@@ -88,6 +93,7 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
         self.places = MemoryKeeperPlaceService(self.db)
         self.pending = MemoryKeeperPendingService(self.db)
         self.file_places = MemoryKeeperFilePlaceBatchService(self.db)
+        self.categories = MemoryKeeperPhotoCategoryService(self.db)
         self.counter = 0
 
     def tearDown(self) -> None:
@@ -334,6 +340,8 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
         astro = GalleryService(self.db).get_detail(common_file.file_id, service_name="AstroJournal")
         self.assertFalse(astro.favorite)
         self.assertIsNone(astro.memo)
+        self.assertIsNone(astro.photo_category)
+        self.assertIsNone(astro.category_revision)
         self.assertEqual(astro.metadata["gps_lat"], 37.01)
 
     def test_location_patch_reclassifies_only_automatic_place(self) -> None:
@@ -486,6 +494,279 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
             2,
         )
 
+    def test_daily_category_and_manual_place_transitions_preserve_raw_metadata(self) -> None:
+        place = self.place()
+        common_file, metadata, _ = self.file(place=place)
+        state = MemoryKeeperFileState(file_id=common_file.id)
+        self.db.add(state)
+        self.db.commit()
+        raw_before = (
+            metadata.gps_lat,
+            metadata.gps_lon,
+            metadata.country,
+            metadata.province,
+            metadata.city,
+            metadata.district,
+            metadata.place_name,
+        )
+
+        daily = self.categories.update(
+            MemoryKeeperPhotoCategoryUpdateRequest(
+                file_ids=[common_file.file_id],
+                photo_category="DAILY",
+                expected_category_revisions={common_file.file_id: 0},
+            )
+        )
+        self.db.refresh(metadata)
+        self.db.refresh(state)
+        self.assertEqual(daily.updated_count, 1)
+        self.assertEqual(state.photo_category, "DAILY")
+        self.assertEqual(state.photo_category_revision, 1)
+        self.assertIsNone(metadata.memorykeeper_place_id)
+        self.assertEqual(metadata.place_match_source, "USER")
+        self.assertEqual(self.pending.list(page=1, page_size=20).total, 0)
+        self.assertEqual(
+            GalleryService(self.db).list_gallery(incomplete=True).total,
+            0,
+        )
+        daily_detail = GalleryService(self.db).get_detail(
+            common_file.file_id,
+            service_name="MemoryKeeper",
+        )
+        self.assertEqual(daily_detail.photo_category, "DAILY")
+        self.assertEqual(daily_detail.category_revision, 1)
+        self.assertFalse(daily_detail.incomplete)
+        self.assertIsNone(daily_detail.memorykeeper_place_id)
+        self.assertEqual(
+            self.db.query(CommonMetadataHistory)
+            .filter_by(
+                file_id=common_file.id,
+                field_name="memorykeeper_photo_category",
+            )
+            .count(),
+            1,
+        )
+        category_event = (
+            self.db.query(CommonChangeEvent)
+            .filter_by(resource_type="MemoryKeeperPhotoCategory")
+            .one()
+        )
+        self.assertEqual(category_event.resource_id, common_file.file_id)
+        self.assertEqual(category_event.revision, 1)
+        self.assertEqual(
+            raw_before,
+            (
+                metadata.gps_lat,
+                metadata.gps_lon,
+                metadata.country,
+                metadata.province,
+                metadata.city,
+                metadata.district,
+                metadata.place_name,
+            ),
+        )
+
+        no_op = self.categories.update(
+            MemoryKeeperPhotoCategoryUpdateRequest(
+                file_ids=[common_file.file_id],
+                photo_category="DAILY",
+                expected_category_revisions={common_file.file_id: 1},
+            )
+        )
+        self.assertEqual(no_op.updated_count, 0)
+        self.assertEqual(no_op.items[0].category_revision, 1)
+
+        with self.assertRaises(HTTPException) as not_pending:
+            self.pending.assign_place(
+                PendingAssignPlaceRequest(
+                    file_ids=[common_file.file_id],
+                    memorykeeper_place_id=place.id,
+                    expected_revisions={
+                        common_file.file_id: int(metadata.place_match_revision)
+                    },
+                )
+            )
+        self.assertEqual(not_pending.exception.status_code, 409)
+        self.assertEqual(not_pending.exception.detail["code"], "FILES_NOT_PENDING")
+        self.db.rollback()
+        self.db.refresh(metadata)
+
+        assigned = self.file_places.assign_place(
+            MemoryKeeperBatchAssignPlaceRequest(
+                file_ids=[common_file.file_id],
+                memorykeeper_place_id=place.id,
+                expected_place_revisions={
+                    common_file.file_id: int(metadata.place_match_revision)
+                },
+            )
+        )
+        self.db.refresh(metadata)
+        self.db.refresh(state)
+        self.assertEqual(assigned.assigned_count, 1)
+        self.assertEqual(state.photo_category, "NORMAL")
+        self.assertEqual(state.photo_category_revision, 2)
+        self.assertEqual(metadata.memorykeeper_place_id, place.id)
+        self.assertEqual(metadata.place_match_source, "USER")
+
+    def test_daily_to_normal_becomes_unassigned_and_auto_eligible(self) -> None:
+        common_file, metadata, _ = self.file()
+        state = MemoryKeeperFileState(
+            file_id=common_file.id,
+            photo_category="DAILY",
+            photo_category_revision=3,
+        )
+        metadata.place_match_source = "USER"
+        self.db.add(state)
+        self.db.commit()
+
+        result = self.categories.update(
+            MemoryKeeperPhotoCategoryUpdateRequest(
+                file_ids=[common_file.file_id],
+                photo_category="NORMAL",
+                expected_category_revisions={common_file.file_id: 3},
+            )
+        )
+        self.db.refresh(metadata)
+        self.db.refresh(state)
+        self.assertEqual(result.updated_count, 1)
+        self.assertEqual(state.photo_category, "NORMAL")
+        self.assertIsNone(metadata.memorykeeper_place_id)
+        self.assertEqual(metadata.place_match_source, "AUTO_PLACE_MATCH")
+
+    def test_daily_clears_automatic_place_without_changing_raw_location(self) -> None:
+        place = self.place()
+        common_file, metadata, _ = self.file(place=place)
+        metadata.place_match_source = "RADIUS"
+        state = MemoryKeeperFileState(file_id=common_file.id)
+        self.db.add(state)
+        self.db.commit()
+        raw_before = (
+            metadata.gps_lat,
+            metadata.gps_lon,
+            metadata.country,
+            metadata.province,
+            metadata.city,
+            metadata.district,
+            metadata.place_name,
+        )
+
+        self.categories.update(
+            MemoryKeeperPhotoCategoryUpdateRequest(
+                file_ids=[common_file.file_id],
+                photo_category="DAILY",
+                expected_category_revisions={common_file.file_id: 0},
+            )
+        )
+
+        self.db.refresh(metadata)
+        self.assertIsNone(metadata.memorykeeper_place_id)
+        self.assertEqual(metadata.place_match_source, "USER")
+        self.assertEqual(
+            raw_before,
+            (
+                metadata.gps_lat,
+                metadata.gps_lon,
+                metadata.country,
+                metadata.province,
+                metadata.city,
+                metadata.district,
+                metadata.place_name,
+            ),
+        )
+
+    def test_daily_gps_patch_updates_raw_coordinates_without_auto_matching(self) -> None:
+        place = self.place(lat=36.0, lon=128.0)
+        common_file, metadata, _ = self.file()
+        state = MemoryKeeperFileState(
+            file_id=common_file.id,
+            photo_category="DAILY",
+        )
+        metadata.place_match_source = "USER"
+        self.db.add(state)
+        self.db.commit()
+
+        response = self.files.patch_metadata(
+            common_file.file_id,
+            MemoryKeeperFileMetadataUpdate(
+                expected_revision=0,
+                gps_lat=place.latitude,
+                gps_lon=place.longitude,
+            ),
+        )
+
+        self.assertEqual(response.gps_lat, place.latitude)
+        self.assertEqual(response.gps_lon, place.longitude)
+        self.assertIsNone(response.memorykeeper_place_id)
+        self.assertEqual(response.place_match_source, "USER")
+
+    def test_category_batch_rejects_invalid_scope_and_request_shapes(self) -> None:
+        valid, _valid_metadata, _ = self.file()
+        astro, _astro_metadata, _ = self.file(services=("AstroJournal",))
+        valid_state = MemoryKeeperFileState(file_id=valid.id)
+        astro_state = MemoryKeeperFileState(file_id=astro.id)
+        self.db.add_all((valid_state, astro_state))
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as missing:
+            self.categories.update(
+                MemoryKeeperPhotoCategoryUpdateRequest(
+                    file_ids=[valid.file_id, astro.file_id],
+                    photo_category="DAILY",
+                    expected_category_revisions={
+                        valid.file_id: 0,
+                        astro.file_id: 0,
+                    },
+                )
+            )
+        self.assertEqual(missing.exception.status_code, 404)
+        self.db.refresh(valid_state)
+        self.assertEqual(valid_state.photo_category, "NORMAL")
+
+        with self.assertRaises(ValidationError):
+            MemoryKeeperPhotoCategoryUpdateRequest(
+                file_ids=[valid.file_id, valid.file_id],
+                photo_category="DAILY",
+                expected_category_revisions={valid.file_id: 0},
+            )
+        with self.assertRaises(ValidationError):
+            MemoryKeeperPhotoCategoryUpdateRequest(
+                file_ids=[f"{index:064x}" for index in range(501)],
+                photo_category="DAILY",
+                expected_category_revisions={
+                    f"{index:064x}": 0 for index in range(501)
+                },
+            )
+
+    def test_category_revision_conflict_rolls_back_every_file(self) -> None:
+        first, first_metadata, _ = self.file()
+        second, second_metadata, _ = self.file()
+        first_state = MemoryKeeperFileState(file_id=first.id)
+        second_state = MemoryKeeperFileState(
+            file_id=second.id,
+            photo_category_revision=2,
+        )
+        self.db.add_all((first_state, second_state))
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as conflict:
+            self.categories.update(
+                MemoryKeeperPhotoCategoryUpdateRequest(
+                    file_ids=[first.file_id, second.file_id],
+                    photo_category="DAILY",
+                    expected_category_revisions={first.file_id: 0, second.file_id: 0},
+                )
+            )
+        self.assertEqual(conflict.exception.status_code, 409)
+        self.assertEqual(conflict.exception.detail["code"], "REVISION_CONFLICT")
+        self.db.refresh(first_state)
+        self.db.refresh(second_state)
+        self.db.refresh(first_metadata)
+        self.db.refresh(second_metadata)
+        self.assertEqual(first_state.photo_category, "NORMAL")
+        self.assertEqual(second_state.photo_category, "NORMAL")
+        self.assertIsNone(first_metadata.memorykeeper_place_id)
+        self.assertIsNone(second_metadata.memorykeeper_place_id)
+
     def test_batch_place_state_is_set_based_ordered_and_covers_all_file_states(self) -> None:
         place = self.place()
         pending, pending_metadata, _ = self.file()
@@ -518,6 +799,8 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
         self.assertEqual(by_id[pending.file_id].gps_lat, pending_metadata.gps_lat)
         self.assertIsNone(by_id[pending.file_id].memorykeeper_place_id)
         self.assertEqual(by_id[pending.file_id].place_match_revision, 0)
+        self.assertEqual(by_id[pending.file_id].photo_category, "NORMAL")
+        self.assertEqual(by_id[pending.file_id].category_revision, 0)
         self.assertIsNone(by_id[registered.file_id].gps_lat)
         self.assertIsNone(by_id[registered.file_id].gps_lon)
         self.assertEqual(
@@ -905,6 +1188,7 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
             "/api/memorykeeper/files/{file_id}/metadata": "patch",
             "/api/memorykeeper/files/place-state/query": "post",
             "/api/memorykeeper/files/assign-place": "post",
+            "/api/memorykeeper/files/category": "post",
             "/api/memorykeeper/tags": "get",
             "/api/memorykeeper/tags/{tag_id}/merge": "post",
             "/api/memorykeeper/files/{file_id}/tags/{tag_id}": "post",
@@ -960,6 +1244,8 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
                     "effective_capture_date",
                     "effective_capture_year",
                     "date_basis",
+                    "photo_category",
+                    "photo_category_revision",
                 }.isdisjoint(state_columns)
             )
             tag_columns = {column["name"] for column in inspector.get_columns("mk_tags")}

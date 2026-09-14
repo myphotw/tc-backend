@@ -436,7 +436,11 @@ class GalleryRepository:
             return query
         if (service_name or "").casefold() != "memorykeeper":
             return query.filter(False) if incomplete else query
-        condition = CommonFileMetadata.memorykeeper_place_id.is_(None)
+        condition = and_(
+            func.coalesce(MemoryKeeperFileState.photo_category, "NORMAL")
+            == "NORMAL",
+            CommonFileMetadata.memorykeeper_place_id.is_(None),
+        )
         return query.filter(condition if incomplete else ~condition)
 
     def _apply_sort(self, query: Query, sort: str) -> Query:

@@ -22,6 +22,7 @@ from app.common.services.gallery_service import GalleryService
 from app.common.utils.perf import QueryCounter
 from app.main import app
 from app.memorykeeper.models.place import MemoryKeeperPlace
+from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.schemas.place import (
     PlaceCreate,
     PlaceMatchRequest,
@@ -477,7 +478,23 @@ class MemoryKeeperPlaceTests(unittest.TestCase):
         self.assertEqual(metadata.place_name, "원시 역지오코딩 주소")
         self.assertEqual(metadata.gps_lon, 127.5905236)
 
-    def test_reclassify_unassigned_reassign_option_and_outside_unlink(self) -> None:
+    def test_delete_preserves_user_no_place_protection(self) -> None:
+        place = self.place()
+        common_file, metadata = self.file("p")
+        self.service.assign_file(
+            public_file_id=common_file.file_id,
+            place_id=place.id,
+            expected_revision=0,
+        )
+
+        self.service.delete(place.id)
+
+        self.db.refresh(metadata)
+        self.assertIsNone(metadata.memorykeeper_place_id)
+        self.assertEqual(metadata.place_match_source, "USER")
+        self.assertFalse(self.service.auto_match_file(file_id=common_file.id))
+
+    def test_reclassify_preserves_user_decisions_and_updates_automatic_relations(self) -> None:
         target = self.place(radius_m=200)
         other = self.place("Other", latitude=35.4, longitude=127.9, radius_m=10)
         unassigned, _ = self.file("h")
@@ -488,12 +505,58 @@ class MemoryKeeperPlaceTests(unittest.TestCase):
         self.db.refresh(assigned_metadata)
         self.assertEqual(assigned_metadata.memorykeeper_place_id, other.id)
         result = self.service.reclassify(target.id, reassign_from_other_places=True)
-        self.assertEqual(result.reassigned, 1)
+        self.assertEqual(result.reassigned, 0)
+        self.db.refresh(assigned_metadata)
+        self.assertEqual(assigned_metadata.memorykeeper_place_id, other.id)
+
+        manual_target, manual_target_metadata = self.file("m")
+        self.service.assign_file(
+            public_file_id=manual_target.file_id,
+            place_id=target.id,
+            expected_revision=0,
+        )
         target.latitude = 36
         target.longitude = 128
         self.db.commit()
         result = self.service.reclassify(target.id, reassign_from_other_places=False)
-        self.assertEqual(result.unassigned_outside_radius, 2)
+        self.assertEqual(result.unassigned_outside_radius, 1)
+        self.db.refresh(manual_target_metadata)
+        self.assertEqual(manual_target_metadata.memorykeeper_place_id, target.id)
+
+    def test_reclassify_preserves_user_null_and_daily(self) -> None:
+        target = self.place(radius_m=500)
+        user_null, user_null_metadata = self.file("n")
+        daily, daily_metadata = self.file("o")
+        self.service.assign_file(
+            public_file_id=user_null.file_id,
+            place_id=None,
+            expected_revision=0,
+        )
+        self.db.add(
+            MemoryKeeperFileState(
+                file_id=daily.id,
+                photo_category="DAILY",
+            )
+        )
+        # Isolate the category guard from the independent USER-source guard.
+        daily_metadata.place_match_source = "AUTO_PLACE_MATCH"
+        self.db.commit()
+
+        self.assertFalse(self.service.auto_match_file(file_id=user_null.id))
+        self.assertFalse(self.service.auto_match_file(file_id=daily.id))
+        result = self.service.reclassify(
+            target.id,
+            reassign_from_other_places=True,
+        )
+        self.assertEqual(result.assigned, 0)
+        self.assertEqual(result.reassigned, 0)
+        self.db.refresh(user_null_metadata)
+        self.db.refresh(daily_metadata)
+        self.assertIsNone(user_null_metadata.memorykeeper_place_id)
+        self.assertIsNone(daily_metadata.memorykeeper_place_id)
+        backfill = backfill_memorykeeper_places(self.db, execute=False)
+        self.assertEqual(backfill.scanned, 2)
+        self.assertEqual(backfill.unchanged, 2)
 
     def test_radius_impact_counts_files_and_overlaps(self) -> None:
         self.place("Overlap", latitude=35.2275, radius_m=300)

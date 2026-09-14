@@ -228,15 +228,16 @@ class GalleryService:
                 is None
             ):
                 raise HTTPException(status_code=404, detail="File not found")
-            place_fields = self._place_fields(
-                common_file=common_file,
-                metadata=metadata,
-                service_name=effective_service,
-            )
             state = (
                 self.repository.db.get(MemoryKeeperFileState, common_file.id)
                 if effective_service.casefold() == "memorykeeper"
                 else None
+            )
+            place_fields = self._place_fields(
+                common_file=common_file,
+                metadata=metadata,
+                service_name=effective_service,
+                state=state,
             )
 
             catalog_service = MemoryKeeperTagCatalogService(self.repository.db)
@@ -299,8 +300,19 @@ class GalleryService:
                 ),
                 date_basis=state.date_basis if state is not None else None,
                 date_revision=(int(state.revision or 0) if state is not None else None),
+                photo_category=(
+                    state.photo_category
+                    if state is not None
+                    else ("NORMAL" if effective_service.casefold() == "memorykeeper" else None)
+                ),
+                category_revision=(
+                    int(state.photo_category_revision or 0)
+                    if state is not None
+                    else (0 if effective_service.casefold() == "memorykeeper" else None)
+                ),
                 incomplete=(
                     effective_service.casefold() == "memorykeeper"
+                    and (state is None or state.photo_category != "DAILY")
                     and (metadata is None or metadata.memorykeeper_place_id is None)
                 ),
                 service_name=effective_service,
@@ -565,6 +577,8 @@ class GalleryService:
         service_name: str | None = None,
         state: MemoryKeeperFileState | None = None,
     ) -> GalleryListItem:
+        effective_service = service_name or common_file.service_name or "MemoryKeeper"
+        is_memorykeeper = effective_service.casefold() == "memorykeeper"
         return GalleryListItem(
             file_id=common_file.file_id,
             filename=common_file.original_name,
@@ -590,8 +604,19 @@ class GalleryService:
             favorite=(bool(state.favorite) if state is not None else bool(common_file.favorite)),
             memo=state.memo if state is not None else None,
             metadata_revision=int(state.revision or 0) if state is not None else 0,
+            photo_category=(
+                state.photo_category
+                if state is not None
+                else ("NORMAL" if is_memorykeeper else None)
+            ),
+            category_revision=(
+                int(state.photo_category_revision or 0)
+                if state is not None
+                else (0 if is_memorykeeper else None)
+            ),
             incomplete=(
-                (service_name or common_file.service_name or "").casefold() == "memorykeeper"
+                is_memorykeeper
+                and (state is None or state.photo_category != "DAILY")
                 and (metadata is None or metadata.memorykeeper_place_id is None)
             ),
             has_gps=bool(
@@ -600,11 +625,12 @@ class GalleryService:
                 and metadata.gps_lon is not None
             ),
             has_ai_tag=has_ai_tag,
-            service_name=service_name or common_file.service_name or "MemoryKeeper",
+            service_name=effective_service,
             **self._place_fields(
                 common_file=common_file,
                 metadata=metadata,
                 service_name=service_name,
+                state=state,
             ),
         )
 
@@ -614,6 +640,7 @@ class GalleryService:
         common_file: CommonFile,
         metadata: CommonFileMetadata | None,
         service_name: str | None,
+        state: MemoryKeeperFileState | None = None,
     ) -> dict[str, Any]:
         if (
             metadata is None
@@ -628,6 +655,16 @@ class GalleryService:
                 "place_match_source": None,
                 "place_match_distance_m": None,
                 "place_revision": None,
+            }
+        if state is not None and state.photo_category == "DAILY":
+            return {
+                "memorykeeper_place_id": None,
+                "place_display_name": None,
+                "place_canonical_name": None,
+                "geocoded_place_name": metadata.place_name,
+                "place_match_source": metadata.place_match_source,
+                "place_match_distance_m": metadata.place_match_distance_m,
+                "place_revision": int(metadata.place_match_revision or 0),
             }
         place = None
         if metadata.memorykeeper_place_id:

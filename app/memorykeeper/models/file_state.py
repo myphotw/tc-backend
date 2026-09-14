@@ -43,6 +43,20 @@ class MemoryKeeperFileState(Base):
     )
     memo = Column(Text, nullable=True)
     revision = Column(Integer, nullable=False, default=0, server_default="0")
+    photo_category = Column(
+        String(16),
+        nullable=False,
+        default="NORMAL",
+        server_default=text("'NORMAL'"),
+        info=migration_managed_schema_info(),
+    )
+    photo_category_revision = Column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+        info=migration_managed_schema_info(),
+    )
     # MemoryKeeper-only capture-date projection.  The nullable expand migration
     # adds these fields; dual-write/backfill and read-path adoption follow later.
     user_capture_datetime = Column(

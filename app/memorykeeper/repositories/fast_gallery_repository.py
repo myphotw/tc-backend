@@ -37,6 +37,7 @@ class FastGalleryFilters:
     has_gps: bool | None = None
     date_from: date | None = None
     date_to: date | None = None
+    photo_category: str | None = None
     location: FastGalleryLocationIdentity | None = None
 
 
@@ -88,7 +89,10 @@ class MemoryKeeperFastGalleryRepository:
             .offset(0)
             .scalar_subquery()
         )
-        return registered_place_id.is_(None)
+        return and_(
+            MemoryKeeperFileState.photo_category == "NORMAL",
+            registered_place_id.is_(None),
+        )
 
     def _base_query(self) -> Query:
         return (
@@ -159,6 +163,10 @@ class MemoryKeeperFastGalleryRepository:
                 MemoryKeeperFileState.user_capture_datetime,
                 MemoryKeeperFileState.user_capture_precision,
                 MemoryKeeperFileState.revision.label("date_revision"),
+                MemoryKeeperFileState.photo_category,
+                MemoryKeeperFileState.photo_category_revision.label(
+                    "category_revision"
+                ),
             )
             .where(MemoryKeeperFileState.effective_capture_datetime.isnot(None))
             .where(active_file)
@@ -179,6 +187,10 @@ class MemoryKeeperFastGalleryRepository:
         if filters.date_to is not None:
             statement = statement.where(
                 MemoryKeeperFileState.effective_capture_date <= filters.date_to
+            )
+        if filters.photo_category is not None:
+            statement = statement.where(
+                MemoryKeeperFileState.photo_category == filters.photo_category
             )
         if filters.unclassified:
             statement = statement.where(self._unclassified_file_condition())
@@ -231,6 +243,9 @@ class MemoryKeeperFastGalleryRepository:
                     CommonFileMetadata.memorykeeper_place_id == filters.place_id
                 )
         if location_conditions:
+            statement = statement.where(
+                MemoryKeeperFileState.photo_category == "NORMAL"
+            )
             location_match = self._correlated_exists(
                 select(CommonFileMetadata.id)
                 .select_from(CommonFileMetadata)
@@ -419,19 +434,33 @@ class MemoryKeeperFastGalleryRepository:
             ),
             else_=False,
         ).label("has_gps")
-        country = func.coalesce(
-            place_lookup.c.country,
-            metadata_lookup.c.country,
+        is_daily = candidates.c.photo_category == "DAILY"
+        memorykeeper_place_id = case(
+            (is_daily, None),
+            else_=metadata_lookup.c.memorykeeper_place_id,
+        ).label("memorykeeper_place_id")
+        country = case(
+            (is_daily, None),
+            else_=func.coalesce(
+                place_lookup.c.country,
+                metadata_lookup.c.country,
+            ),
         ).label("country")
-        region = func.coalesce(
-            place_lookup.c.city,
-            place_lookup.c.province,
-            metadata_lookup.c.city,
-            metadata_lookup.c.province,
+        region = case(
+            (is_daily, None),
+            else_=func.coalesce(
+                place_lookup.c.city,
+                place_lookup.c.province,
+                metadata_lookup.c.city,
+                metadata_lookup.c.province,
+            ),
         ).label("region")
-        place_display_name = func.coalesce(
-            place_lookup.c.display_name,
-            metadata_lookup.c.place_name,
+        place_display_name = case(
+            (is_daily, None),
+            else_=func.coalesce(
+                place_lookup.c.display_name,
+                metadata_lookup.c.place_name,
+            ),
         ).label("place_display_name")
         return (
             select(
@@ -451,7 +480,9 @@ class MemoryKeeperFastGalleryRepository:
                 candidates.c.user_capture_datetime,
                 candidates.c.user_capture_precision,
                 candidates.c.date_revision,
-                metadata_lookup.c.memorykeeper_place_id,
+                candidates.c.photo_category,
+                candidates.c.category_revision,
+                memorykeeper_place_id,
                 place_display_name,
                 country,
                 region,
@@ -490,6 +521,15 @@ class MemoryKeeperFastGalleryRepository:
             func.coalesce(func.sum(case((has_gps.is_(True), 1), else_=0)), 0),
             func.min(MemoryKeeperFileState.effective_capture_date),
             func.max(MemoryKeeperFileState.effective_capture_date),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (MemoryKeeperFileState.photo_category == "DAILY", 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
         ).one()
         year_rows = (
             self._base_query()
@@ -505,6 +545,7 @@ class MemoryKeeperFastGalleryRepository:
         country_rows = (
             self._base_query()
             .with_entities(country.label("country"), func.count(CommonFile.id))
+            .filter(MemoryKeeperFileState.photo_category == "NORMAL")
             .group_by(country)
             .order_by(country.asc().nulls_last())
             .all()
@@ -521,6 +562,7 @@ class MemoryKeeperFastGalleryRepository:
             ),
             "pending_count": int(shortcut_counts[1] or 0),
             "place_cleanup_count": int(shortcut_counts[2] or 0),
+            "daily_count": int(overall[5] or 0),
             "gps_count": int(overall[2] or 0),
             "effective_date_min": overall[3],
             "effective_date_max": overall[4],
@@ -529,23 +571,25 @@ class MemoryKeeperFastGalleryRepository:
         }
 
     def hierarchy(self) -> list[object]:
+        daily = MemoryKeeperFileState.photo_category == "DAILY"
         unclassified = pending_condition()
         country = case(
-            (unclassified, None),
+            (or_(daily, unclassified), None),
             else_=self._country_expression(),
         )
         region = case(
-            (unclassified, None),
+            (or_(daily, unclassified), None),
             else_=self._region_expression(),
         )
         place_display_name = case(
-            (unclassified, None),
+            (or_(daily, unclassified), None),
             else_=self._place_display_expression(),
         )
         return (
             self._base_query()
             .with_entities(
                 MemoryKeeperFileState.effective_capture_year.label("year"),
+                MemoryKeeperFileState.photo_category.label("photo_category"),
                 country.label("country"),
                 region.label("region"),
                 CommonFileMetadata.memorykeeper_place_id.label(
@@ -556,6 +600,7 @@ class MemoryKeeperFastGalleryRepository:
             )
             .group_by(
                 MemoryKeeperFileState.effective_capture_year,
+                MemoryKeeperFileState.photo_category,
                 country,
                 region,
                 CommonFileMetadata.memorykeeper_place_id,

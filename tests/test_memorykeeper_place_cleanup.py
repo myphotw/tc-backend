@@ -65,6 +65,7 @@ class TestMemoryKeeperPlaceCleanup:
         raw_place_name: str | None = None,
         metadata: bool = True,
         favorite: bool = False,
+        photo_category: str = "NORMAL",
         deleted: bool = False,
         service_name: str = "MemoryKeeper",
     ) -> CommonFile:
@@ -105,6 +106,7 @@ class TestMemoryKeeperPlaceCleanup:
                 effective_capture_date=captured_at.date(),
                 effective_capture_year=captured_at.year,
                 date_basis="EXIF",
+                photo_category=photo_category,
             )
         )
         self.db.commit()
@@ -188,6 +190,35 @@ class TestMemoryKeeperPlaceCleanup:
             str(by_id[unclassified_country.file_id].memorykeeper_place_id)
             == missing_country.id
         )
+
+    def test_daily_is_excluded_from_pending_and_hierarchy_cleanup_reasons(self) -> None:
+        captured = datetime(2025, 1, 1, 8, 0)
+        incomplete_place = self._place(country=None, city="서울")
+        pending_daily = self._photo(
+            captured_at=captured,
+            raw_country="대한민국",
+            raw_city="서울",
+            raw_place_name="원시 장소",
+            photo_category="DAILY",
+        )
+        hierarchy_daily = self._photo(
+            captured_at=captured + timedelta(days=1),
+            place=incomplete_place,
+            photo_category="DAILY",
+        )
+
+        summary = self.fast_gallery.summary()
+        listing = self.place_cleanup.list(page=1, page_size=50)
+
+        assert summary.total_photos == 2
+        assert summary.daily_count == 2
+        assert summary.pending_count == 0
+        assert summary.place_cleanup_count == 0
+        assert listing.total == 0
+        assert pending_daily.file_id not in {item.file_id for item in listing.items}
+        assert hierarchy_daily.file_id not in {
+            item.file_id for item in listing.items
+        }
 
     def test_successful_place_mapping_removes_both_cleanup_reasons(self) -> None:
         captured = datetime(2025, 2, 1, 8, 0)
