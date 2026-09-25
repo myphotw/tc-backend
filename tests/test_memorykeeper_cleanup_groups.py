@@ -259,6 +259,57 @@ class TestMemoryKeeperCleanupGroups:
             resource_type="MemoryKeeperCaptureDate"
         ).count() == 2
 
+    def test_year_only_override_and_clear_returns_to_source_year(self) -> None:
+        item, metadata, state = self._photo(
+            None,
+            basis="SOURCE_YEAR",
+            raw_capture=datetime(2013, 5, 6, 7, 8),
+            raw_place="서울숲",
+        )
+        state.source_capture_year = 2018
+        state.source_capture_year_basis = "ORIGINAL_PATH"
+        state.effective_capture_year = 2018
+        state.effective_capture_precision = "YEAR"
+        self.db.commit()
+
+        updated = self.mutations.update(
+            MemoryKeeperCaptureDateUpdateRequest(
+                file_ids=[item.file_id],
+                user_capture_date=date(2018, 5, 5),
+                expected_date_revisions={item.file_id: 0},
+            )
+        ).items[0]
+        assert updated.effective_capture_datetime == datetime(2018, 5, 5)
+        assert updated.effective_capture_date == date(2018, 5, 5)
+        assert updated.effective_capture_year == 2018
+        assert updated.effective_capture_precision == "DATE"
+        assert updated.date_basis == "USER"
+        assert updated.source_capture_year == 2018
+        assert updated.source_capture_year_basis == "ORIGINAL_PATH"
+        assert updated.date_revision == 1
+
+        cleared = self.mutations.update(
+            MemoryKeeperCaptureDateUpdateRequest(
+                file_ids=[item.file_id],
+                user_capture_date=None,
+                expected_date_revisions={item.file_id: 1},
+            )
+        ).items[0]
+        assert cleared.user_capture_datetime is None
+        assert cleared.effective_capture_datetime is None
+        assert cleared.effective_capture_date is None
+        assert cleared.effective_capture_year == 2018
+        assert cleared.effective_capture_precision == "YEAR"
+        assert cleared.date_basis == "SOURCE_YEAR"
+        assert cleared.date_revision == 2
+        assert metadata.original_capture_datetime == datetime(2013, 5, 6, 7, 8)
+        assert self.db.query(CommonMetadataHistory).filter_by(
+            field_name="memorykeeper_user_capture_datetime"
+        ).count() == 2
+        assert self.db.query(CommonChangeEvent).filter_by(
+            resource_type="MemoryKeeperCaptureDate"
+        ).count() == 2
+
     def test_common_gallery_detail_exposes_additive_capture_date_state(self) -> None:
         item, _, _ = self._photo(
             datetime(2020, 2, 3, 4, 5),

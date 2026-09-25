@@ -218,6 +218,14 @@ leaf count. `country` and `region` may refine raw metadata within this set.
 Combining `unclassified=true` with `place_id` or `location_key` is contradictory
 and returns `422 GALLERY_UNCLASSIFIED_FILTER_CONFLICT`.
 
+`date_unclassified=true` is a separate MemoryKeeper capture-date filter. It
+requires `year=YYYY` and matches `effective_capture_precision=YEAR` with a null
+exact date. These rows use a file-id keyset cursor because they intentionally
+have no `effective_capture_datetime`. The hierarchy exposes their additive
+`date_unclassified_count`; the existing `unclassified_count` continues to mean
+an absent registered Place relation. Date-unclassified rows may still have a
+Place and may be either NORMAL or DAILY.
+
 MemoryKeeper's final photo categories are `NORMAL` and `DAILY`. Fast Gallery
 cards add `photo_category` and the independent optimistic
 `category_revision`; `photo_category=...` filters the card stream before
@@ -827,9 +835,12 @@ Success returns canonical read-after-write state:
       "file_id": "<SHA-256 file_id>",
       "user_capture_datetime": "2023-10-14T00:00:00",
       "user_capture_precision": "DATE",
-      "effective_capture_datetime": "2023-10-14T00:00:00",
-      "effective_capture_date": "2023-10-14",
-      "effective_capture_year": 2023,
+       "source_capture_year": null,
+       "source_capture_year_basis": null,
+       "effective_capture_datetime": "2023-10-14T00:00:00",
+       "effective_capture_date": "2023-10-14",
+       "effective_capture_year": 2023,
+       "effective_capture_precision": "DATE",
       "date_basis": "USER",
       "date_revision": 5
     }
@@ -840,16 +851,19 @@ Success returns canonical read-after-write state:
 
 The mutation writes `memorykeeper_user_capture_datetime` history and a
 `MemoryKeeperCaptureDate` change event in the same transaction. Fast Gallery
-card rows add `user_capture_datetime`, `user_capture_precision`, and
-`date_revision`; all year/count/filter/order projections continue to use the
-effective capture columns. Clients reload both capture-date and Place group
+card rows add source/effective capture precision fields alongside
+`user_capture_datetime`, `user_capture_precision`, and `date_revision`; all
+year/count/filter/order projections continue to use the effective capture
+columns. Clients reload both capture-date and Place group
 page one after a date mutation because the Place group key contains the date
 bucket. A Place-only mutation does not affect the date cleanup predicate.
 
 For single-photo editing, `GET /api/common/gallery/{file_id}?service_name=MemoryKeeper`
 additively returns `user_capture_datetime`, `user_capture_precision`,
+`source_capture_year`, `source_capture_year_basis`,
 `effective_capture_datetime`, `effective_capture_date`,
-`effective_capture_year`, `date_basis`, and `date_revision`. For other
+`effective_capture_year`, `effective_capture_precision`, `date_basis`, and
+`date_revision`. For other
 services these optional fields are null. `photo_category` and
 `category_revision` follow the same MemoryKeeper-only rule. Existing Gallery
 detail fields keep their prior meanings.

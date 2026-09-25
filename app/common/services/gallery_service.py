@@ -289,6 +289,12 @@ class GalleryService:
                 user_capture_precision=(
                     state.user_capture_precision if state is not None else None
                 ),
+                source_capture_year=(
+                    state.source_capture_year if state is not None else None
+                ),
+                source_capture_year_basis=(
+                    state.source_capture_year_basis if state is not None else None
+                ),
                 effective_capture_datetime=(
                     state.effective_capture_datetime if state is not None else None
                 ),
@@ -297,6 +303,9 @@ class GalleryService:
                 ),
                 effective_capture_year=(
                     state.effective_capture_year if state is not None else None
+                ),
+                effective_capture_precision=(
+                    state.effective_capture_precision if state is not None else None
                 ),
                 date_basis=state.date_basis if state is not None else None,
                 date_revision=(int(state.revision or 0) if state is not None else None),

@@ -69,6 +69,16 @@ class MemoryKeeperFileState(Base):
         nullable=True,
         info=migration_managed_schema_info(),
     )
+    source_capture_year = Column(
+        Integer,
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    source_capture_year_basis = Column(
+        String(32),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
     effective_capture_datetime = Column(
         DateTime(timezone=False),
         nullable=True,
@@ -81,10 +91,25 @@ class MemoryKeeperFileState(Base):
         nullable=True,
         info=migration_managed_schema_info(),
     )
-    effective_capture_year = Column(
+    # Keep the PostgreSQL generated column from revision 20260901_0002 mapped
+    # during the expand/contract rollout. New reads and writes use the ordinary
+    # v2 projection below so YEAR-only state does not require a fake datetime.
+    legacy_effective_capture_year = Column(
+        "effective_capture_year",
         Integer,
         server_default=FetchedValue(),
         server_onupdate=FetchedValue(),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    effective_capture_year = Column(
+        "effective_capture_year_v2",
+        Integer,
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    effective_capture_precision = Column(
+        String(16),
         nullable=True,
         info=migration_managed_schema_info(),
     )

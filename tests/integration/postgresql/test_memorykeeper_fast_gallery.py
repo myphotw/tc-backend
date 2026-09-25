@@ -23,7 +23,7 @@ from tests.integration.postgresql.support import create_legacy_schema, run_with_
 
 pytestmark = pytest.mark.postgresql_integration
 
-HEAD_REVISION = "20260914_0007"
+HEAD_REVISION = "20260925_0008"
 FAST_GALLERY_INDEX = "ix_memorykeeper_file_states_effective_capture_desc"
 
 

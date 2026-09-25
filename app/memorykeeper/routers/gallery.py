@@ -35,6 +35,10 @@ def list_photos(
             "Only photos without a registered MemoryKeeper Place relation"
         ),
     ),
+    date_unclassified: bool = Query(
+        False,
+        description="Only YEAR-precision photos without an exact capture date",
+    ),
     location_key: str | None = Query(
         None,
         max_length=2048,
@@ -58,6 +62,7 @@ def list_photos(
             region=region,
             place_id=place_id,
             unclassified=unclassified,
+            date_unclassified=date_unclassified,
             favorite=favorite,
             has_gps=has_gps,
             date_from=date_from,

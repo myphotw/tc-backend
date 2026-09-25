@@ -46,7 +46,8 @@ base
   -> 20260906_0004 (Plate Solve WCS JSONB)
   -> 20260909_0005 (AstroJournal master data)
   -> 20260910_0006 (multi-night framing reference)
-  -> 20260914_0007 (MemoryKeeper photo category, head)
+  -> 20260914_0007 (MemoryKeeper photo category)
+  -> 20260925_0008 (MemoryKeeper YEAR-only capture-date expand, head)
 ```
 
 The baseline `upgrade()` and `downgrade()` are both no-ops. It does not create,
@@ -230,8 +231,14 @@ Revision `20260914_0007` additively introduces the migration-owned
 `photo_category_revision` columns. Constant server defaults preserve all
 existing rows as `NORMAL` with revision zero; a PostgreSQL CHECK constraint
 limits categories to `NORMAL` and `DAILY`. Downgrade drops the two columns and
-therefore loses user category choices. The revision graph remains single-head
-at `20260914_0007`.
+therefore loses user category choices.
+
+Revision `20260925_0008` additively introduces MemoryKeeper source-year
+provenance, capture precision, and the ordinary nullable
+`effective_capture_year_v2` projection. It preserves the legacy generated year
+during rollout and backfills v2/precision from the existing exact-date
+projection. Source-path reconciliation remains a separate data operation. The
+revision graph remains single-head at `20260925_0008`.
 
 - The capture-date nullable expand migration deliberately contains no
   dual-write, backfill, read-path switch, constraint, or index work. Those

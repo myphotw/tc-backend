@@ -33,6 +33,7 @@ class FastGalleryFilters:
     region: str | None = None
     place_id: str | None = None
     unclassified: bool = False
+    date_unclassified: bool = False
     favorite: bool | None = None
     has_gps: bool | None = None
     date_from: date | None = None
@@ -116,10 +117,7 @@ class MemoryKeeperFastGalleryRepository:
             )
             .filter(CommonFileService.service_name == self.SERVICE_NAME)
             .filter(CommonFile.deleted.is_(False))
-            # NULL projection rows are intentionally excluded.  They violate
-            # the completed capture-date backfill invariant and belong in
-            # diagnostics/backfill, not a canonical ordered Gallery list.
-            .filter(MemoryKeeperFileState.effective_capture_datetime.isnot(None))
+            .filter(MemoryKeeperFileState.effective_capture_year.isnot(None))
         )
 
     @staticmethod
@@ -159,19 +157,30 @@ class MemoryKeeperFastGalleryRepository:
                 MemoryKeeperFileState.effective_capture_datetime,
                 MemoryKeeperFileState.effective_capture_date,
                 MemoryKeeperFileState.effective_capture_year,
+                MemoryKeeperFileState.effective_capture_precision,
                 MemoryKeeperFileState.date_basis,
                 MemoryKeeperFileState.user_capture_datetime,
                 MemoryKeeperFileState.user_capture_precision,
+                MemoryKeeperFileState.source_capture_year,
+                MemoryKeeperFileState.source_capture_year_basis,
                 MemoryKeeperFileState.revision.label("date_revision"),
                 MemoryKeeperFileState.photo_category,
                 MemoryKeeperFileState.photo_category_revision.label(
                     "category_revision"
                 ),
             )
-            .where(MemoryKeeperFileState.effective_capture_datetime.isnot(None))
             .where(active_file)
             .where(memorykeeper_link)
         )
+        if filters.date_unclassified:
+            statement = statement.where(
+                MemoryKeeperFileState.effective_capture_date.is_(None),
+                MemoryKeeperFileState.effective_capture_precision == "YEAR",
+            )
+        else:
+            statement = statement.where(
+                MemoryKeeperFileState.effective_capture_datetime.isnot(None)
+            )
         if filters.year is not None:
             statement = statement.where(
                 MemoryKeeperFileState.effective_capture_year == filters.year
@@ -274,7 +283,11 @@ class MemoryKeeperFastGalleryRepository:
             statement = statement.where(
                 gps_match if filters.has_gps else ~gps_match
             )
-        if cursor_datetime is not None and cursor_file_id is not None:
+        if filters.date_unclassified and cursor_file_id is not None:
+            statement = statement.where(
+                MemoryKeeperFileState.file_id < cursor_file_id
+            )
+        elif cursor_datetime is not None and cursor_file_id is not None:
             statement = statement.where(
                 or_(
                     MemoryKeeperFileState.effective_capture_datetime
@@ -287,14 +300,14 @@ class MemoryKeeperFastGalleryRepository:
                 )
             )
 
-        return (
-            statement.order_by(
+        if filters.date_unclassified:
+            statement = statement.order_by(MemoryKeeperFileState.file_id.desc())
+        else:
+            statement = statement.order_by(
                 MemoryKeeperFileState.effective_capture_datetime.desc(),
                 MemoryKeeperFileState.file_id.desc(),
             )
-            .limit(limit + 1)
-            .subquery("gallery_candidates")
-        )
+        return statement.limit(limit + 1).subquery("gallery_candidates")
 
     def build_photos_statement(
         self,
@@ -476,9 +489,12 @@ class MemoryKeeperFastGalleryRepository:
                 candidates.c.effective_capture_datetime,
                 candidates.c.effective_capture_date,
                 candidates.c.effective_capture_year,
+                candidates.c.effective_capture_precision,
                 candidates.c.date_basis,
                 candidates.c.user_capture_datetime,
                 candidates.c.user_capture_precision,
+                candidates.c.source_capture_year,
+                candidates.c.source_capture_year_basis,
                 candidates.c.date_revision,
                 candidates.c.photo_category,
                 candidates.c.category_revision,
@@ -573,6 +589,10 @@ class MemoryKeeperFastGalleryRepository:
     def hierarchy(self) -> list[object]:
         daily = MemoryKeeperFileState.photo_category == "DAILY"
         unclassified = pending_condition()
+        date_unclassified = and_(
+            MemoryKeeperFileState.effective_capture_precision == "YEAR",
+            MemoryKeeperFileState.effective_capture_date.is_(None),
+        )
         country = case(
             (or_(daily, unclassified), None),
             else_=self._country_expression(),
@@ -590,6 +610,7 @@ class MemoryKeeperFastGalleryRepository:
             .with_entities(
                 MemoryKeeperFileState.effective_capture_year.label("year"),
                 MemoryKeeperFileState.photo_category.label("photo_category"),
+                date_unclassified.label("date_unclassified"),
                 country.label("country"),
                 region.label("region"),
                 CommonFileMetadata.memorykeeper_place_id.label(
@@ -601,6 +622,7 @@ class MemoryKeeperFastGalleryRepository:
             .group_by(
                 MemoryKeeperFileState.effective_capture_year,
                 MemoryKeeperFileState.photo_category,
+                date_unclassified,
                 country,
                 region,
                 CommonFileMetadata.memorykeeper_place_id,

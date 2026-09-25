@@ -73,6 +73,9 @@ class TestMemoryKeeperFastGallery:
         city: str | None = "서울",
         place_name: str | None = "원시 장소",
         date_basis: str | None = "EXIF",
+        source_capture_year: int | None = None,
+        source_capture_year_basis: str | None = None,
+        effective_capture_precision: str | None = None,
         photo_category: str = "NORMAL",
         category_revision: int = 0,
         preview: bool = True,
@@ -113,8 +116,20 @@ class TestMemoryKeeperFastGallery:
                 favorite=favorite,
                 effective_capture_datetime=captured_at,
                 effective_capture_date=(captured_at.date() if captured_at else None),
-                effective_capture_year=(captured_at.year if captured_at else None),
-                date_basis=date_basis if captured_at else None,
+                effective_capture_year=(
+                    captured_at.year if captured_at else source_capture_year
+                ),
+                effective_capture_precision=(
+                    effective_capture_precision
+                    or ("DATETIME" if captured_at is not None else None)
+                ),
+                date_basis=(
+                    date_basis
+                    if captured_at is not None or source_capture_year is not None
+                    else None
+                ),
+                source_capture_year=source_capture_year,
+                source_capture_year_basis=source_capture_year_basis,
                 photo_category=photo_category,
                 photo_category_revision=category_revision,
             )
@@ -161,6 +176,136 @@ class TestMemoryKeeperFastGallery:
             item.common_file_id for item in [*page_one.items, *page_two.items]
         } == {first.id, second.id, third.id, fourth.id}
         assert page_one.sync_cursor is None
+
+    def test_date_unclassified_is_year_scoped_and_file_id_paginated(self) -> None:
+        place = self._place(display_name="등록 장소")
+        first = self._photo(
+            None,
+            source_capture_year=2023,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+            place=place,
+        )
+        second = self._photo(
+            None,
+            source_capture_year=2023,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+            country=None,
+            city=None,
+            place_name=None,
+        )
+        daily = self._photo(
+            None,
+            source_capture_year=2023,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+            photo_category="DAILY",
+        )
+        exact = self._photo(datetime(2023, 5, 5, 12, 0))
+        self._photo(
+            None,
+            source_capture_year=2024,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+        )
+
+        page_one = self.service.photos(
+            cursor=None,
+            limit=2,
+            filters=FastGalleryFilters(year=2023, date_unclassified=True),
+        )
+        page_two = self.service.photos(
+            cursor=page_one.next_cursor,
+            limit=2,
+            filters=FastGalleryFilters(year=2023, date_unclassified=True),
+        )
+
+        assert page_one.has_more is True
+        assert page_one.next_cursor is not None
+        assert page_two.has_more is False
+        assert {
+            item.common_file_id for item in [*page_one.items, *page_two.items]
+        } == {first.id, second.id, daily.id}
+        assert exact.id not in {
+            item.common_file_id for item in [*page_one.items, *page_two.items]
+        }
+        assert all(item.effective_capture_datetime is None for item in page_one.items)
+        assert all(item.effective_capture_date is None for item in page_one.items)
+        assert all(item.effective_capture_year == 2023 for item in page_one.items)
+        assert all(item.effective_capture_precision == "YEAR" for item in page_one.items)
+        assert all(item.date_basis == "SOURCE_YEAR" for item in page_one.items)
+
+        hierarchy = self.service.hierarchy()
+        year = next(item for item in hierarchy.items if item.year == 2023)
+        assert year.count == 4
+        assert year.date_unclassified_count == 3
+        assert year.daily_count == 1
+        # Place classification is independent: the YEAR-only unregistered row
+        # and the exact-date unregistered row are both Place-unclassified.
+        assert year.unclassified_count == 2
+
+    def test_date_unclassified_requires_year_and_keeps_place_filter_separate(
+        self,
+    ) -> None:
+        with pytest.raises(HTTPException) as missing_year:
+            self.service.photos(
+                cursor=None,
+                limit=50,
+                filters=FastGalleryFilters(date_unclassified=True),
+            )
+        assert missing_year.value.status_code == 400
+        assert (
+            missing_year.value.detail["code"]
+            == "YEAR_REQUIRED_FOR_DATE_UNCLASSIFIED"
+        )
+
+        place = self._place(display_name="등록 장소")
+        registered = self._photo(
+            None,
+            source_capture_year=2023,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+            place=place,
+        )
+        unregistered = self._photo(
+            None,
+            source_capture_year=2023,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+            country=None,
+            city=None,
+            place_name=None,
+        )
+
+        all_year_only = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2023, date_unclassified=True),
+        )
+        place_unclassified = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(
+                year=2023,
+                date_unclassified=True,
+                unclassified=True,
+            ),
+        )
+
+        assert {item.common_file_id for item in all_year_only.items} == {
+            registered.id,
+            unregistered.id,
+        }
+        assert [item.common_file_id for item in place_unclassified.items] == [
+            unregistered.id
+        ]
 
     def test_filters_and_null_deleted_and_astro_rows_are_excluded(self) -> None:
         place = self._place()

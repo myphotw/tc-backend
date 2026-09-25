@@ -164,9 +164,12 @@ class MemoryKeeperCaptureDateOverrideService:
             file_id=common_file.file_id,
             user_capture_datetime=state.user_capture_datetime,
             user_capture_precision=state.user_capture_precision,
+            source_capture_year=state.source_capture_year,
+            source_capture_year_basis=state.source_capture_year_basis,
             effective_capture_datetime=state.effective_capture_datetime,
             effective_capture_date=state.effective_capture_date,
             effective_capture_year=state.effective_capture_year,
+            effective_capture_precision=state.effective_capture_precision,
             date_basis=state.date_basis,
             date_revision=int(state.revision or 0),
         )

@@ -86,9 +86,12 @@ class GalleryDetailResponse(BaseModel):
     metadata_revision: int = 0
     user_capture_datetime: datetime | None = None
     user_capture_precision: str | None = None
+    source_capture_year: int | None = None
+    source_capture_year_basis: str | None = None
     effective_capture_datetime: datetime | None = None
     effective_capture_date: date | None = None
     effective_capture_year: int | None = None
+    effective_capture_precision: str | None = None
     date_basis: str | None = None
     date_revision: int | None = None
     photo_category: Literal["NORMAL", "DAILY"] | None = None

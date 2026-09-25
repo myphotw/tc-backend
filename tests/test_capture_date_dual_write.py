@@ -19,6 +19,7 @@ from app.common.repositories.metadata_repository import MetadataRepository
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.services.capture_date_service import (
     CaptureDateBasis,
+    CaptureDatePrecision,
     MemoryKeeperCaptureDateService,
     calculate_capture_date_projection,
 )
@@ -88,6 +89,54 @@ class CaptureDateCalculationTests(unittest.TestCase):
                 )
                 self.assertEqual(projection.effective_capture_datetime, expected)
                 self.assertEqual(projection.date_basis, basis)
+
+    def test_source_year_supports_exact_match_conflict_and_missing_exif(self) -> None:
+        matching = calculate_capture_date_projection(
+            user_capture_datetime=None,
+            original_capture_datetime=datetime(2023, 5, 6, 7, 8),
+            imported_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            created_at=None,
+            source_capture_year=2023,
+        )
+        self.assertEqual(
+            matching.effective_capture_datetime,
+            datetime(2023, 5, 6, 7, 8),
+        )
+        self.assertEqual(matching.effective_capture_year, 2023)
+        self.assertEqual(matching.effective_capture_precision, CaptureDatePrecision.DATETIME)
+        self.assertEqual(matching.date_basis, CaptureDateBasis.EXIF)
+
+        for original in (datetime(2013, 5, 6, 7, 8), None):
+            with self.subTest(original=original):
+                year_only = calculate_capture_date_projection(
+                    user_capture_datetime=None,
+                    original_capture_datetime=original,
+                    imported_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                    created_at=None,
+                    source_capture_year=2023,
+                )
+                self.assertIsNone(year_only.effective_capture_datetime)
+                self.assertEqual(year_only.effective_capture_year, 2023)
+                self.assertEqual(
+                    year_only.effective_capture_precision,
+                    CaptureDatePrecision.YEAR,
+                )
+                self.assertEqual(year_only.date_basis, CaptureDateBasis.SOURCE_YEAR)
+
+    def test_user_exact_remains_authoritative_when_source_year_conflicts(self) -> None:
+        projection = calculate_capture_date_projection(
+            user_capture_datetime=datetime(2025, 1, 10),
+            user_capture_precision="DATE",
+            original_capture_datetime=datetime(2024, 2, 3, 4, 5),
+            imported_at=None,
+            created_at=None,
+            source_capture_year=2024,
+        )
+
+        self.assertEqual(projection.effective_capture_datetime, datetime(2025, 1, 10))
+        self.assertEqual(projection.effective_capture_year, 2025)
+        self.assertEqual(projection.effective_capture_precision, CaptureDatePrecision.DATE)
+        self.assertEqual(projection.date_basis, CaptureDateBasis.USER)
 
     def test_user_and_exif_wall_clocks_reject_aware_values(self) -> None:
         aware = datetime(2024, 1, 2, tzinfo=timezone.utc)

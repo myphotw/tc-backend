@@ -21,9 +21,13 @@ def test_capture_date_columns_are_nullable_migration_owned_model_schema() -> Non
     expected = {
         "user_capture_datetime": DateTime,
         "user_capture_precision": String,
+        "source_capture_year": Integer,
+        "source_capture_year_basis": String,
         "effective_capture_datetime": DateTime,
         "effective_capture_date": Date,
         "effective_capture_year": Integer,
+        "effective_capture_year_v2": Integer,
+        "effective_capture_precision": String,
         "date_basis": String,
     }
     for name, column_type in expected.items():
@@ -39,6 +43,11 @@ def test_capture_date_columns_are_nullable_migration_owned_model_schema() -> Non
         column = MemoryKeeperFileState.__table__.c[name]
         assert isinstance(column.server_default, FetchedValue)
         assert isinstance(column.server_onupdate, FetchedValue)
+
+    assert (
+        MemoryKeeperFileState.effective_capture_year.property.columns[0].name
+        == "effective_capture_year_v2"
+    )
 
     assert not any(
         isinstance(column.computed, Computed)
@@ -76,9 +85,13 @@ def test_capture_date_columns_are_excluded_from_startup_ddl_not_base_tables() ->
         assert {
             "user_capture_datetime",
             "user_capture_precision",
+            "source_capture_year",
+            "source_capture_year_basis",
             "effective_capture_datetime",
             "effective_capture_date",
             "effective_capture_year",
+            "effective_capture_year_v2",
+            "effective_capture_precision",
             "date_basis",
         }.isdisjoint(state_columns)
         index_names = {
@@ -98,7 +111,11 @@ def test_shared_metadata_creates_on_sqlite_without_postgresql_computed_sql() -> 
             column["name"]
             for column in inspect(engine).get_columns("memorykeeper_file_states")
         }
-        assert {"effective_capture_date", "effective_capture_year"}.issubset(columns)
+        assert {
+            "effective_capture_date",
+            "effective_capture_year",
+            "effective_capture_year_v2",
+        }.issubset(columns)
     finally:
         engine.dispose()
 

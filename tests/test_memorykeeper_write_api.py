@@ -1240,9 +1240,13 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
                 {
                     "user_capture_datetime",
                     "user_capture_precision",
+                    "source_capture_year",
+                    "source_capture_year_basis",
                     "effective_capture_datetime",
                     "effective_capture_date",
                     "effective_capture_year",
+                    "effective_capture_year_v2",
+                    "effective_capture_precision",
                     "date_basis",
                     "photo_category",
                     "photo_category_revision",

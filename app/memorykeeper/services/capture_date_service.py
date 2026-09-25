@@ -16,13 +16,22 @@ from app.memorykeeper.models.file_state import MemoryKeeperFileState
 class CaptureDateBasis:
     USER = "USER"
     EXIF = "EXIF"
+    SOURCE_YEAR = "SOURCE_YEAR"
     IMPORTED = "IMPORTED"
     CREATED = "CREATED"
+
+
+class CaptureDatePrecision:
+    YEAR = "YEAR"
+    DATE = "DATE"
+    DATETIME = "DATETIME"
 
 
 @dataclass(frozen=True)
 class CaptureDateProjection:
     effective_capture_datetime: datetime | None
+    effective_capture_year: int | None
+    effective_capture_precision: str | None
     date_basis: str | None
 
 
@@ -32,6 +41,8 @@ def calculate_capture_date_projection(
     original_capture_datetime: datetime | None,
     imported_at: datetime | None,
     created_at: datetime | None,
+    source_capture_year: int | None = None,
+    user_capture_precision: str | None = None,
 ) -> CaptureDateProjection:
     """Resolve one timezone-independent MemoryKeeper capture projection."""
     user_value = _require_naive_wall_clock(
@@ -42,21 +53,53 @@ def calculate_capture_date_projection(
         original_capture_datetime,
         field_name="original_capture_datetime",
     )
+    if source_capture_year is not None and not 1 <= source_capture_year <= 9999:
+        raise ValueError("source_capture_year must be between 1 and 9999")
     if user_value is not None:
-        return CaptureDateProjection(user_value, CaptureDateBasis.USER)
-    if original_value is not None:
-        return CaptureDateProjection(original_value, CaptureDateBasis.EXIF)
-    if imported_at is not None:
         return CaptureDateProjection(
-            _instant_to_utc_naive(imported_at),
+            user_value,
+            user_value.year,
+            user_capture_precision or CaptureDatePrecision.DATE,
+            CaptureDateBasis.USER,
+        )
+    if source_capture_year is not None:
+        if original_value is not None and original_value.year == source_capture_year:
+            return CaptureDateProjection(
+                original_value,
+                original_value.year,
+                CaptureDatePrecision.DATETIME,
+                CaptureDateBasis.EXIF,
+            )
+        return CaptureDateProjection(
+            None,
+            source_capture_year,
+            CaptureDatePrecision.YEAR,
+            CaptureDateBasis.SOURCE_YEAR,
+        )
+    if original_value is not None:
+        return CaptureDateProjection(
+            original_value,
+            original_value.year,
+            CaptureDatePrecision.DATETIME,
+            CaptureDateBasis.EXIF,
+        )
+    if imported_at is not None:
+        imported_value = _instant_to_utc_naive(imported_at)
+        return CaptureDateProjection(
+            imported_value,
+            imported_value.year,
+            CaptureDatePrecision.DATETIME,
             CaptureDateBasis.IMPORTED,
         )
     if created_at is not None:
+        created_value = _instant_to_utc_naive(created_at)
         return CaptureDateProjection(
-            _instant_to_utc_naive(created_at),
+            created_value,
+            created_value.year,
+            CaptureDatePrecision.DATETIME,
             CaptureDateBasis.CREATED,
         )
-    return CaptureDateProjection(None, None)
+    return CaptureDateProjection(None, None, None, None)
 
 
 class MemoryKeeperCaptureDateService:
@@ -106,20 +149,23 @@ class MemoryKeeperCaptureDateService:
             ),
             imported_at=service_link.created_at,
             created_at=common_file.created_at,
+            source_capture_year=state.source_capture_year,
+            user_capture_precision=state.user_capture_precision,
         )
         state.effective_capture_datetime = projection.effective_capture_datetime
+        state.effective_capture_year = projection.effective_capture_year
+        state.effective_capture_precision = projection.effective_capture_precision
         state.date_basis = projection.date_basis
-        # effective_capture_date/year are PostgreSQL stored generated columns.
-        # Portable unit databases do not implement the production generated
-        # expressions, so keep their projection coherent without assigning to
-        # PostgreSQL generated columns.
+        # effective_capture_date and the legacy year are PostgreSQL stored
+        # generated columns. Portable unit databases do not implement those
+        # expressions, so keep their values coherent there.
         if self.db.get_bind().dialect.name != "postgresql":
             state.effective_capture_date = (
                 projection.effective_capture_datetime.date()
                 if projection.effective_capture_datetime is not None
                 else None
             )
-            state.effective_capture_year = (
+            state.legacy_effective_capture_year = (
                 projection.effective_capture_datetime.year
                 if projection.effective_capture_datetime is not None
                 else None

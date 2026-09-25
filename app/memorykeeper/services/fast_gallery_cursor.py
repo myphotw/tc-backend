@@ -20,12 +20,29 @@ class FastGalleryCursor:
     file_id: int
 
 
+@dataclass(frozen=True)
+class FastGalleryDateUnclassifiedCursor:
+    file_id: int
+
+
 def encode_cursor(cursor: FastGalleryCursor) -> str:
     payload = {
         "v": _CURSOR_VERSION,
         "effective_capture_datetime": cursor.effective_capture_datetime.isoformat(
             timespec="microseconds"
         ),
+        "file_id": cursor.file_id,
+    }
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+
+def encode_date_unclassified_cursor(
+    cursor: FastGalleryDateUnclassifiedCursor,
+) -> str:
+    payload = {
+        "v": _CURSOR_VERSION,
+        "mode": "date_unclassified",
         "file_id": cursor.file_id,
     }
     encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -57,6 +74,43 @@ def decode_cursor(value: str) -> FastGalleryCursor:
         ):
             raise ValueError("invalid cursor values")
         return FastGalleryCursor(captured_at, file_id)
+    except (
+        UnicodeDecodeError,
+        binascii.Error,
+        json.JSONDecodeError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_GALLERY_CURSOR", "message": "Invalid gallery cursor"},
+        ) from exc
+
+
+def decode_date_unclassified_cursor(
+    value: str,
+) -> FastGalleryDateUnclassifiedCursor:
+    """Decode the file-id keyset used only by YEAR-only Gallery reads."""
+    try:
+        padded = value + ("=" * (-len(value) % 4))
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict) or set(payload) != {
+            "v",
+            "mode",
+            "file_id",
+        }:
+            raise ValueError("unexpected cursor fields")
+        file_id = payload["file_id"]
+        if (
+            payload["v"] != _CURSOR_VERSION
+            or payload["mode"] != "date_unclassified"
+            or not isinstance(file_id, int)
+            or isinstance(file_id, bool)
+            or file_id <= 0
+        ):
+            raise ValueError("invalid cursor values")
+        return FastGalleryDateUnclassifiedCursor(file_id)
     except (
         UnicodeDecodeError,
         binascii.Error,

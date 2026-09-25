@@ -20,12 +20,15 @@ class FastGalleryPhotoItem(BaseModel):
     thumbnail_url: str | None = None
     favorite: bool
     has_gps: bool
-    effective_capture_datetime: datetime
-    effective_capture_date: date
+    effective_capture_datetime: datetime | None
+    effective_capture_date: date | None
     effective_capture_year: int
+    effective_capture_precision: str | None = None
     date_basis: str | None = None
     user_capture_datetime: datetime | None = None
     user_capture_precision: str | None = None
+    source_capture_year: int | None = None
+    source_capture_year_basis: str | None = None
     date_revision: int = 0
     photo_category: Literal["NORMAL", "DAILY"] = "NORMAL"
     category_revision: int = 0
@@ -87,6 +90,7 @@ class FastGalleryYearNode(BaseModel):
     count: int
     daily_count: int = 0
     unclassified_count: int = 0
+    date_unclassified_count: int = 0
     countries: list[FastGalleryCountryNode] = Field(default_factory=list)
 
 

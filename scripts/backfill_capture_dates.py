@@ -53,9 +53,12 @@ class CaptureDateSnapshot:
     state_exists: bool
     user_capture_datetime: datetime | None
     user_capture_precision: str | None
+    source_capture_year: int | None
     effective_capture_datetime: datetime | None
     effective_capture_date: date | None
     effective_capture_year: int | None
+    legacy_effective_capture_year: int | None
+    effective_capture_precision: str | None
     date_basis: str | None
     revision: int | None
 
@@ -267,7 +270,14 @@ def validate_capture_dates(db: Session) -> ValidationStats:
 
         projection = _projection_for_snapshot(snapshot, original_candidate=None)
         if snapshot.state_exists:
-            if snapshot.effective_capture_datetime != projection.effective_capture_datetime:
+            if (
+                snapshot.effective_capture_datetime
+                != projection.effective_capture_datetime
+                or snapshot.effective_capture_year
+                != projection.effective_capture_year
+                or snapshot.effective_capture_precision
+                != projection.effective_capture_precision
+            ):
                 stats.effective_mismatch += 1
             if snapshot.date_basis != projection.date_basis:
                 stats.basis_mismatch += 1
@@ -279,7 +289,7 @@ def validate_capture_dates(db: Session) -> ValidationStats:
             if postgres:
                 if snapshot.effective_capture_date != _expected_date(snapshot):
                     stats.generated_date_mismatch += 1
-                if snapshot.effective_capture_year != _expected_year(snapshot):
+                if snapshot.legacy_effective_capture_year != _expected_year(snapshot):
                     stats.generated_year_mismatch += 1
 
     stats.orphan_states = _orphan_state_count(db)
@@ -361,6 +371,9 @@ def _snapshot_from_row(
         user_capture_precision=(
             state.user_capture_precision if state is not None else None
         ),
+        source_capture_year=(
+            state.source_capture_year if state is not None else None
+        ),
         effective_capture_datetime=(
             state.effective_capture_datetime if state is not None else None
         ),
@@ -369,6 +382,12 @@ def _snapshot_from_row(
         ),
         effective_capture_year=(
             state.effective_capture_year if state is not None else None
+        ),
+        legacy_effective_capture_year=(
+            state.legacy_effective_capture_year if state is not None else None
+        ),
+        effective_capture_precision=(
+            state.effective_capture_precision if state is not None else None
         ),
         date_basis=state.date_basis if state is not None else None,
         revision=state.revision if state is not None else None,
@@ -443,6 +462,9 @@ def _record_dry_run_row(
         snapshot.state_exists
         and (
             snapshot.effective_capture_datetime != projection.effective_capture_datetime
+            or snapshot.effective_capture_year != projection.effective_capture_year
+            or snapshot.effective_capture_precision
+            != projection.effective_capture_precision
             or snapshot.date_basis != projection.date_basis
         )
     )
@@ -496,6 +518,8 @@ def _apply_snapshot(
         ),
         imported_at=service_link.created_at,
         created_at=common_file.created_at,
+        source_capture_year=state.source_capture_year,
+        user_capture_precision=state.user_capture_precision,
     )
     projection_mismatch = not _state_matches_projection(state, projection)
     generated_mismatch = _state_generated_mismatch(state, postgres=_is_postgresql(db))
@@ -631,11 +655,13 @@ def _projection_for_snapshot(
 ) -> CaptureDateProjection:
     return calculate_capture_date_projection(
         user_capture_datetime=snapshot.user_capture_datetime,
+        user_capture_precision=snapshot.user_capture_precision,
         original_capture_datetime=(
             snapshot.original_capture_datetime or original_candidate
         ),
         imported_at=snapshot.service_created_at,
         created_at=snapshot.file_created_at,
+        source_capture_year=snapshot.source_capture_year,
     )
 
 
@@ -645,6 +671,8 @@ def _state_matches_projection(
 ) -> bool:
     return (
         state.effective_capture_datetime == projection.effective_capture_datetime
+        and state.effective_capture_year == projection.effective_capture_year
+        and state.effective_capture_precision == projection.effective_capture_precision
         and state.date_basis == projection.date_basis
     )
 
@@ -660,7 +688,7 @@ def _snapshot_generated_mismatch(
         return False
     return (
         snapshot.effective_capture_date != _expected_date(snapshot)
-        or snapshot.effective_capture_year != _expected_year(snapshot)
+        or snapshot.legacy_effective_capture_year != _expected_year(snapshot)
     )
 
 
@@ -675,7 +703,7 @@ def _state_generated_mismatch(
     expected_year = state.effective_capture_datetime.year if state.effective_capture_datetime else None
     return (
         state.effective_capture_date != expected_date
-        or state.effective_capture_year != expected_year
+        or state.legacy_effective_capture_year != expected_year
     )
 
 

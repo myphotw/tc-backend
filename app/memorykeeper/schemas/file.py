@@ -140,9 +140,12 @@ class MemoryKeeperCaptureDateUpdateItem(BaseModel):
     file_id: str
     user_capture_datetime: datetime | None
     user_capture_precision: str | None
+    source_capture_year: int | None = None
+    source_capture_year_basis: str | None = None
     effective_capture_datetime: datetime | None
     effective_capture_date: date | None
     effective_capture_year: int | None
+    effective_capture_precision: str | None = None
     date_basis: str | None
     date_revision: int
 

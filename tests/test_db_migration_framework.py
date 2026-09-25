@@ -85,9 +85,9 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
     def test_revision_graph_has_single_photo_category_head(self) -> None:
         checks = verify_revision_graph(build_alembic_config())
 
-        self.assertIn("single_head=20260914_0007", checks)
+        self.assertIn("single_head=20260925_0008", checks)
         self.assertIn(f"baseline={BASELINE_REVISION}", checks)
-        self.assertIn("revision_count=7", checks)
+        self.assertIn("revision_count=8", checks)
 
     def test_alembic_config_contains_no_database_url(self) -> None:
         content = (PROJECT_ROOT / "alembic.ini").read_text(encoding="utf-8")

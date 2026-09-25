@@ -27,7 +27,10 @@ from app.memorykeeper.schemas.fast_gallery import (
 )
 from app.memorykeeper.services.fast_gallery_cursor import (
     FastGalleryCursor,
+    FastGalleryDateUnclassifiedCursor,
+    decode_date_unclassified_cursor,
     decode_cursor,
+    encode_date_unclassified_cursor,
     encode_cursor,
 )
 from app.memorykeeper.services.fast_gallery_location import (
@@ -53,18 +56,30 @@ class MemoryKeeperFastGalleryService:
         location_key: str | None = None,
     ) -> FastGalleryPhotosResponse:
         self._validate_dates(filters)
+        self._validate_date_unclassified(filters)
         location = decode_location_key(location_key) if location_key else None
         self._validate_category_parameters(filters, location)
         self._validate_unclassified_parameters(filters, location)
         self._validate_location_parameters(filters.place_id, location)
         if location is not None:
             filters = replace(filters, location=location)
-        decoded = decode_cursor(cursor) if cursor else None
+        if filters.date_unclassified:
+            decoded_year_only = (
+                decode_date_unclassified_cursor(cursor) if cursor else None
+            )
+            decoded = None
+        else:
+            decoded = decode_cursor(cursor) if cursor else None
+            decoded_year_only = None
         rows = self.repository.photos(
             filters=filters,
             limit=limit,
             cursor_datetime=(decoded.effective_capture_datetime if decoded else None),
-            cursor_file_id=(decoded.file_id if decoded else None),
+            cursor_file_id=(
+                decoded_year_only.file_id
+                if decoded_year_only is not None
+                else (decoded.file_id if decoded else None)
+            ),
         )
         has_more = len(rows) > limit
         page_rows = rows[:limit]
@@ -72,12 +87,21 @@ class MemoryKeeperFastGalleryService:
         next_cursor = None
         if has_more and items:
             last = items[-1]
-            next_cursor = encode_cursor(
-                FastGalleryCursor(
-                    effective_capture_datetime=last.effective_capture_datetime,
-                    file_id=last.common_file_id,
+            if filters.date_unclassified:
+                next_cursor = encode_date_unclassified_cursor(
+                    FastGalleryDateUnclassifiedCursor(
+                        file_id=last.common_file_id,
+                    )
                 )
-            )
+            else:
+                if last.effective_capture_datetime is None:
+                    raise RuntimeError("Exact-date Gallery row has no capture datetime")
+                next_cursor = encode_cursor(
+                    FastGalleryCursor(
+                        effective_capture_datetime=last.effective_capture_datetime,
+                        file_id=last.common_file_id,
+                    )
+                )
         return FastGalleryPhotosResponse(
             items=items,
             next_cursor=next_cursor,
@@ -120,11 +144,14 @@ class MemoryKeeperFastGalleryService:
                     "count": 0,
                     "daily_count": 0,
                     "unclassified_count": 0,
+                    "date_unclassified_count": 0,
                     "countries": {},
                 },
             )
             count = int(row.count)
             year_bucket["count"] += count  # type: ignore[index]
+            if bool(row.date_unclassified):
+                year_bucket["date_unclassified_count"] += count  # type: ignore[index]
             if category == "DAILY":
                 year_bucket["daily_count"] += count  # type: ignore[index]
                 continue
@@ -170,6 +197,9 @@ class MemoryKeeperFastGalleryService:
                     count=year_bucket["count"],  # type: ignore[index]
                     daily_count=year_bucket["daily_count"],  # type: ignore[index]
                     unclassified_count=year_bucket["unclassified_count"],  # type: ignore[index]
+                    date_unclassified_count=year_bucket[
+                        "date_unclassified_count"
+                    ],  # type: ignore[index]
                     countries=[
                         FastGalleryCountryNode(
                             country=country,
@@ -213,9 +243,12 @@ class MemoryKeeperFastGalleryService:
             effective_capture_datetime=row.effective_capture_datetime,  # type: ignore[attr-defined]
             effective_capture_date=row.effective_capture_date,  # type: ignore[attr-defined]
             effective_capture_year=int(row.effective_capture_year),  # type: ignore[attr-defined]
+            effective_capture_precision=row.effective_capture_precision,  # type: ignore[attr-defined]
             date_basis=row.date_basis,  # type: ignore[attr-defined]
             user_capture_datetime=row.user_capture_datetime,  # type: ignore[attr-defined]
             user_capture_precision=row.user_capture_precision,  # type: ignore[attr-defined]
+            source_capture_year=row.source_capture_year,  # type: ignore[attr-defined]
+            source_capture_year_basis=row.source_capture_year_basis,  # type: ignore[attr-defined]
             date_revision=int(row.date_revision or 0),  # type: ignore[attr-defined]
             photo_category=str(row.photo_category or "NORMAL"),  # type: ignore[attr-defined]
             category_revision=int(row.category_revision or 0),  # type: ignore[attr-defined]
@@ -236,6 +269,27 @@ class MemoryKeeperFastGalleryService:
                         "message": "date_from must be on or before date_to",
                     },
                 )
+
+    @staticmethod
+    def _validate_date_unclassified(filters: FastGalleryFilters) -> None:
+        if not filters.date_unclassified:
+            return
+        if filters.year is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "YEAR_REQUIRED_FOR_DATE_UNCLASSIFIED",
+                    "message": "year is required for date-unclassified Gallery reads",
+                },
+            )
+        if filters.date_from is not None or filters.date_to is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "DATE_RANGE_NOT_ALLOWED_FOR_DATE_UNCLASSIFIED",
+                    "message": "date range cannot filter photos without an exact date",
+                },
+            )
 
     @staticmethod
     def _validate_location_parameters(
