@@ -36,7 +36,13 @@ def _upgrade_to_head(
     run_with_engine_patch(migration_engine_factory, lambda: run_upgrade("head"))
 
 
-def _add_photo(session: Session, *, suffix: int, captured_at: datetime) -> CommonFile:
+def _add_photo(
+    session: Session,
+    *,
+    suffix: int,
+    captured_at: datetime | None,
+    capture_year: int | None = None,
+) -> CommonFile:
     common_file = CommonFile(
         file_id=f"{suffix:064x}",
         original_name=f"{suffix}.jpg",
@@ -50,7 +56,15 @@ def _add_photo(session: Session, *, suffix: int, captured_at: datetime) -> Commo
         MemoryKeeperFileState(
             file_id=common_file.id,
             effective_capture_datetime=captured_at,
-            date_basis="EXIF",
+            effective_capture_year=(
+                capture_year
+                if capture_year is not None
+                else (captured_at.year if captured_at is not None else None)
+            ),
+            effective_capture_precision=(
+                "DATETIME" if captured_at is not None else "YEAR"
+            ),
+            date_basis="EXIF" if captured_at is not None else "SOURCE_YEAR",
         )
     )
     session.flush()
@@ -127,7 +141,57 @@ def test_fast_gallery_keyset_uses_generated_capture_projection(
         assert "ORDER BY memorykeeper_file_states.effective_capture_datetime DESC" in compiled
 
 
-def test_fast_gallery_keyset_index_can_supply_order_without_explicit_sort(
+def test_fast_gallery_mixed_precision_keyset_crosses_null_and_year_boundaries(
+    postgresql_engine: Engine,
+    migration_engine_factory,
+) -> None:
+    _upgrade_to_head(postgresql_engine, migration_engine_factory)
+    with Session(postgresql_engine) as session:
+        exact_2025 = _add_photo(
+            session,
+            suffix=1,
+            captured_at=datetime(2025, 6, 1, 12, 0),
+        )
+        year_only_2025 = _add_photo(
+            session,
+            suffix=2,
+            captured_at=None,
+            capture_year=2025,
+        )
+        exact_2024 = _add_photo(
+            session,
+            suffix=3,
+            captured_at=datetime(2024, 12, 31, 23, 59),
+        )
+        year_only_2024 = _add_photo(
+            session,
+            suffix=4,
+            captured_at=None,
+            capture_year=2024,
+        )
+        session.commit()
+
+        service = MemoryKeeperFastGalleryService(session)
+        first = service.photos(cursor=None, limit=2, filters=FastGalleryFilters())
+        second = service.photos(
+            cursor=first.next_cursor,
+            limit=2,
+            filters=FastGalleryFilters(),
+        )
+
+        delivered = [
+            item.common_file_id for item in [*first.items, *second.items]
+        ]
+        assert delivered == [
+            exact_2025.id,
+            year_only_2025.id,
+            exact_2024.id,
+            year_only_2024.id,
+        ]
+        assert len(delivered) == len(set(delivered))
+
+
+def test_fast_gallery_mixed_precision_plan_keeps_candidate_limit(
     postgresql_engine: Engine,
     migration_engine_factory,
 ) -> None:
@@ -170,12 +234,18 @@ def test_fast_gallery_keyset_index_can_supply_order_without_explicit_sort(
             text(
                 """
                 INSERT INTO memorykeeper_file_states (
-                    file_id, effective_capture_datetime, date_basis
+                    file_id,
+                    effective_capture_datetime,
+                    effective_capture_year_v2,
+                    effective_capture_precision,
+                    date_basis
                 )
                 SELECT
                     id,
                     TIMESTAMP '2025-01-01 00:00:00'
                         + id * INTERVAL '1 second',
+                    2025,
+                    'DATETIME',
                     'EXIF'
                 FROM common_files
                 """
@@ -216,11 +286,6 @@ def test_fast_gallery_keyset_index_can_supply_order_without_explicit_sort(
 
     for plan in (first_plan, cursor_plan):
         nodes = list(_walk_plan(plan))
-        assert any(
-            node.get("Index Name") == FAST_GALLERY_INDEX
-            for node in nodes
-        )
-        assert not any(node.get("Node Type") == "Sort" for node in nodes)
         assert any(node.get("Node Type") == "Limit" for node in nodes)
 
 

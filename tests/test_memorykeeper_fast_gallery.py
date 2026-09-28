@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 from datetime import date, datetime, timedelta
+import json
 from uuid import uuid4
 
 import pytest
@@ -20,6 +22,7 @@ from app.memorykeeper.repositories.fast_gallery_repository import (
     MemoryKeeperFastGalleryRepository,
 )
 from app.memorykeeper.services.fast_gallery_service import MemoryKeeperFastGalleryService
+from app.memorykeeper.services.fast_gallery_cursor import decode_cursor
 from app.memorykeeper.services.fast_gallery_location import (
     decode_location_key,
     encode_raw_location_key,
@@ -306,6 +309,190 @@ class TestMemoryKeeperFastGallery:
         assert [item.common_file_id for item in place_unclassified.items] == [
             unregistered.id
         ]
+
+        ordinary_place_unclassified = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2023, unclassified=True),
+        )
+        assert [
+            item.common_file_id for item in ordinary_place_unclassified.items
+        ] == [unregistered.id]
+
+    def test_year_only_participates_in_general_gallery_filters(self) -> None:
+        place = self._place(display_name="등록 장소")
+        registered = self._photo(
+            None,
+            source_capture_year=2025,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+            place=place,
+            favorite=True,
+            gps=True,
+        )
+        unclassified = self._photo(
+            None,
+            source_capture_year=2025,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+            country=None,
+            city=None,
+            place_name=None,
+        )
+        self._photo(
+            None,
+            source_capture_year=2024,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+        )
+
+        by_year = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025),
+        )
+        favorites = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, favorite=True),
+        )
+        gps = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, has_gps=True),
+        )
+        registered_place = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, place_id=place.id),
+        )
+        country = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, country="대한민국"),
+        )
+        region = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(
+                year=2025,
+                country="대한민국",
+                region="서울",
+            ),
+        )
+        normal = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, photo_category="NORMAL"),
+        )
+
+        assert {item.common_file_id for item in by_year.items} == {
+            registered.id,
+            unclassified.id,
+        }
+        assert [item.common_file_id for item in favorites.items] == [registered.id]
+        assert [item.common_file_id for item in gps.items] == [registered.id]
+        assert [item.common_file_id for item in registered_place.items] == [
+            registered.id
+        ]
+        assert [item.common_file_id for item in country.items] == [registered.id]
+        assert [item.common_file_id for item in region.items] == [registered.id]
+        assert {item.common_file_id for item in normal.items} == {
+            registered.id,
+            unclassified.id,
+        }
+
+    def test_mixed_precision_keyset_is_stable_across_year_and_null_boundaries(
+        self,
+    ) -> None:
+        exact_2025 = self._photo(datetime(2025, 6, 1, 12, 0))
+        year_only_2025_old = self._photo(
+            None,
+            source_capture_year=2025,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+        )
+        year_only_2025_new = self._photo(
+            None,
+            source_capture_year=2025,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+        )
+        exact_2024 = self._photo(datetime(2024, 12, 31, 23, 59))
+        year_only_2024 = self._photo(
+            None,
+            source_capture_year=2024,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+        )
+
+        pages = []
+        cursor = None
+        while True:
+            page = self.service.photos(
+                cursor=cursor,
+                limit=2,
+                filters=FastGalleryFilters(),
+            )
+            pages.extend(page.items)
+            if not page.has_more:
+                break
+            assert page.next_cursor is not None
+            cursor = page.next_cursor
+
+        delivered = [item.common_file_id for item in pages]
+        assert delivered == [
+            exact_2025.id,
+            year_only_2025_new.id,
+            year_only_2025_old.id,
+            exact_2024.id,
+            year_only_2024.id,
+        ]
+        assert len(delivered) == len(set(delivered))
+
+    def test_date_range_does_not_assign_a_synthetic_date_to_year_only(self) -> None:
+        exact = self._photo(datetime(2025, 5, 3, 12, 0))
+        self._photo(
+            None,
+            source_capture_year=2025,
+            source_capture_year_basis="ORIGINAL_PATH",
+            effective_capture_precision="YEAR",
+            date_basis="SOURCE_YEAR",
+        )
+
+        response = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(
+                year=2025,
+                date_from=date(2025, 1, 1),
+                date_to=date(2025, 12, 31),
+            ),
+        )
+
+        assert [item.common_file_id for item in response.items] == [exact.id]
+
+    def test_legacy_exact_date_cursor_is_accepted_during_cursor_rollout(self) -> None:
+        payload = {
+            "v": 1,
+            "effective_capture_datetime": "2025-05-03T12:00:00.000000",
+            "file_id": 123,
+        }
+        encoded = base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        ).decode("ascii").rstrip("=")
+
+        cursor = decode_cursor(encoded)
+
+        assert cursor.effective_capture_year == 2025
+        assert cursor.effective_capture_datetime == datetime(2025, 5, 3, 12, 0)
+        assert cursor.file_id == 123
 
     def test_filters_and_null_deleted_and_astro_rows_are_excluded(self) -> None:
         place = self._place()
@@ -1112,7 +1299,11 @@ class TestMemoryKeeperFastGallery:
         assert "common_files.mime_type" in sql
         assert "gallery_file.extension" in sql
         assert "gallery_file.mime_type" in sql
-        assert "ORDER BY gallery_candidates.effective_capture_datetime DESC" in sql
+        assert "memorykeeper_file_states.effective_capture_year_v2 IS NOT NULL" in sql
+        assert (
+            "ORDER BY gallery_candidates.effective_capture_year_v2 DESC, "
+            "gallery_candidates.effective_capture_datetime DESC NULLS LAST"
+        ) in sql
 
     def test_postgresql_unclassified_predicate_is_before_candidate_limit(
         self,

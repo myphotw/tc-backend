@@ -137,6 +137,7 @@ class MemoryKeeperFastGalleryRepository:
         limit: int,
         cursor_datetime: datetime | None,
         cursor_file_id: int | None,
+        cursor_year: int | None = None,
     ):
         active_file = self._correlated_exists(
             select(CommonFile.id).where(
@@ -171,15 +172,12 @@ class MemoryKeeperFastGalleryRepository:
             )
             .where(active_file)
             .where(memorykeeper_link)
+            .where(MemoryKeeperFileState.effective_capture_year.isnot(None))
         )
         if filters.date_unclassified:
             statement = statement.where(
                 MemoryKeeperFileState.effective_capture_date.is_(None),
                 MemoryKeeperFileState.effective_capture_precision == "YEAR",
-            )
-        else:
-            statement = statement.where(
-                MemoryKeeperFileState.effective_capture_datetime.isnot(None)
             )
         if filters.year is not None:
             statement = statement.where(
@@ -287,24 +285,47 @@ class MemoryKeeperFastGalleryRepository:
             statement = statement.where(
                 MemoryKeeperFileState.file_id < cursor_file_id
             )
-        elif cursor_datetime is not None and cursor_file_id is not None:
-            statement = statement.where(
-                or_(
-                    MemoryKeeperFileState.effective_capture_datetime
-                    < cursor_datetime,
-                    and_(
-                        MemoryKeeperFileState.effective_capture_datetime
-                        == cursor_datetime,
-                        MemoryKeeperFileState.file_id < cursor_file_id,
-                    ),
-                )
+        elif cursor_file_id is not None:
+            effective_cursor_year = (
+                cursor_year
+                if cursor_year is not None
+                else (cursor_datetime.year if cursor_datetime is not None else None)
             )
+            if effective_cursor_year is not None:
+                if cursor_datetime is None:
+                    within_cursor_year = and_(
+                        MemoryKeeperFileState.effective_capture_datetime.is_(None),
+                        MemoryKeeperFileState.file_id < cursor_file_id,
+                    )
+                else:
+                    within_cursor_year = or_(
+                        MemoryKeeperFileState.effective_capture_datetime
+                        < cursor_datetime,
+                        MemoryKeeperFileState.effective_capture_datetime.is_(None),
+                        and_(
+                            MemoryKeeperFileState.effective_capture_datetime
+                            == cursor_datetime,
+                            MemoryKeeperFileState.file_id < cursor_file_id,
+                        ),
+                    )
+                statement = statement.where(
+                    or_(
+                        MemoryKeeperFileState.effective_capture_year
+                        < effective_cursor_year,
+                        and_(
+                            MemoryKeeperFileState.effective_capture_year
+                            == effective_cursor_year,
+                            within_cursor_year,
+                        ),
+                    )
+                )
 
         if filters.date_unclassified:
             statement = statement.order_by(MemoryKeeperFileState.file_id.desc())
         else:
             statement = statement.order_by(
-                MemoryKeeperFileState.effective_capture_datetime.desc(),
+                MemoryKeeperFileState.effective_capture_year.desc(),
+                MemoryKeeperFileState.effective_capture_datetime.desc().nulls_last(),
                 MemoryKeeperFileState.file_id.desc(),
             )
         return statement.limit(limit + 1).subquery("gallery_candidates")
@@ -316,6 +337,7 @@ class MemoryKeeperFastGalleryRepository:
         limit: int,
         cursor_datetime: datetime | None,
         cursor_file_id: int | None,
+        cursor_year: int | None = None,
     ) -> Select:
         """Build the exact statement used by `/photos` and EXPLAIN tests."""
         candidates = self._photo_candidates(
@@ -323,6 +345,7 @@ class MemoryKeeperFastGalleryRepository:
             limit=limit,
             cursor_datetime=cursor_datetime,
             cursor_file_id=cursor_file_id,
+            cursor_year=cursor_year,
         )
         if self.db.get_bind().dialect.name == "postgresql":
             return self._postgresql_photos_statement(candidates)
@@ -505,7 +528,8 @@ class MemoryKeeperFastGalleryRepository:
             )
             .select_from(from_clause)
             .order_by(
-                candidates.c.effective_capture_datetime.desc(),
+                candidates.c.effective_capture_year.desc(),
+                candidates.c.effective_capture_datetime.desc().nulls_last(),
                 candidates.c.common_file_id.desc(),
             )
         )
@@ -517,12 +541,14 @@ class MemoryKeeperFastGalleryRepository:
         limit: int,
         cursor_datetime: datetime | None,
         cursor_file_id: int | None,
+        cursor_year: int | None = None,
     ) -> list[object]:
         statement = self.build_photos_statement(
             filters=filters,
             limit=limit,
             cursor_datetime=cursor_datetime,
             cursor_file_id=cursor_file_id,
+            cursor_year=cursor_year,
         )
         return list(self.db.execute(statement).all())
 

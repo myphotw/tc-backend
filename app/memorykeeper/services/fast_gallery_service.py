@@ -74,6 +74,7 @@ class MemoryKeeperFastGalleryService:
         rows = self.repository.photos(
             filters=filters,
             limit=limit,
+            cursor_year=(decoded.effective_capture_year if decoded else None),
             cursor_datetime=(decoded.effective_capture_datetime if decoded else None),
             cursor_file_id=(
                 decoded_year_only.file_id
@@ -94,10 +95,9 @@ class MemoryKeeperFastGalleryService:
                     )
                 )
             else:
-                if last.effective_capture_datetime is None:
-                    raise RuntimeError("Exact-date Gallery row has no capture datetime")
                 next_cursor = encode_cursor(
                     FastGalleryCursor(
+                        effective_capture_year=last.effective_capture_year,
                         effective_capture_datetime=last.effective_capture_datetime,
                         file_id=last.common_file_id,
                     )
