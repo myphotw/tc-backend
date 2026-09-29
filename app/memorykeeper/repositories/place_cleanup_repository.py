@@ -51,16 +51,28 @@ def _missing_hierarchy_value(expression):
     return func.nullif(func.trim(expression), "").is_(None)
 
 
-def hierarchy_unclassified_condition():
-    """Match canonical Gallery rows without a usable hierarchy label."""
+def location_hierarchy_complete_condition():
+    """Return whether canonical country, region, and place labels are usable."""
+    return and_(
+        ~_missing_hierarchy_value(memorykeeper_country_expression()),
+        ~_missing_hierarchy_value(memorykeeper_region_expression()),
+        ~_missing_hierarchy_value(memorykeeper_place_display_expression()),
+    )
+
+
+def location_hierarchy_incomplete_condition():
+    """Classify NORMAL photos whose canonical Gallery hierarchy is incomplete."""
     return and_(
         normal_photo_condition(),
+        ~location_hierarchy_complete_condition(),
+    )
+
+
+def hierarchy_unclassified_condition():
+    """Keep the legacy cleanup queue scoped to exact-date photos."""
+    return and_(
+        location_hierarchy_incomplete_condition(),
         MemoryKeeperFileState.effective_capture_datetime.isnot(None),
-        or_(
-            _missing_hierarchy_value(memorykeeper_country_expression()),
-            _missing_hierarchy_value(memorykeeper_region_expression()),
-            _missing_hierarchy_value(memorykeeper_place_display_expression()),
-        ),
     )
 
 

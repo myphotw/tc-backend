@@ -166,7 +166,7 @@ class TestMemoryKeeperPlaceCleanup:
         assert summary.total_photos == 7
         assert summary.favorite_count == 1
         assert summary.recent_count == 7
-        assert summary.pending_count == 3
+        assert summary.pending_count == 5
         assert summary.place_cleanup_count == 6
         assert all(page.total == 6 for page in pages)
         assert len(listed_ids) == len(set(listed_ids)) == 6
@@ -246,7 +246,7 @@ class TestMemoryKeeperPlaceCleanup:
             expected_revision=0,
         )
         after_pending = self.fast_gallery.summary()
-        assert after_pending.pending_count == 0
+        assert after_pending.pending_count == 1
         assert after_pending.place_cleanup_count == 1
 
         places.assign_file(

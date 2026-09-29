@@ -197,9 +197,10 @@ to the original or performs an on-demand resize.
 
 `GET /api/memorykeeper/gallery/hierarchy` adds a nullable `location_key` to
 each place leaf. It is an opaque, versioned identity; clients must not parse
-its contents. Rows without a registered MemoryKeeper Place relation are
-collapsed into one unclassified leaf per year, regardless of raw country,
-region, place name, or GPS values.
+its contents. NORMAL rows whose canonical country, region, or place label is
+null, empty, or whitespace-only are collapsed into one unclassified leaf per
+year. Registered Place values take priority and raw metadata remains the
+fallback, so a Place UUID alone neither guarantees nor prevents classification.
 `GET /api/memorykeeper/gallery/photos` accepts the key as an optional
 `location_key` query parameter and applies the represented leaf filter before
 keyset pagination. When present, it is authoritative for the location leaf;
@@ -209,12 +210,13 @@ with the same `place_id`; a conflicting `place_id`, or any `place_id` paired
 with a raw key, returns `400`.
 
 The photos endpoint also accepts `unclassified=true`. Its authoritative
-predicate is `photo_category=NORMAL` plus an absent
-`common_file_metadata.memorykeeper_place_id` relation;
-it does not mean that raw country, region, place name, or GPS is missing. The
-predicate is applied before keyset pagination, and the number of rows obtained
-by paging a year with this filter matches that year's unclassified hierarchy
-leaf count. `country` and `region` may refine raw metadata within this set.
+predicate is `photo_category=NORMAL` plus at least one unusable canonical
+country, region, or place label after applying the registered-Place-first raw
+metadata fallback. The predicate is independent of date precision, is applied
+before keyset pagination, and the number of rows obtained by paging a year
+with this filter matches that year's unclassified hierarchy leaf count.
+`country` and `region` may refine the available hierarchy values within this
+set.
 Combining `unclassified=true` with `place_id` or `location_key` is contradictory
 and returns `422 GALLERY_UNCLASSIFIED_FILTER_CONFLICT`.
 
@@ -223,8 +225,8 @@ requires `year=YYYY` and matches `effective_capture_precision=YEAR` with a null
 exact date. These rows use a file-id keyset cursor because they intentionally
 have no `effective_capture_datetime`. The hierarchy exposes their additive
 `date_unclassified_count`; the existing `unclassified_count` continues to mean
-an absent registered Place relation. Date-unclassified rows may still have a
-Place and may be either NORMAL or DAILY.
+an incomplete canonical location hierarchy. Date-unclassified rows may also be
+location-unclassified and may be either NORMAL or DAILY.
 
 MemoryKeeper's final photo categories are `NORMAL` and `DAILY`. Fast Gallery
 cards add `photo_category` and the independent optimistic

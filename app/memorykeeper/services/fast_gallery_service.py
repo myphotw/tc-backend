@@ -167,7 +167,7 @@ class MemoryKeeperFastGalleryService:
                     place=row.place_display_name,
                 )
             )
-            if place_id is None:
+            if bool(row.location_unclassified):
                 year_bucket["unclassified_count"] += count  # type: ignore[index]
             countries = year_bucket["countries"]  # type: ignore[index]
             country_bucket = countries.setdefault(  # type: ignore[union-attr]
@@ -178,17 +178,20 @@ class MemoryKeeperFastGalleryService:
             regions = country_bucket["regions"]  # type: ignore[index]
             region_bucket = regions.setdefault(  # type: ignore[union-attr]
                 region,
-                {"count": 0, "places": []},
+                {"count": 0, "places": {}},
             )
             region_bucket["count"] += count  # type: ignore[index]
-            region_bucket["places"].append(  # type: ignore[index]
-                FastGalleryPlaceNode(
+            places = region_bucket["places"]  # type: ignore[index]
+            place_bucket = places.get(location_key)  # type: ignore[union-attr]
+            if place_bucket is None:
+                places[location_key] = FastGalleryPlaceNode(  # type: ignore[index]
                     memorykeeper_place_id=place_id,
                     location_key=location_key,
                     display_name=row.place_display_name,
                     count=count,
                 )
-            )
+            else:
+                place_bucket.count += count
 
         return FastGalleryHierarchyResponse(
             items=[
@@ -208,7 +211,9 @@ class MemoryKeeperFastGalleryService:
                                 FastGalleryRegionNode(
                                     region=region,
                                     count=region_bucket["count"],  # type: ignore[index]
-                                    places=region_bucket["places"],  # type: ignore[index]
+                                    places=list(  # type: ignore[arg-type]
+                                        region_bucket["places"].values()  # type: ignore[index, union-attr]
+                                    ),
                                 )
                                 for region, region_bucket in country_bucket["regions"].items()  # type: ignore[index]
                             ],

@@ -47,6 +47,7 @@ class TestMemoryKeeperFastGallery:
         *,
         display_name: str = "서울숲",
         country: str | None = "대한민국",
+        province: str | None = None,
         city: str | None = "서울",
     ) -> MemoryKeeperPlace:
         place = MemoryKeeperPlace(
@@ -54,6 +55,7 @@ class TestMemoryKeeperFastGallery:
             display_name=display_name,
             canonical_name=display_name,
             country=country,
+            province=province,
             city=city,
             latitude=37.5,
             longitude=127.0,
@@ -73,6 +75,7 @@ class TestMemoryKeeperFastGallery:
         gps: bool = False,
         place: MemoryKeeperPlace | None = None,
         country: str | None = "대한민국",
+        province: str | None = None,
         city: str | None = "서울",
         place_name: str | None = "원시 장소",
         date_basis: str | None = "EXIF",
@@ -105,6 +108,7 @@ class TestMemoryKeeperFastGallery:
                 gps_lat=37.5 if gps else None,
                 gps_lon=127.0 if gps else None,
                 country=country,
+                province=province,
                 city=city,
                 place_name=place_name,
                 memorykeeper_place_id=place.id if place else None,
@@ -248,9 +252,9 @@ class TestMemoryKeeperFastGallery:
         assert year.count == 4
         assert year.date_unclassified_count == 3
         assert year.daily_count == 1
-        # Place classification is independent: the YEAR-only unregistered row
-        # and the exact-date unregistered row are both Place-unclassified.
-        assert year.unclassified_count == 2
+        # Place classification is independent from date precision. Only the
+        # row missing canonical country/region/place is location-unclassified.
+        assert year.unclassified_count == 1
 
     def test_date_unclassified_requires_year_and_keeps_place_filter_separate(
         self,
@@ -531,18 +535,22 @@ class TestMemoryKeeperFastGallery:
         assert item.preview_url == f"/api/common/gallery/{matched.file_id}/preview"
         assert item.thumbnail_url == f"/api/common/gallery/{matched.file_id}/thumbnail"
 
-    def test_unclassified_uses_registered_relation_and_matches_hierarchy_count(
+    def test_unclassified_uses_canonical_hierarchy_and_matches_hierarchy_count(
         self,
     ) -> None:
-        registered_place = self._place(display_name="등록 장소")
-        registered = self._photo(
+        incomplete_place = self._place(
+            display_name="등록 장소",
+            country=None,
+            city=None,
+        )
+        incomplete_registered = self._photo(
             datetime(2025, 1, 3, 10, 0),
-            place=registered_place,
+            place=incomplete_place,
             country=None,
             city=None,
             place_name=None,
         )
-        unclassified_with_raw_location = self._photo(
+        complete_raw_location = self._photo(
             datetime(2025, 1, 2, 10, 0),
             country="대한민국",
             city="강릉",
@@ -557,9 +565,11 @@ class TestMemoryKeeperFastGallery:
         )
 
         assert [item.common_file_id for item in response.items] == [
-            unclassified_with_raw_location.id
+            incomplete_registered.id
         ]
-        assert registered.id not in {item.common_file_id for item in response.items}
+        assert complete_raw_location.id not in {
+            item.common_file_id for item in response.items
+        }
         assert set(response.model_dump()) == {
             "items",
             "next_cursor",
@@ -576,7 +586,13 @@ class TestMemoryKeeperFastGallery:
             for leaf in region.places
         ]
         unclassified_leaf = next(
-            leaf for leaf in leaves if leaf.memorykeeper_place_id is None
+            leaf
+            for leaf in leaves
+            if leaf.memorykeeper_place_id is None
+            and decode_location_key(leaf.location_key)
+            == decode_location_key(
+                encode_raw_location_key(country=None, region=None, place=None)
+            )
         )
         assert unclassified_leaf.count == len(response.items) == 1
         assert unclassified_leaf.display_name is None
@@ -586,13 +602,213 @@ class TestMemoryKeeperFastGallery:
             )
         )
 
+    def test_operational_unclassified_count_includes_incomplete_registered_place(
+        self,
+    ) -> None:
+        true_unclassified = [
+            self._photo(
+                None,
+                source_capture_year=2025,
+                source_capture_year_basis="ORIGINAL_PATH",
+                effective_capture_precision="YEAR",
+                date_basis="SOURCE_YEAR",
+                country=None,
+                city=None,
+                place_name=None,
+            )
+            for _ in range(22)
+        ]
+        incomplete_place = self._place(
+            display_name="계층 미완성 등록 장소",
+            country=None,
+            province=None,
+            city=None,
+        )
+        incomplete_registered = self._photo(
+            datetime(2025, 7, 1, 12, 0),
+            place=incomplete_place,
+            country=None,
+            province=None,
+            city=None,
+            place_name=None,
+        )
+        fallback_place = self._place(
+            display_name="fallback 대상",
+            country=None,
+            province=None,
+            city=None,
+        )
+        fallback_complete = self._photo(
+            datetime(2025, 6, 1, 12, 0),
+            place=fallback_place,
+            country="대한민국",
+            city="인천",
+            place_name="메타데이터 장소",
+        )
+        daily = self._photo(
+            datetime(2025, 5, 1, 12, 0),
+            country=None,
+            city=None,
+            place_name=None,
+            photo_category="DAILY",
+        )
+
+        unclassified = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, unclassified=True),
+        )
+        date_unclassified = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, date_unclassified=True),
+        )
+        both = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(
+                year=2025,
+                unclassified=True,
+                date_unclassified=True,
+            ),
+        )
+        hierarchy = self.service.hierarchy()
+        summary = self.service.summary()
+        year = next(item for item in hierarchy.items if item.year == 2025)
+        visible_unclassified = next(
+            country for country in year.countries if country.country is None
+        )
+
+        expected_unclassified_ids = {
+            *(photo.id for photo in true_unclassified),
+            incomplete_registered.id,
+        }
+        assert {item.common_file_id for item in unclassified.items} == (
+            expected_unclassified_ids
+        )
+        assert len(unclassified.items) == 23
+        assert year.unclassified_count == 23
+        assert visible_unclassified.count == 23
+        assert summary.pending_count == 23
+        assert {item.common_file_id for item in date_unclassified.items} == {
+            photo.id for photo in true_unclassified
+        }
+        assert {item.common_file_id for item in both.items} == {
+            photo.id for photo in true_unclassified
+        }
+        assert year.date_unclassified_count == 22
+        assert year.daily_count == 1
+        assert fallback_complete.id not in expected_unclassified_ids
+        assert daily.id not in expected_unclassified_ids
+
+    def test_location_hierarchy_completeness_matrix(self) -> None:
+        missing_country_and_region = self._place(
+            display_name="국가 지역 없음",
+            country=None,
+            province=None,
+            city=None,
+        )
+        missing_region = self._place(
+            display_name="지역 없음",
+            country="대한민국",
+            province=None,
+            city=None,
+        )
+        city_without_province = self._place(
+            display_name="시 단위 장소",
+            country="대한민국",
+            province=None,
+            city="서울",
+        )
+        complete = self._place(
+            display_name="완전한 장소",
+            country="대한민국",
+            province="경기도",
+            city="성남",
+        )
+        fallback_place = self._place(
+            display_name="fallback 장소",
+            country=None,
+            province=None,
+            city=None,
+        )
+
+        missing_country_photo = self._photo(
+            datetime(2025, 4, 5, 12, 0),
+            place=missing_country_and_region,
+            country=None,
+            province=None,
+            city=None,
+            place_name=None,
+        )
+        missing_region_photo = self._photo(
+            datetime(2025, 4, 4, 12, 0),
+            place=missing_region,
+            country=None,
+            province=None,
+            city=None,
+            place_name=None,
+        )
+        missing_place_photo = self._photo(
+            datetime(2025, 4, 3, 12, 0),
+            country="대한민국",
+            province="강원도",
+            city=None,
+            place_name="   ",
+        )
+        city_without_province_photo = self._photo(
+            datetime(2025, 4, 2, 12, 0),
+            place=city_without_province,
+            country=None,
+            province=None,
+            city=None,
+            place_name=None,
+        )
+        complete_photo = self._photo(
+            datetime(2025, 4, 1, 12, 0),
+            place=complete,
+            country=None,
+            province=None,
+            city=None,
+            place_name=None,
+        )
+        fallback_complete_photo = self._photo(
+            datetime(2025, 3, 31, 12, 0),
+            place=fallback_place,
+            country="대한민국",
+            province="제주특별자치도",
+            city=None,
+            place_name="fallback 이름",
+        )
+
+        response = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, unclassified=True),
+        )
+
+        assert {item.common_file_id for item in response.items} == {
+            missing_country_photo.id,
+            missing_region_photo.id,
+            missing_place_photo.id,
+        }
+        assert city_without_province_photo.id not in {
+            item.common_file_id for item in response.items
+        }
+        assert complete_photo.id not in {
+            item.common_file_id for item in response.items
+        }
+        assert fallback_complete_photo.id not in {
+            item.common_file_id for item in response.items
+        }
+
     def test_unclassified_preserves_keyset_pagination_and_raw_refinement(self) -> None:
         expected = [
             self._photo(
                 datetime(2025, 1, day, 10, 0),
                 country="대한민국",
                 city="강릉",
-                place_name=f"원시 장소 {day}",
+                place_name=None,
             )
             for day in (5, 3, 1)
         ]
@@ -844,7 +1060,7 @@ class TestMemoryKeeperFastGallery:
             gps=True,
             country="대한민국",
             city="부산",
-            place_name="원시 장소",
+            place_name=None,
         )
         daily = self._photo(
             datetime(2025, 6, 1, 8, 0),
@@ -921,7 +1137,7 @@ class TestMemoryKeeperFastGallery:
             assert conflict.value.status_code == 422
             assert conflict.value.detail["code"] == "GALLERY_CATEGORY_FILTER_CONFLICT"
 
-    def test_hierarchy_collapses_raw_rows_into_authoritative_unclassified_leaf(
+    def test_hierarchy_keeps_complete_raw_location_classified_without_place_id(
         self,
     ) -> None:
         registered = self._place(
@@ -961,13 +1177,14 @@ class TestMemoryKeeperFastGallery:
         assert registered_leaf.location_key == encode_registered_location_key(
             registered.id
         )
-        assert raw_leaf.display_name is None
+        assert raw_leaf.display_name == "40 Bise 海辺"
         raw_identity = decode_location_key(raw_leaf.location_key)
         assert (raw_identity.country, raw_identity.region, raw_identity.place) == (
-            None,
-            None,
-            None,
+            "일본",
+            "Motobu",
+            "40 Bise 海辺",
         )
+        assert hierarchy.items[0].unclassified_count == 0
 
     def test_raw_location_key_selects_one_leaf_and_excludes_registered_rows(self) -> None:
         registered = self._place(
@@ -1209,8 +1426,8 @@ class TestMemoryKeeperFastGallery:
             country=None,
             city=None,
         )
-        # Legacy Recent/Pending operate on active MemoryKeeper membership, not
-        # the capture-date projection used by the canonical fast photo list.
+        # Recent keeps the legacy active-link scope. Pending now matches the
+        # canonical Fast Gallery location-unclassified projection.
         self._photo(None)
         self._photo(datetime(2025, 3, 3, 8, 0), deleted=True)
         self._photo(
@@ -1223,11 +1440,11 @@ class TestMemoryKeeperFastGallery:
 
         assert summary.total_photos == 2
         assert summary.recent_count == 3
-        assert summary.pending_count == 2
+        assert summary.pending_count == 1
         assert summary.place_cleanup_count == 3
         assert payload["favorite_count"] == 0
         assert payload["recent_count"] == 3
-        assert payload["pending_count"] == 2
+        assert payload["pending_count"] == 1
         assert payload["place_cleanup_count"] == 3
 
     def test_summary_recent_count_is_capped_at_legacy_shortcut_limit(self) -> None:
@@ -1344,7 +1561,8 @@ class TestMemoryKeeperFastGallery:
 
         relation_column = "common_file_metadata.memorykeeper_place_id"
         assert relation_column in sql
-        assert ") IS NULL" in sql
+        assert "nullif(trim(coalesce(" in sql.casefold()
+        assert "NOT (EXISTS" in sql
         assert sql.index(relation_column) < sql.index("LIMIT 51")
         assert baseline_sql.index("LIMIT 51") < baseline_sql.index(relation_column)
 

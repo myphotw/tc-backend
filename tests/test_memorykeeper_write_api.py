@@ -1104,6 +1104,7 @@ class MemoryKeeperWriteApiTests(unittest.TestCase):
     ) -> None:
         target = self.place("등록 장소")
         common_file, metadata, _ = self.file()
+        metadata.place_name = None
         self.db.add(
             MemoryKeeperFileState(
                 file_id=common_file.id,

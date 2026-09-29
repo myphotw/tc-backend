@@ -16,10 +16,12 @@ from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.place import MemoryKeeperPlace
 from app.memorykeeper.repositories.place_cleanup_repository import (
     MemoryKeeperPlaceCleanupRepository,
+    location_hierarchy_complete_condition,
+    location_hierarchy_incomplete_condition,
     memorykeeper_country_expression,
     memorykeeper_place_display_expression,
     memorykeeper_region_expression,
-    pending_condition,
+    normal_photo_condition,
 )
 from app.memorykeeper.services.fast_gallery_location import (
     FastGalleryLocationIdentity,
@@ -81,18 +83,26 @@ class MemoryKeeperFastGalleryRepository:
         return expression.is_(None) if value is None else expression == value
 
     def _unclassified_file_condition(self):
-        """Match files whose authoritative registered Place relation is absent."""
-        registered_place_id = (
-            select(CommonFileMetadata.memorykeeper_place_id)
-            .where(
-                CommonFileMetadata.file_id == MemoryKeeperFileState.file_id
+        """Match NORMAL files without a complete canonical location hierarchy."""
+        complete_location = self._correlated_exists(
+            select(CommonFileMetadata.id)
+            .select_from(CommonFileMetadata)
+            .outerjoin(
+                MemoryKeeperPlace,
+                and_(
+                    MemoryKeeperPlace.id
+                    == CommonFileMetadata.memorykeeper_place_id,
+                    MemoryKeeperPlace.deleted_at.is_(None),
+                ),
             )
-            .offset(0)
-            .scalar_subquery()
+            .where(
+                CommonFileMetadata.file_id == MemoryKeeperFileState.file_id,
+                location_hierarchy_complete_condition(),
+            )
         )
         return and_(
-            MemoryKeeperFileState.photo_category == "NORMAL",
-            registered_place_id.is_(None),
+            normal_photo_condition(),
+            ~complete_location,
         )
 
     def _base_query(self) -> Query:
@@ -554,6 +564,7 @@ class MemoryKeeperFastGalleryRepository:
 
     def summary(self) -> dict[str, object]:
         has_gps = self._has_gps_expression()
+        location_unclassified = location_hierarchy_incomplete_condition()
         overall = self._base_query().with_entities(
             func.count(CommonFile.id),
             func.coalesce(
@@ -570,6 +581,10 @@ class MemoryKeeperFastGalleryRepository:
                         else_=0,
                     )
                 ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(case((location_unclassified, 1), else_=0)),
                 0,
             ),
         ).one()
@@ -602,7 +617,7 @@ class MemoryKeeperFastGalleryRepository:
                 int(shortcut_counts[0] or 0),
                 self.RECENT_SHORTCUT_LIMIT,
             ),
-            "pending_count": int(shortcut_counts[1] or 0),
+            "pending_count": int(overall[6] or 0),
             "place_cleanup_count": int(shortcut_counts[2] or 0),
             "daily_count": int(overall[5] or 0),
             "gps_count": int(overall[2] or 0),
@@ -614,7 +629,7 @@ class MemoryKeeperFastGalleryRepository:
 
     def hierarchy(self) -> list[object]:
         daily = MemoryKeeperFileState.photo_category == "DAILY"
-        unclassified = pending_condition()
+        unclassified = location_hierarchy_incomplete_condition()
         date_unclassified = and_(
             MemoryKeeperFileState.effective_capture_precision == "YEAR",
             MemoryKeeperFileState.effective_capture_date.is_(None),
@@ -631,27 +646,31 @@ class MemoryKeeperFastGalleryRepository:
             (or_(daily, unclassified), None),
             else_=self._place_display_expression(),
         )
+        place_id = case(
+            (or_(daily, unclassified), None),
+            else_=CommonFileMetadata.memorykeeper_place_id,
+        )
         return (
             self._base_query()
             .with_entities(
                 MemoryKeeperFileState.effective_capture_year.label("year"),
                 MemoryKeeperFileState.photo_category.label("photo_category"),
+                unclassified.label("location_unclassified"),
                 date_unclassified.label("date_unclassified"),
                 country.label("country"),
                 region.label("region"),
-                CommonFileMetadata.memorykeeper_place_id.label(
-                    "memorykeeper_place_id"
-                ),
+                place_id.label("memorykeeper_place_id"),
                 place_display_name.label("place_display_name"),
                 func.count(CommonFile.id).label("count"),
             )
             .group_by(
                 MemoryKeeperFileState.effective_capture_year,
                 MemoryKeeperFileState.photo_category,
+                unclassified,
                 date_unclassified,
                 country,
                 region,
-                CommonFileMetadata.memorykeeper_place_id,
+                place_id,
                 place_display_name,
             )
             .order_by(
@@ -659,7 +678,7 @@ class MemoryKeeperFastGalleryRepository:
                 country.asc().nulls_last(),
                 region.asc().nulls_last(),
                 place_display_name.asc().nulls_last(),
-                CommonFileMetadata.memorykeeper_place_id.asc().nulls_last(),
+                place_id.asc().nulls_last(),
             )
             .all()
         )

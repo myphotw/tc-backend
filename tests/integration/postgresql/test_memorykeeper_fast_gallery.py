@@ -12,6 +12,7 @@ from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_service import CommonFileService
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
+from app.memorykeeper.models.place import MemoryKeeperPlace
 from app.memorykeeper.repositories.fast_gallery_repository import FastGalleryFilters
 from app.memorykeeper.repositories.fast_gallery_repository import (
     MemoryKeeperFastGalleryRepository,
@@ -189,6 +190,75 @@ def test_fast_gallery_mixed_precision_keyset_crosses_null_and_year_boundaries(
             year_only_2024.id,
         ]
         assert len(delivered) == len(set(delivered))
+
+
+def test_fast_gallery_unclassified_uses_canonical_location_hierarchy(
+    postgresql_engine: Engine,
+    migration_engine_factory,
+) -> None:
+    _upgrade_to_head(postgresql_engine, migration_engine_factory)
+    with Session(postgresql_engine) as session:
+        year_only_unclassified = _add_photo(
+            session,
+            suffix=1,
+            captured_at=None,
+            capture_year=2025,
+        )
+        incomplete_place = MemoryKeeperPlace(
+            display_name="Incomplete registered place",
+            country=None,
+            province=None,
+            city=None,
+            latitude=37.0,
+            longitude=127.0,
+        )
+        session.add(incomplete_place)
+        session.flush()
+        registered_unclassified = _add_photo(
+            session,
+            suffix=2,
+            captured_at=datetime(2025, 1, 2, 12, 0),
+        )
+        session.query(CommonFileMetadata).filter(
+            CommonFileMetadata.file_id == registered_unclassified.id
+        ).one().memorykeeper_place_id = incomplete_place.id
+
+        raw_fallback_complete = _add_photo(
+            session,
+            suffix=3,
+            captured_at=datetime(2025, 1, 3, 12, 0),
+        )
+        raw_metadata = session.query(CommonFileMetadata).filter(
+            CommonFileMetadata.file_id == raw_fallback_complete.id
+        ).one()
+        raw_metadata.country = "South Korea"
+        raw_metadata.city = "Seoul"
+        raw_metadata.place_name = "Raw metadata place"
+        session.commit()
+
+        service = MemoryKeeperFastGalleryService(session)
+        photos = service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2025, unclassified=True),
+        )
+        year = service.hierarchy().items[0]
+        summary = service.summary()
+        visible_unclassified = next(
+            country for country in year.countries if country.country is None
+        )
+
+        assert {item.common_file_id for item in photos.items} == {
+            year_only_unclassified.id,
+            registered_unclassified.id,
+        }
+        assert raw_fallback_complete.id not in {
+            item.common_file_id for item in photos.items
+        }
+        assert year.unclassified_count == 2
+        assert visible_unclassified.count == 2
+        assert year.date_unclassified_count == 1
+        assert summary.pending_count == 2
 
 
 def test_fast_gallery_mixed_precision_plan_keeps_candidate_limit(
