@@ -132,7 +132,7 @@ class GalleryService:
             exists=exists,
             mime_type=media_type,
             preview_fallback=kind == "thumbnail" and served_kind == "preview",
-            cache_control="public, max-age=86400",
+            cache_control="private, max-age=86400",
             elapsed_ms=watch.total_ms(),
         )
         logger.info(

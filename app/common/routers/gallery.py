@@ -25,7 +25,7 @@ router = APIRouter(
 )
 
 _CACHE_HEADERS = {
-    "Cache-Control": "public, max-age=86400",
+    "Cache-Control": "private, max-age=86400",
     "Content-Disposition": "inline",
 }
 

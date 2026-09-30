@@ -254,7 +254,7 @@ def main() -> int:
     report["scenarios"]["H_thumbnail_10"] = {
         **summarize(thumb_times),
         "bottleneck": "db_lookup + FileResponse stream",
-        "cache_control": "public, max-age=86400",
+        "cache_control": "private, max-age=86400",
     }
 
     if files:

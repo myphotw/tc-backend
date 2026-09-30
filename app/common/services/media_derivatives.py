@@ -148,6 +148,7 @@ class MediaDerivativeService:
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.parent / f".{file_id}.{uuid4().hex}.jpg"
         seek_seconds = self._poster_seek_seconds(media.duration_seconds)
+        thumb_width, thumb_height = self.storage.THUMB_MAX_SIZE
         try:
             result = self.command_runner.run(
                 [
@@ -164,7 +165,10 @@ class MediaDerivativeService:
                     "-frames:v",
                     "1",
                     "-vf",
-                    "scale=400:400:force_original_aspect_ratio=decrease",
+                    (
+                        f"scale={thumb_width}:{thumb_height}:"
+                        "force_original_aspect_ratio=decrease"
+                    ),
                     "-q:v",
                     "3",
                     str(temporary),

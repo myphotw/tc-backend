@@ -295,6 +295,7 @@ def test_video_thumbnail_is_jpeg_preview_is_null_and_temp_is_cleaned(
         assert thumbnail.format == "JPEG"
     assert not list(result.thumb_path.parent.glob(".*.jpg"))
     assert "0.000" in runner.calls[0]
+    assert "scale=480:480:force_original_aspect_ratio=decrease" in runner.calls[0]
 
 
 def test_video_thumbnail_timeout_is_isolated_and_temp_is_cleaned(tmp_path: Path) -> None:
@@ -439,7 +440,7 @@ def test_encoded_video_upload_pipeline_persists_canonical_media_without_vision(
                 kind="thumb", file_id=file_id, extension=".jpg"
             )
             thumb.parent.mkdir(parents=True, exist_ok=True)
-            Image.new("RGB", (225, 400), "black").save(thumb, format="JPEG")
+            Image.new("RGB", (270, 480), "black").save(thumb, format="JPEG")
             return MediaDerivativeResult(None, thumb, 1080, 1920)
 
     source_bytes = b"\x00\x00\x00\x18ftypisom" + b"video-payload"

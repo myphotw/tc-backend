@@ -195,6 +195,20 @@ present. `GET /api/common/gallery/{file_id}/thumbnail` may serve the persisted
 preview when the thumbnail file has drifted from storage; it never falls back
 to the original or performs an on-demand resize.
 
+The common media derivative contract is:
+
+- image thumbnail: maximum 480 px long edge, aspect ratio preserved, no upscale;
+- image preview: maximum 2560 px long edge, aspect ratio preserved, no upscale;
+- JPEG derivatives: quality 85;
+- JPEG/PNG/WebP keep their format, while HEIC/HEIF derivatives are JPEG;
+- video: a JPEG thumbnail with a maximum 480 px long edge and no preview;
+- original bytes remain authoritative and are never returned as a thumbnail or
+  preview fallback.
+
+Gallery media responses use `Cache-Control: private, max-age=86400` because the
+routes are Bearer-protected personal media. They retain `Content-Disposition:
+inline` and the framework-provided `FileResponse` behavior.
+
 `GET /api/memorykeeper/gallery/hierarchy` adds a nullable `location_key` to
 each place leaf. It is an opaque, versioned identity; clients must not parse
 its contents. NORMAL rows whose canonical country, region, or place label is

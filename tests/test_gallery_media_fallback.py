@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.common.model_registry import Base
 from app.common.models.file import CommonFile
+from app.common.routers.gallery import _CACHE_HEADERS
 from app.common.services.gallery_service import GalleryService
 from app.common.services.storage_service import StorageService
 
@@ -154,6 +155,13 @@ def test_preview_and_thumbnail_resize_preserve_landscape_and_portrait_ratio() ->
         )
 
         with Image.open(landscape) as landscape_image:
-            assert landscape_image.size == (400, 200)
+            assert landscape_image.size == (480, 240)
         with Image.open(portrait) as portrait_image:
-            assert portrait_image.size == (200, 400)
+            assert portrait_image.size == (240, 480)
+
+
+def test_gallery_media_uses_private_bearer_cache_contract() -> None:
+    assert _CACHE_HEADERS == {
+        "Cache-Control": "private, max-age=86400",
+        "Content-Disposition": "inline",
+    }

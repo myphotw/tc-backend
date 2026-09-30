@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -60,8 +62,8 @@ class StorageService:
     모든 Storage 경로는 settings에서 가져온다.
     """
 
-    PREVIEW_MAX_SIZE: tuple[int, int] = (2048, 2048)
-    THUMB_MAX_SIZE: tuple[int, int] = (400, 400)
+    PREVIEW_MAX_SIZE: tuple[int, int] = (2560, 2560)
+    THUMB_MAX_SIZE: tuple[int, int] = (480, 480)
 
     @property
     def storage_root(self) -> Path:
@@ -858,11 +860,16 @@ class StorageService:
         if ext in {".jpg", ".jpeg"} and image.mode not in {"RGB", "L"}:
             save_image = image.convert("RGB")
 
-        save_image.save(
-            path,
-            quality=85,
-            optimize=True,
-        )
+        temporary = path.parent / f".{path.stem}.{uuid4().hex}{path.suffix}"
+        try:
+            save_image.save(
+                temporary,
+                quality=85,
+                optimize=True,
+            )
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _is_image(self, extension: str, content: bytes) -> bool:
         """
