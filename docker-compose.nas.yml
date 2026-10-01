@@ -89,3 +89,12 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+
+  preview-regenerator:
+    <<: *app-base
+    profiles: ["maintenance"]
+    restart: "no"
+    command:
+      - python
+      - -m
+      - scripts.regenerate_outdated_previews
