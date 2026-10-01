@@ -100,6 +100,7 @@ class BoundedMediaCommandRunner:
 
 _IMAGE_FORMATS: dict[str, tuple[str, str]] = {
     "JPEG": (".jpg", "image/jpeg"),
+    "MPO": (".jpg", "image/jpeg"),
     "PNG": (".png", "image/png"),
     "GIF": (".gif", "image/gif"),
     "WEBP": (".webp", "image/webp"),
@@ -108,6 +109,7 @@ _IMAGE_FORMATS: dict[str, tuple[str, str]] = {
 }
 _FORMAT_SUFFIXES: dict[str, set[str]] = {
     "JPEG": {".jpg", ".jpeg"},
+    "MPO": {".jpg", ".jpeg"},
     "TIFF": {".tif", ".tiff"},
 }
 _HEIF_SUFFIXES = {".heic", ".heif"}

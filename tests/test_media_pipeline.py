@@ -106,6 +106,22 @@ def _video_file(path: Path, brand: bytes = b"isom") -> None:
     path.write_bytes(b"\x00\x00\x00\x18ftyp" + brand + b"\x00" * 24)
 
 
+def _mpo_file(path: Path, size: tuple[int, int] = (960, 480)) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    first = Image.new("RGB", size, "red")
+    second = Image.new("RGB", size, "blue")
+    try:
+        first.save(
+            path,
+            format="MPO",
+            save_all=True,
+            append_images=[second],
+        )
+    finally:
+        first.close()
+        second.close()
+
+
 def test_filename_decoder_restores_rfc2047_suffix_and_sanitizer_stays_safe(
     tmp_path: Path,
 ) -> None:
@@ -126,6 +142,58 @@ def test_image_probe_uses_bytes_over_false_suffix(tmp_path: Path) -> None:
     assert result.extension == ".jpg"
     assert result.mime_type == "image/jpeg"
     assert (result.width, result.height) == (32, 24)
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_extension"),
+    [
+        ("SAM_4199.JPG", ".jpg"),
+        ("portrait.jpeg", ".jpeg"),
+    ],
+)
+def test_mpo_probe_uses_jpeg_image_contract(
+    tmp_path: Path,
+    filename: str,
+    expected_extension: str,
+) -> None:
+    path = tmp_path / "source.jpg"
+    _mpo_file(path)
+    runner = SimpleNamespace(
+        run=lambda *_args, **_kwargs: pytest.fail("MPO must not use video probe")
+    )
+
+    result = MediaProbe(command_runner=runner).probe(path, filename=filename)
+
+    assert result.category == MediaCategory.IMAGE
+    assert result.extension == expected_extension
+    assert result.mime_type == "image/jpeg"
+    assert (result.width, result.height) == (960, 480)
+    assert result.format_name == "MPO"
+
+
+def test_mpo_first_frame_uses_existing_jpeg_preview_path(tmp_path: Path) -> None:
+    storage = LocalStorageService(tmp_path)
+    source = storage.original_root / "source.jpg"
+    _mpo_file(source)
+    original = source.read_bytes()
+    media = MediaProbe().probe(source, filename="SAM_4199.JPG")
+
+    result = MediaDerivativeService(storage).generate(
+        original_path=source,
+        file_id="f" * 64,
+        media=media,
+        create_thumbnail=False,
+    )
+
+    assert source.read_bytes() == original
+    assert result.preview_path is not None
+    assert result.preview_path.suffix == ".jpg"
+    with Image.open(result.preview_path) as preview:
+        assert preview.format == "JPEG"
+        assert preview.size == (960, 480)
+        red, green, blue = preview.getpixel((480, 240))
+        assert red > green
+        assert red > blue
 
 
 @pytest.mark.parametrize(
