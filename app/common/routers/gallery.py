@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.common.database import get_db
@@ -18,6 +18,11 @@ from app.common.schemas.gallery import (
     TimelineResponse,
 )
 from app.common.services.gallery_service import GalleryService, MediaKind
+from app.common.services.http_range import (
+    ByteRangeNotSatisfiable,
+    iter_file_range,
+    parse_single_byte_range,
+)
 
 router = APIRouter(
     prefix="/api/common/gallery",
@@ -170,18 +175,55 @@ def gallery_preview(
     return _media_response(db, file_id=file_id, kind="preview")
 
 
+@router.head(
+    "/{file_id}/original",
+    summary="Gallery original metadata",
+    description="original media의 크기, MIME, Range 지원 정보를 반환한다.",
+    responses={404: {"description": "File or media not found"}},
+)
+def gallery_original_head(
+    file_id: str,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Return Original headers without a response body."""
+    path, media_type = GalleryService(db).get_media(
+        file_id=file_id,
+        kind="original",
+    )
+    return _build_original_response(
+        path=path,
+        media_type=media_type,
+        range_header=None,
+        head_only=True,
+    )
+
+
 @router.get(
     "/{file_id}/original",
     summary="Gallery original",
-    description="original 이미지 바이너리를 반환한다.",
-    responses={404: {"description": "File or media not found"}},
+    description="original media를 전체 또는 단일 HTTP byte range로 반환한다.",
+    responses={
+        206: {"description": "Partial media content"},
+        404: {"description": "File or media not found"},
+        416: {"description": "Malformed, multiple, or unsatisfiable byte range"},
+    },
 )
 def gallery_original(
     file_id: str,
+    request: Request,
     db: Session = Depends(get_db),
-) -> FileResponse:
-    """original 이미지를 반환한다."""
-    return _media_response(db, file_id=file_id, kind="original")
+) -> Response:
+    """Return Original media without buffering the whole file in memory."""
+    path, media_type = GalleryService(db).get_media(
+        file_id=file_id,
+        kind="original",
+    )
+    return _build_original_response(
+        path=path,
+        media_type=media_type,
+        range_header=request.headers.get("range"),
+        head_only=False,
+    )
 
 
 @router.get(
@@ -211,4 +253,62 @@ def _media_response(
         path=path,
         media_type=media_type,
         headers=_CACHE_HEADERS,
+    )
+
+
+def _build_original_response(
+    *,
+    path: Path,
+    media_type: str,
+    range_header: str | None,
+    head_only: bool,
+) -> Response:
+    stat_result = path.stat()
+    file_size = stat_result.st_size
+    common_headers = {
+        **_CACHE_HEADERS,
+        "Accept-Ranges": "bytes",
+    }
+
+    if head_only:
+        return Response(
+            status_code=200,
+            media_type=media_type,
+            headers={**common_headers, "Content-Length": str(file_size)},
+        )
+
+    if range_header is None:
+        return FileResponse(
+            path=path,
+            media_type=media_type,
+            headers=common_headers,
+            stat_result=stat_result,
+        )
+
+    try:
+        byte_range = parse_single_byte_range(range_header, file_size=file_size)
+    except ByteRangeNotSatisfiable:
+        return Response(
+            status_code=416,
+            headers={
+                **common_headers,
+                "Content-Range": f"bytes */{file_size}",
+            },
+        )
+
+    return StreamingResponse(
+        iter_file_range(
+            path,
+            start=byte_range.start,
+            length=byte_range.length,
+        ),
+        status_code=206,
+        media_type=media_type,
+        headers={
+            **common_headers,
+            "Content-Range": (
+                f"bytes {byte_range.start}-{byte_range.end}/{file_size}"
+            ),
+            "Content-Length": str(byte_range.length),
+        },
     )

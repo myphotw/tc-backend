@@ -140,6 +140,16 @@ class BackendAuthenticationTests(unittest.TestCase):
         )
         self.assertNotIn("auth", str(response.json()).lower())
 
+    def test_gallery_original_range_requires_the_same_bearer_auth(self) -> None:
+        response = request_app(
+            "get",
+            "/api/common/gallery/" + ("a" * 64) + "/original",
+            headers={"Range": "bytes=0-1023"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers["www-authenticate"], "Bearer")
+
     def test_public_health_and_db_test_do_not_require_auth(self) -> None:
         health = request_app("get", "/health")
         connection = MagicMock()
