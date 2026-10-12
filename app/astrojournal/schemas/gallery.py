@@ -16,6 +16,13 @@ class AstroGalleryItem(BaseModel):
     latitude: float | None = None
     longitude: float | None = None
     location_name: str | None = None
+    equipment_ref_id: UUID | None = None
+    equipment_name: str | None = None
+    equipment_name_snapshot: str | None = None
+    equipment_is_active: bool | None = None
+    equipment_deleted: bool | None = None
+    integration_seconds: int | None = None
+    address: str | None = None
     memo: str | None = None
     favorite: bool
     representative: bool

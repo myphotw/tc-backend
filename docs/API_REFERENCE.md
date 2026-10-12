@@ -534,15 +534,29 @@ include `plate_solve_status` and `plate_solve_job_id`; only detail responses add
 `field_height`, `parity`). The job ID is returned as an opaque string suitable
 for the existing retry endpoint.
 
+Gallery list and detail items also expose `equipment_ref_id`, `equipment_name`,
+`equipment_name_snapshot`, `equipment_is_active`, `equipment_deleted`,
+`integration_seconds`, and `address`. The repository uses one outer join by
+`astro_equipment.id`; it does not issue per-row Equipment queries. When the
+canonical Equipment row exists, `equipment_name` is its latest name, including
+for a soft-deleted Equipment. Otherwise the projection falls back to
+`equipment_name_snapshot` and then the unchanged legacy `equipment_id` value.
+Equipment rename emits only the existing `Equipment` UPDATE change event and
+does not mutate ObservationRecord revision or emit record fan-out events.
+
 ## AstroJournal Mutation Contract (B5-01)
 
 `POST /api/astro/records` accepts optional UUID `client_record_id`. Replaying
 the same `AstroJournal + client_record_id` returns the existing record; request
-field differences on a replay do not overwrite it.
+field differences on a replay do not overwrite it. Create requests also accept
+nullable `equipment_ref_id`, `equipment_name_snapshot`, `integration_seconds`,
+and `address` under the validation and snapshot rules below.
 
 `PATCH /api/astro/records/{record_id}` requires `revision` and supports partial
 updates to `catalog_object_id`, `captured_at`, latitude/longitude,
-`location_name`, `equipment_id`, `memo`, `favorite`, and `representative`.
+`location_name`, legacy `equipment_id`, canonical `equipment_ref_id`,
+`equipment_name_snapshot`, `integration_seconds`, `address`, `memo`, `favorite`,
+and `representative`.
 The existing `plate_solve_status` field remains accepted for B3 compatibility;
 this ticket adds no Plate Solve processing. Omitted fields are unchanged. A
 stale revision returns:
@@ -557,6 +571,20 @@ stale revision returns:
   }
 }
 ```
+
+`equipment_ref_id` accepts a UUID for an active, non-deleted Equipment. When it
+is selected, the server ignores any supplied snapshot and writes the canonical
+Equipment name. Existing inactive/deleted links remain readable and may be
+patched in unrelated fields, but cannot be newly selected. Explicitly clearing
+`equipment_ref_id` preserves the latest authoritative name as the snapshot and
+never rewrites legacy `equipment_id`. An unlinked record may retain a standalone
+snapshot. Direct snapshot mutation while a canonical link remains returns
+`422 EQUIPMENT_SNAPSHOT_SERVER_MANAGED`. No legacy value is inferred, matched
+by name, or backfilled.
+
+`integration_seconds` is nullable and accepts non-negative integers, including
+zero. `address` is a nullable string. PATCH distinguishes omitted fields from
+explicit null for both fields.
 
 `DELETE /api/astro/records/{record_id}` performs an idempotent soft delete and
 returns `record_id`, `deleted`, `revision`, and `deleted_at`. The first delete

@@ -6,6 +6,7 @@ from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Inte
 from sqlalchemy.sql import func, text
 
 from app.common.model_base import Base
+from app.common.schema_sync import migration_managed_schema_info
 
 
 class ObservationRecord(Base):
@@ -44,6 +45,11 @@ class ObservationRecord(Base):
             postgresql_where=text("client_record_id IS NOT NULL"),
             sqlite_where=text("client_record_id IS NOT NULL"),
         ),
+        Index(
+            "ix_astro_observation_records_equipment_ref_id",
+            "equipment_ref_id",
+            info=migration_managed_schema_info(),
+        ),
     )
 
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -61,7 +67,32 @@ class ObservationRecord(Base):
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
     location_name = Column(String(255), nullable=True)
+    # ``equipment_id`` is the pre-master-data legacy free-form value. It must
+    # not be inferred or rewritten when a canonical equipment link is absent.
     equipment_id = Column(String(255), nullable=True)
+    # The database FK for this mixed-ownership legacy table is created manually
+    # by Alembic. Declaring the ForeignKey here would make startup bootstrap DDL
+    # retain a constraint that references an intentionally omitted column.
+    equipment_ref_id = Column(
+        String(36),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    equipment_name_snapshot = Column(
+        String(200),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    integration_seconds = Column(
+        Integer,
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
+    address = Column(
+        String(500),
+        nullable=True,
+        info=migration_managed_schema_info(),
+    )
     memo = Column(Text, nullable=True)
     favorite = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     representative = Column(

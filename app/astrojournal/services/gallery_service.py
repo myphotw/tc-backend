@@ -59,7 +59,7 @@ class AstroGalleryService:
         *,
         detail: bool = False,
     ) -> AstroGalleryItem | AstroGalleryDetailItem:
-        record, common_file, metadata, plate_solve_job = row
+        record, common_file, metadata, plate_solve_job, equipment = row
         projection = PlateSolveReadService.from_job(
             plate_solve_job,
             fallback_status=record.plate_solve_status,
@@ -75,6 +75,23 @@ class AstroGalleryService:
             latitude=record.latitude,
             longitude=record.longitude,
             location_name=record.location_name,
+            equipment_ref_id=record.equipment_ref_id,
+            equipment_name=(
+                equipment.name
+                if equipment is not None
+                else record.equipment_name_snapshot or record.equipment_id
+            ),
+            equipment_name_snapshot=record.equipment_name_snapshot,
+            equipment_is_active=(
+                bool(equipment.is_active) and equipment.deleted_at is None
+                if equipment is not None
+                else None
+            ),
+            equipment_deleted=(
+                equipment.deleted_at is not None if equipment is not None else None
+            ),
+            integration_seconds=record.integration_seconds,
+            address=record.address,
             memo=record.memo,
             favorite=bool(record.favorite),
             representative=bool(record.representative),

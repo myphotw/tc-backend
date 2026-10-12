@@ -4,6 +4,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.astrojournal.models.equipment import AstroEquipment
 from app.astrojournal.models.observation_record import ObservationRecord
 from app.astrojournal.models.plate_solve_job import AstroPlateSolveJob
 from app.common.models.file import CommonFile
@@ -16,6 +17,7 @@ AstroGalleryRow = tuple[
     CommonFile,
     CommonFileMetadata | None,
     AstroPlateSolveJob | None,
+    AstroEquipment | None,
 ]
 
 
@@ -68,6 +70,7 @@ class AstroGalleryRepository:
                 CommonFile,
                 CommonFileMetadata,
                 AstroPlateSolveJob,
+                AstroEquipment,
             )
             .join(CommonFile, CommonFile.id == ObservationRecord.file_id)
             .join(
@@ -79,6 +82,10 @@ class AstroGalleryRepository:
             .outerjoin(
                 AstroPlateSolveJob,
                 AstroPlateSolveJob.common_file_id == CommonFile.id,
+            )
+            .outerjoin(
+                AstroEquipment,
+                AstroEquipment.id == ObservationRecord.equipment_ref_id,
             )
             .filter(ObservationRecord.service_name == self.SERVICE_NAME)
             .filter(ObservationRecord.deleted_at.is_(None))

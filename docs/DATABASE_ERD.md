@@ -22,6 +22,7 @@ erDiagram
     common_files ||--o{ common_vision_jobs : queues
     common_files ||--o{ common_file_services : linked_to
     common_files ||--o{ astro_observation_records : observed_as
+    astro_equipment ||--o{ astro_observation_records : captured_with
     common_files ||--o| astro_plate_solve_jobs : solved_by
     astro_observation_records ||--o| astro_plate_solve_jobs : queues
     astro_equipment ||--o{ astro_equipment_eyepieces : owns
@@ -125,6 +126,10 @@ erDiagram
         float longitude
         string location_name
         string equipment_id
+        uuid equipment_ref_id FK
+        string equipment_name_snapshot
+        int integration_seconds
+        string address
         text memo
         bool favorite
         bool representative

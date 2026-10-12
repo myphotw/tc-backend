@@ -82,12 +82,12 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
             self.assertEqual(len(function.body), 1)
             self.assertIsInstance(function.body[0], ast.Pass)
 
-    def test_revision_graph_has_single_photo_category_head(self) -> None:
+    def test_revision_graph_has_single_astro_general_info_head(self) -> None:
         checks = verify_revision_graph(build_alembic_config())
 
-        self.assertIn("single_head=20260925_0008", checks)
+        self.assertIn("single_head=20261012_0009", checks)
         self.assertIn(f"baseline={BASELINE_REVISION}", checks)
-        self.assertIn("revision_count=8", checks)
+        self.assertIn("revision_count=9", checks)
 
     def test_alembic_config_contains_no_database_url(self) -> None:
         content = (PROJECT_ROOT / "alembic.ini").read_text(encoding="utf-8")

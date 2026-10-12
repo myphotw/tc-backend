@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from app.common.schemas.external_api import PlateSolveResult
 
@@ -17,6 +17,10 @@ class ObservationRecordCreate(BaseModel):
     longitude: float | None = Field(default=None, ge=-180, le=180)
     location_name: str | None = Field(default=None, max_length=255)
     equipment_id: str | None = Field(default=None, max_length=255)
+    equipment_ref_id: UUID | None = None
+    equipment_name_snapshot: str | None = Field(default=None, max_length=200)
+    integration_seconds: StrictInt | None = Field(default=None, ge=0)
+    address: str | None = Field(default=None, max_length=500)
     memo: str | None = None
     favorite: bool = False
     representative: bool = False
@@ -31,6 +35,10 @@ class ObservationRecordUpdate(BaseModel):
     longitude: float | None = Field(default=None, ge=-180, le=180)
     location_name: str | None = Field(default=None, max_length=255)
     equipment_id: str | None = Field(default=None, max_length=255)
+    equipment_ref_id: UUID | None = None
+    equipment_name_snapshot: str | None = Field(default=None, max_length=200)
+    integration_seconds: StrictInt | None = Field(default=None, ge=0)
+    address: str | None = Field(default=None, max_length=500)
     memo: str | None = None
     favorite: bool | None = None
     representative: bool | None = None
@@ -58,6 +66,10 @@ class ObservationRecordResponse(BaseModel):
     longitude: float | None
     location_name: str | None
     equipment_id: str | None
+    equipment_ref_id: UUID | None
+    equipment_name_snapshot: str | None
+    integration_seconds: int | None
+    address: str | None
     memo: str | None
     favorite: bool
     representative: bool

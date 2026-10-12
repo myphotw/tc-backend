@@ -6,7 +6,9 @@ from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.astrojournal.models.equipment import AstroEquipment
 from app.astrojournal.models.observation_record import ObservationRecord
+from app.astrojournal.repositories.equipment_repository import EquipmentRepository
 from app.astrojournal.repositories.observation_record_repository import (
     ObservationRecordRepository,
 )
@@ -45,6 +47,7 @@ class ObservationRecordService:
     ) -> None:
         self.db = db
         self.repository = ObservationRecordRepository(db)
+        self.equipment_repository = EquipmentRepository(db)
         self.change_repository = ChangeEventRepository(db)
         self.plate_solve_queue = PlateSolveQueueService(db)
         self.cleanup_service = cleanup_service or AstroJournalFileCleanupService(db)
@@ -71,6 +74,9 @@ class ObservationRecordService:
                 detail="representative requires catalog_object_id",
             )
 
+        values = payload.model_dump(exclude={"client_record_id"})
+        self._prepare_created_equipment(values)
+
         FileServiceRepository(self.db).ensure_link(
             file_id=payload.file_id,
             service_name=self.SERVICE_NAME,
@@ -81,7 +87,6 @@ class ObservationRecordService:
                 payload.catalog_object_id
             )
 
-        values = payload.model_dump(exclude={"client_record_id"})
         record = ObservationRecord(
             service_name=self.SERVICE_NAME,
             client_record_id=client_record_id,
@@ -160,6 +165,7 @@ class ObservationRecordService:
             self._raise_revision_conflict(record, payload.revision)
 
         values = payload.model_dump(exclude={"revision"}, exclude_unset=True)
+        self._prepare_updated_equipment(record, values)
         catalog_object_id = values.get("catalog_object_id", record.catalog_object_id)
         representative = values.get("representative", record.representative)
         if representative and not catalog_object_id:
@@ -285,3 +291,69 @@ class ObservationRecordService:
         if file is None or file.deleted:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="File not found")
         return file
+
+    def _prepare_created_equipment(self, values: dict[str, object]) -> None:
+        equipment_ref_id = values.get("equipment_ref_id")
+        if equipment_ref_id is None:
+            return
+        equipment = self._require_selectable_equipment(str(equipment_ref_id))
+        values["equipment_ref_id"] = equipment.id
+        values["equipment_name_snapshot"] = equipment.name
+
+    def _prepare_updated_equipment(
+        self,
+        record: ObservationRecord,
+        values: dict[str, object],
+    ) -> None:
+        if "equipment_ref_id" in values:
+            equipment_ref_id = values["equipment_ref_id"]
+            if equipment_ref_id is None:
+                # Unlinking preserves the last authoritative name. The legacy
+                # free-form equipment_id is never rewritten.
+                if record.equipment_ref_id is not None:
+                    equipment = self.equipment_repository.get(
+                        record.equipment_ref_id,
+                        include_deleted=True,
+                    )
+                    if equipment is not None:
+                        values["equipment_name_snapshot"] = equipment.name
+                    else:
+                        values.pop("equipment_name_snapshot", None)
+                else:
+                    values.pop("equipment_name_snapshot", None)
+                return
+
+            equipment = self._require_selectable_equipment(str(equipment_ref_id))
+            values["equipment_ref_id"] = equipment.id
+            values["equipment_name_snapshot"] = equipment.name
+            return
+
+        # A linked snapshot is server-owned. Clients may maintain a standalone
+        # snapshot only while no canonical Equipment is linked.
+        if (
+            "equipment_name_snapshot" in values
+            and record.equipment_ref_id is not None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"code": "EQUIPMENT_SNAPSHOT_SERVER_MANAGED"},
+            )
+
+    def _require_selectable_equipment(self, equipment_id: str) -> AstroEquipment:
+        equipment = self.equipment_repository.get(
+            equipment_id,
+            include_deleted=True,
+        )
+        if (
+            equipment is None
+            or equipment.deleted_at is not None
+            or not equipment.is_active
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "ACTIVE_EQUIPMENT_NOT_FOUND",
+                    "equipment_id": equipment_id,
+                },
+            )
+        return equipment

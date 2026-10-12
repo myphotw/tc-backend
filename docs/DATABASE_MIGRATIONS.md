@@ -47,7 +47,8 @@ base
   -> 20260909_0005 (AstroJournal master data)
   -> 20260910_0006 (multi-night framing reference)
   -> 20260914_0007 (MemoryKeeper photo category)
-  -> 20260925_0008 (MemoryKeeper YEAR-only capture-date expand, head)
+  -> 20260925_0008 (MemoryKeeper YEAR-only capture-date expand)
+  -> 20261012_0009 (Astro Gallery general information, head)
 ```
 
 The baseline `upgrade()` and `downgrade()` are both no-ops. It does not create,
@@ -238,7 +239,16 @@ provenance, capture precision, and the ordinary nullable
 `effective_capture_year_v2` projection. It preserves the legacy generated year
 during rollout and backfills v2/precision from the existing exact-date
 projection. Source-path reconciliation remains a separate data operation. The
-revision graph remains single-head at `20260925_0008`.
+revision graph continued from `20260925_0008`.
+
+Revision `20261012_0009` additively introduces nullable Astro ObservationRecord
+general-information fields: canonical `equipment_ref_id`, server-owned
+`equipment_name_snapshot`, `integration_seconds`, and `address`. It adds an
+`ON DELETE SET NULL` Equipment foreign key, a non-negative integration-time
+CHECK constraint, and an Equipment-reference index. The legacy free-form
+`equipment_id` is retained unchanged and the revision performs no data update,
+inference, or backfill. The revision graph remains single-head at
+`20261012_0009`.
 
 - The capture-date nullable expand migration deliberately contains no
   dual-write, backfill, read-path switch, constraint, or index work. Those
