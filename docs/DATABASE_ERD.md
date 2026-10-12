@@ -301,7 +301,7 @@ erDiagram
     common_upload_jobs {
         int id PK
         string job_id UK
-        string source_type
+        string source_type "UPLOAD or UPLOAD_MOBILE"
         string status
         text incoming_path
         string file_id

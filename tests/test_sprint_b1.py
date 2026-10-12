@@ -282,3 +282,5 @@ class SprintB1Tests(unittest.TestCase):
         self.assertEqual(response["api_version"], "1.1")
         self.assertEqual(response["supported_services"], ["MemoryKeeper", "AstroJournal"])
         self.assertTrue(response["upload_contract"]["supports_client_file_id"])
+        self.assertTrue(response["upload_contract"]["supports_upload_source"])
+        self.assertEqual(response["upload_contract"]["upload_sources"], ["mobile"])

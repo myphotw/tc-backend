@@ -31,6 +31,8 @@ def capabilities() -> dict[str, object]:
         "supported_services": ["MemoryKeeper", "AstroJournal"],
         "upload_contract": {
             "supports_service_name": True,
+            "supports_upload_source": True,
+            "upload_sources": ["mobile"],
             "supports_client_file_id": True,
             "supports_client_content_sha256": True,
         },

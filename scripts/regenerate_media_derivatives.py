@@ -213,13 +213,7 @@ def regenerate_media_derivatives(
 
 
 def _resolve_original(storage_service: StorageService, stored_path: str) -> Path:
-    original_root = storage_service.original_root.resolve(strict=False)
-    resolved = storage_service.resolve_storage_path(stored_path).resolve(strict=False)
-    try:
-        resolved.relative_to(original_root)
-    except ValueError as exc:
-        raise ValueError("original path is outside configured storage") from exc
-    return resolved
+    return storage_service.resolve_original_path(stored_path)
 
 
 def _record_failure(stats: RegenerationStats, file_id: str, reason: str) -> None:

@@ -295,11 +295,7 @@ def _inspect_one(
         return
 
     try:
-        original = _resolve_under_root(
-            storage_service,
-            item.original_path,
-            expected_root=storage_service.original_root,
-        )
+        original = storage_service.resolve_original_path(item.original_path)
     except (OSError, ValueError):
         report.record(
             UNSUPPORTED,

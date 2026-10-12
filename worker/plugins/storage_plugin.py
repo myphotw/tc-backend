@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
+from app.common.models.upload_job import UploadSourceType
 from app.common.repositories.file_service_repository import FileServiceRepository
 from app.memorykeeper.services.capture_date_service import (
     MemoryKeeperCaptureDateService,
@@ -41,12 +42,19 @@ class StoragePlugin(BasePlugin):
         started = time.perf_counter()
         relative_dir = StorageRuleEngine().build_path(context)
         rule_build_ms = elapsed_ms(started)
+        destination_root = None
+        if context.job.source_type == UploadSourceType.UPLOAD_MOBILE:
+            destination_root = context.storage_service.original_root_for_upload(
+                source_type=context.job.source_type,
+                service_name=context.service_name,
+            )
 
         context.original_path = context.storage_service.move_to_storage(
             incoming_path=context.job.incoming_path,
             file_id=context.file_id,
             extension=context.extension or context.incoming_path.suffix.lower(),
             relative_dir=relative_dir,
+            destination_root=destination_root,
             timings=move_timings,
         )
         context.storage_path = context.original_path
@@ -151,6 +159,19 @@ class StoragePlugin(BasePlugin):
             )
             if existing is None:
                 raise
+            existing_original = (
+                context.storage_service.resolve_storage_path(existing.original_path)
+                if existing.original_path
+                else None
+            )
+            if (
+                existing_original is not None
+                and existing_original.resolve(strict=False)
+                != context.original_path.resolve(strict=False)
+            ):
+                context.storage_service.delete_unreferenced_original(
+                    context.original_path
+                )
             context.common_file = existing
             link_created = self._ensure_service_link_and_projection(
                 context,

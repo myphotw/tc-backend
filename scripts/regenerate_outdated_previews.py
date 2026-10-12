@@ -247,11 +247,7 @@ def _assess_preview(
         return None
 
     try:
-        original = _resolve_under_root(
-            storage_service,
-            row.original_path,
-            expected_root=storage_service.original_root,
-        )
+        original = storage_service.resolve_original_path(row.original_path)
         preview = _resolve_under_root(
             storage_service,
             row.preview_path,

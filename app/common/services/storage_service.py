@@ -15,6 +15,7 @@ from fastapi import UploadFile
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from app.common.config import settings
+from app.common.models.upload_job import UploadSourceType
 from app.common.services.upload_filename import decode_upload_filename
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,23 @@ class StorageService:
     def original_root(self) -> Path:
         """원본 저장 경로를 반환한다."""
         return settings.original_dir_path
+
+    @property
+    def mobile_original_root(self) -> Path:
+        """MemoryKeeper mobile uploads 전용 원본 저장 경로를 반환한다."""
+        return settings.mobile_original_dir_path
+
+    @property
+    def original_roots(self) -> tuple[Path, ...]:
+        """읽기/파생/정리에 허용된 모든 관리 원본 root를 반환한다."""
+        roots: list[Path] = []
+        seen: set[Path] = set()
+        for root in (self.original_root, self.mobile_original_root):
+            resolved = root.resolve(strict=False)
+            if resolved not in seen:
+                roots.append(root)
+                seen.add(resolved)
+        return tuple(roots)
 
     @property
     def preview_root(self) -> Path:
@@ -171,7 +189,48 @@ class StorageService:
             return value
 
         relative = self._to_storage_relative(normalized)
-        return (self.storage_root / relative).resolve()
+        storage_root = self.storage_root.resolve(strict=False)
+        resolved = (storage_root / relative).resolve(strict=False)
+        try:
+            resolved.relative_to(storage_root)
+        except ValueError as exc:
+            raise ValueError("storage path escapes PHOTO_PLATFORM_ROOT") from exc
+        return resolved
+
+    def original_root_for_upload(self, *, source_type: str, service_name: str) -> Path:
+        """Select the managed original root from persisted UploadJob data."""
+        if (
+            source_type == UploadSourceType.UPLOAD_MOBILE
+            and service_name == "MemoryKeeper"
+        ):
+            root = self.mobile_original_root
+            self._require_root_below_storage(root)
+            return root
+        return self.original_root
+
+    def resolve_original_path(self, stored_path: str | Path) -> Path:
+        """Resolve one DB original path and require an allowed managed root."""
+        resolved = self.resolve_storage_path(stored_path).resolve(strict=False)
+        storage_root = self.storage_root.resolve(strict=False)
+        for root in self.original_roots:
+            candidate_root = root.resolve(strict=False)
+            try:
+                candidate_root.relative_to(storage_root)
+                resolved.relative_to(candidate_root)
+            except ValueError:
+                continue
+            return resolved
+        raise ValueError("original path is outside configured storage")
+
+    def _require_root_below_storage(self, root: Path) -> None:
+        try:
+            root.resolve(strict=False).relative_to(
+                self.storage_root.resolve(strict=False)
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "mobile original root must be inside PHOTO_PLATFORM_ROOT"
+            ) from exc
 
     @staticmethod
     def _is_local_absolute_path(path: Path, normalized: str) -> bool:
@@ -203,19 +262,23 @@ class StorageService:
         - /volume1/.../PhotoPlatform/thumb/aa/bb/x.jpg → thumb/aa/bb/x.jpg
         """
         relative = normalized.lstrip("/")
-        markers = (
-            "incoming/",
-            "original/",
-            "preview/",
-            "thumb/",
-            "export/",
-            "cache/",
-            "temp/",
+        root_names = (
+            "incoming",
+            "mobile-original",
+            "original",
+            "preview",
+            "thumb",
+            "export",
+            "cache",
+            "temp",
         )
-        for marker in markers:
-            idx = relative.find(marker)
+        for root_name in root_names:
+            marker = f"{root_name}/"
+            if relative.startswith(marker):
+                return relative
+            idx = relative.find(f"/{marker}")
             if idx >= 0:
-                return relative[idx:]
+                return relative[idx + 1 :]
         return relative
 
     def move_to_storage(
@@ -225,6 +288,7 @@ class StorageService:
         extension: str,
         *,
         relative_dir: str | None = None,
+        destination_root: Path | None = None,
         timings: dict[str, float] | None = None,
     ) -> Path:
         """
@@ -236,6 +300,8 @@ class StorageService:
             extension: 확장자
             relative_dir: StorageRuleEngine이 계산한 상대 디렉터리
                 예) 2026/대한민국/서울/남산타워
+            destination_root: source별로 선택한 관리 원본 root. 미지정 시
+                기존 ORIGINAL_DIR을 사용한다.
             timings: 구간별 ms를 채울 선택 dict
 
         Returns:
@@ -251,12 +317,20 @@ class StorageService:
             timings["path_resolve_ms"] = elapsed_ms(started)
 
         normalized_ext = self._normalize_extension(extension)
+        target_root = destination_root or self.original_root
+        if destination_root is not None:
+            allowed_roots = {
+                root.resolve(strict=False) for root in self.original_roots
+            }
+            if target_root.resolve(strict=False) not in allowed_roots:
+                raise ValueError("destination root is not an allowed original root")
+            self._require_root_below_storage(target_root)
         if relative_dir:
             safe_dir = self._normalize_relative_dir(relative_dir)
-            target_path = self.original_root / safe_dir / f"{file_id}{normalized_ext}"
+            target_path = target_root / safe_dir / f"{file_id}{normalized_ext}"
         else:
             target_path = self._build_path(
-                self.original_root,
+                target_root,
                 file_id,
                 normalized_ext,
             )
@@ -420,6 +494,14 @@ class StorageService:
         """
         self.resolve_storage_path(incoming_path).unlink(missing_ok=True)
 
+    def delete_unreferenced_original(self, original_path: str | Path) -> None:
+        """Delete a just-created original after a DB uniqueness race.
+
+        The caller must only pass the losing upload candidate. Containment in a
+        configured managed original root is revalidated before unlinking.
+        """
+        self.resolve_original_path(original_path).unlink(missing_ok=True)
+
     def delete_incoming_asset(self, incoming_path: str | Path) -> str:
         """Safely delete one persisted UploadJob incoming path."""
         try:
@@ -536,10 +618,11 @@ class StorageService:
         Raises:
             FileNotFoundError: 파일이 존재하지 않을 때
         """
-        path = self._find_file(self.original_root, file_id)
-        if path is None:
-            raise FileNotFoundError(f"Original file not found: {file_id}")
-        return path.resolve()
+        for root in self.original_roots:
+            path = self._find_file(root, file_id)
+            if path is not None:
+                return path.resolve()
+        raise FileNotFoundError(f"Original file not found: {file_id}")
 
     def get_preview_path(self, file_id: str) -> Path:
         """
@@ -604,7 +687,7 @@ class StorageService:
         are successful, idempotent cleanup results.
         """
         specifications = {
-            "original": (getattr(common_file, "original_path", None), self.original_root),
+            "original": (getattr(common_file, "original_path", None), None),
             "preview": (getattr(common_file, "preview_path", None), self.preview_root),
             "thumb": (getattr(common_file, "thumb_path", None), self.thumb_root),
         }
@@ -617,10 +700,14 @@ class StorageService:
                 results[kind] = AssetDeleteStatus.ALREADY_ABSENT
                 continue
             try:
-                targets[kind] = self._resolve_asset_delete_path(
-                    stored_path,
-                    expected_root=expected_root,
-                )
+                if kind == "original":
+                    targets[kind] = self.resolve_original_path(stored_path)
+                else:
+                    assert expected_root is not None
+                    targets[kind] = self._resolve_asset_delete_path(
+                        stored_path,
+                        expected_root=expected_root,
+                    )
             except (OSError, ValueError):
                 unsafe = True
                 results[kind] = AssetDeleteStatus.UNSAFE_PATH

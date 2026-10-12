@@ -661,6 +661,17 @@ Optional multipart fields: `service_name` (`MemoryKeeper` default; allowed:
 `MemoryKeeper`, `AstroJournal`), `client_file_id`, and
 `client_content_sha256` (64-character lowercase hexadecimal SHA-256).
 
+MemoryKeeper uploads additionally accept optional `upload_source=mobile`.
+When present, a newly created physical original is stored below
+`PHOTO_PLATFORM_ROOT/mobile-original` while preserving the existing
+year/location storage rule and relative `common_files.original_path` contract.
+Omitting the field retains the legacy `PHOTO_PLATFORM_ROOT/original` behavior.
+Other values, and `upload_source=mobile` with another service, return `422`.
+The source is persisted in `common_upload_jobs.source_type`, so a restarted
+worker makes the same routing decision. SHA duplicates always reuse the existing
+CommonFile and existing original path; they are never moved or copied merely to
+match the requested source.
+
 AstroJournal uploads additionally accept these optional multipart fields:
 
 | Field | Format | Storage use |
@@ -675,7 +686,8 @@ update an AstroJournal `ObservationRecord`.
 For the same `service_name + client_file_id`, the API returns the original job
 without saving another incoming file. Different non-null hashes return `409`.
 If an earlier job has no hash, a later valid hash backfills it and returns the
-original job. File-only requests retain the legacy response shape.
+original job. Replaying the same client ID with a different upload source also
+returns `409`. File-only requests retain the legacy response shape.
 
 Extended upload and Upload Job status responses distinguish these identifiers:
 

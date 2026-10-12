@@ -126,14 +126,8 @@ def _resolve_original_path(
     storage_service: StorageService,
     stored_path: str,
 ) -> Path:
-    """Resolve a DB path while refusing reads outside the original root."""
-    original_root = storage_service.original_root.resolve(strict=False)
-    resolved = storage_service.resolve_storage_path(stored_path).resolve(strict=False)
-    try:
-        resolved.relative_to(original_root)
-    except ValueError as exc:
-        raise ValueError("original path is outside configured storage") from exc
-    return resolved
+    """Resolve a DB path while refusing reads outside managed original roots."""
+    return storage_service.resolve_original_path(stored_path)
 
 
 def _missing_exif_values(

@@ -258,6 +258,7 @@ compatibility.
 PHOTO_PLATFORM_ROOT/
   incoming/
   original/{year}/{country}/{city}/{place}/{file_id}.ext
+  mobile-original/{year}/{country}/{city}/{place}/{file_id}.ext
   preview/
   thumb/
   export/
@@ -266,6 +267,9 @@ PHOTO_PLATFORM_ROOT/
 ```
 
 경로 계산: Storage Rule Engine (MemoryKeeper). 실제 move: StoragePlugin.
+`POST /api/common/upload`에서 `upload_source=mobile`을 지정한
+MemoryKeeper 신규 원본만 `mobile-original`을 사용하며, 미지정 요청과 SHA
+중복 재사용은 기존 `original` 동작을 유지한다.
 
 ## API 목록
 
@@ -338,7 +342,7 @@ rename/merge 또는 Vision 재처리 후에도 유지되며 AstroJournal project
 |-----|---------|-------------|
 | `VERSION` | `1.0.0` | 플랫폼 버전 |
 | `PHOTO_PLATFORM_ROOT` | `./PhotoPlatform` | 스토리지 루트 |
-| `INCOMING_DIR` / `ORIGINAL_DIR` / `PREVIEW_DIR` / `THUMB_DIR` / `EXPORT_DIR` / `CACHE_DIR` / `TEMP_DIR` | root 하위 | 개별 경로 override |
+| `INCOMING_DIR` / `ORIGINAL_DIR` / `MOBILE_ORIGINAL_DIR` / `PREVIEW_DIR` / `THUMB_DIR` / `EXPORT_DIR` / `CACHE_DIR` / `TEMP_DIR` | root 하위 | 개별 경로 override (`MOBILE_ORIGINAL_DIR` 기본값: `PHOTO_PLATFORM_ROOT/mobile-original`) |
 | `GOOGLE_API_KEY` | none | Geocoding 등 |
 | `GOOGLE_VISION_CREDENTIAL` | none | Vision Service Account JSON 경로 |
 | `WEATHER_API_KEY` | none | Weather |

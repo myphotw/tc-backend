@@ -52,9 +52,14 @@ MediaKind = Literal["thumbnail", "preview", "original"]
 class GalleryService:
     """Gallery 조회 Business Logic."""
 
-    def __init__(self, db: Session) -> None:
+    def __init__(
+        self,
+        db: Session,
+        *,
+        storage_service: StorageService | None = None,
+    ) -> None:
         self.repository = GalleryRepository(db)
-        self.storage_service = StorageService()
+        self.storage_service = storage_service or StorageService()
 
     def get_media(
         self,

@@ -4,6 +4,13 @@ from sqlalchemy.sql import func
 from app.common.model_base import Base
 
 
+class UploadSourceType:
+    """Persisted upload source values used to resume storage routing."""
+
+    UPLOAD = "UPLOAD"
+    UPLOAD_MOBILE = "UPLOAD_MOBILE"
+
+
 class UploadJob(Base):
     """업로드 후처리 작업 모델."""
 

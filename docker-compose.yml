@@ -9,6 +9,7 @@ x-app-base: &app-base
     PHOTO_PLATFORM_ROOT: /data/PhotoPlatform
     INCOMING_DIR: /data/PhotoPlatform/incoming
     ORIGINAL_DIR: /data/PhotoPlatform/original
+    MOBILE_ORIGINAL_DIR: /data/PhotoPlatform/mobile-original
     PREVIEW_DIR: /data/PhotoPlatform/preview
     THUMB_DIR: /data/PhotoPlatform/thumb
     EXPORT_DIR: /data/PhotoPlatform/export

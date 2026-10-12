@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     PHOTO_PLATFORM_ROOT: str = "./PhotoPlatform"
     INCOMING_DIR: str | None = None
     ORIGINAL_DIR: str | None = None
+    MOBILE_ORIGINAL_DIR: str | None = None
     PREVIEW_DIR: str | None = None
     THUMB_DIR: str | None = None
     EXPORT_DIR: str | None = None
@@ -59,6 +60,7 @@ class Settings(BaseSettings):
         defaults = {
             "INCOMING_DIR": f"{root}/incoming",
             "ORIGINAL_DIR": f"{root}/original",
+            "MOBILE_ORIGINAL_DIR": f"{root}/mobile-original",
             "PREVIEW_DIR": f"{root}/preview",
             "THUMB_DIR": f"{root}/thumb",
             "EXPORT_DIR": f"{root}/export",
@@ -88,6 +90,10 @@ class Settings(BaseSettings):
     @property
     def original_dir_path(self) -> Path:
         return Path(self.ORIGINAL_DIR)
+
+    @property
+    def mobile_original_dir_path(self) -> Path:
+        return Path(self.MOBILE_ORIGINAL_DIR)
 
     @property
     def preview_dir_path(self) -> Path:

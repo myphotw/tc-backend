@@ -223,7 +223,10 @@ class MediaDerivativeService:
         resolved = self.storage.resolve_storage_path(path).resolve(strict=False)
         allowed_roots = (
             self.storage.incoming_root.resolve(strict=False),
-            self.storage.original_root.resolve(strict=False),
+            *(
+                root.resolve(strict=False)
+                for root in self.storage.original_roots
+            ),
         )
         if not any(self._is_relative_to(resolved, root) for root in allowed_roots):
             raise ValueError("media source path is outside incoming/original storage")
