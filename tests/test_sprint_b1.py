@@ -284,3 +284,14 @@ class SprintB1Tests(unittest.TestCase):
         self.assertTrue(response["upload_contract"]["supports_client_file_id"])
         self.assertTrue(response["upload_contract"]["supports_upload_source"])
         self.assertEqual(response["upload_contract"]["upload_sources"], ["mobile"])
+        self.assertTrue(
+            response["upload_contract"]["supports_mobile_sha256_preflight"]
+        )
+        self.assertEqual(
+            response["upload_contract"]["mobile_sha256_preflight_endpoint"],
+            "/api/common/upload/preflight",
+        )
+        self.assertEqual(
+            response["upload_contract"]["upload_failure_codes"],
+            ["DUPLICATE_CONTENT", "CONTENT_SHA256_MISMATCH"],
+        )

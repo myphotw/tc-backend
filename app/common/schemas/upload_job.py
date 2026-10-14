@@ -22,6 +22,7 @@ class UploadJobStatusResponse(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     last_error: str | None = None
+    failure_code: str | None = None
     updated_at: datetime | None = None
     service_name: str | None = None
     client_file_id: str | None = None

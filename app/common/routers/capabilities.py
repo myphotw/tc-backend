@@ -35,5 +35,12 @@ def capabilities() -> dict[str, object]:
             "upload_sources": ["mobile"],
             "supports_client_file_id": True,
             "supports_client_content_sha256": True,
+            "supports_mobile_sha256_preflight": True,
+            "mobile_sha256_preflight_endpoint": "/api/common/upload/preflight",
+            "mobile_duplicate_scope": "MemoryKeeper",
+            "upload_failure_codes": [
+                "DUPLICATE_CONTENT",
+                "CONTENT_SHA256_MISMATCH",
+            ],
         },
     }

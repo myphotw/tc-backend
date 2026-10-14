@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.common.models.file import CommonFile
 from app.common.models.file_service import CommonFileService
 
 
@@ -18,6 +19,24 @@ class FileServiceRepository:
             .filter(CommonFileService.file_id == file_id)
             .filter(CommonFileService.service_name == service_name)
             .first()
+        )
+
+    def has_active_file_by_sha(
+        self,
+        *,
+        content_sha256: str,
+        service_name: str,
+    ) -> bool:
+        """Return whether an active FileAsset belongs to one service domain."""
+
+        return (
+            self.db.query(CommonFileService.id)
+            .join(CommonFile, CommonFile.id == CommonFileService.file_id)
+            .filter(CommonFile.file_id == content_sha256)
+            .filter(CommonFile.deleted.is_(False))
+            .filter(CommonFileService.service_name == service_name)
+            .first()
+            is not None
         )
 
     def ensure_link(

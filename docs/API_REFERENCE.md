@@ -696,9 +696,11 @@ year/location storage rule and relative `common_files.original_path` contract.
 Omitting the field retains the legacy `PHOTO_PLATFORM_ROOT/original` behavior.
 Other values, and `upload_source=mobile` with another service, return `422`.
 The source is persisted in `common_upload_jobs.source_type`, so a restarted
-worker makes the same routing decision. SHA duplicates always reuse the existing
-CommonFile and existing original path; they are never moved or copied merely to
-match the requested source.
+worker makes the same routing decision. SHA duplicates reuse the existing
+CommonFile and original path for legacy PC/Watcher and cross-service uploads;
+they are never moved or copied merely to match the requested source.
+MemoryKeeper mobile uploads are the exception to the legacy same-service reuse
+policy: an active SHA already linked to MemoryKeeper is rejected as a duplicate.
 
 AstroJournal uploads additionally accept these optional multipart fields:
 
@@ -727,6 +729,13 @@ Extended upload and Upload Job status responses distinguish these identifiers:
 `common_file_id` is normally null while the Job is WAITING and becomes
 available after the worker creates or resolves the shared `CommonFile`.
 
+Upload Job responses also include the optional additive `failure_code`. It is
+`DUPLICATE_CONTENT` when a MemoryKeeper mobile upload resolves to an already
+linked active file, and `CONTENT_SHA256_MISMATCH` when the SHA supplied by the
+client differs from the SHA calculated from the uploaded bytes. Existing
+`last_error` and the `WAITING`, `PROCESSING`, `COMPLETED`, and `FAILED` states
+are unchanged.
+
 - **Request**: `multipart/form-data` field `file`
 - **Response 200**
   ```json
@@ -738,9 +747,52 @@ available after the worker creates or resolves the shared `CommonFile`.
   }
   ```
 - **400**: filename 누락
+- **409**: MemoryKeeper mobile client SHA is already linked to MemoryKeeper
 - **500**: 저장/DB 실패 (incoming 롤백 시도)
 
 비고: 후처리는 UploadWorker. Vision Queue는 Worker가 생성.
+
+### `POST /api/common/upload/preflight`
+
+Bearer-authenticated, read-only duplicate preflight for MemoryKeeper mobile
+uploads. The JSON body is deliberately restricted to this scope:
+
+```json
+{
+  "service_name": "MemoryKeeper",
+  "upload_source": "mobile",
+  "client_content_sha256": "64-character-lowercase-sha256"
+}
+```
+
+An active `common_files` row is a duplicate only when the same row has a
+`common_file_services` link for MemoryKeeper. An AstroJournal-only link, an
+unknown SHA, and a deleted CommonFile tombstone all return the non-duplicate
+shape. The response never includes file names, paths, database IDs, metadata,
+or another service's membership.
+
+```json
+{
+  "duplicate": true,
+  "upload_allowed": false,
+  "reason": "DUPLICATE_CONTENT"
+}
+```
+
+Non-duplicate responses use `duplicate=false`, `upload_allowed=true`, and a
+null `reason`. Invalid scope or SHA format returns `422`. A positive preflight
+does not reserve the SHA: the upload endpoint performs an early client-SHA
+check and the worker always calculates the actual content SHA for the final
+decision. Same-`client_file_id` replay is evaluated first and returns its
+original job under the existing idempotency rules.
+
+If only AstroJournal currently owns the SHA, a MemoryKeeper mobile upload
+reuses that CommonFile and physical original and creates the explicit
+MemoryKeeper link/state. It does not duplicate the original or alter the
+AstroJournal record. PostgreSQL serializes derivative generation and the final
+storage/CommonFile insert section per SHA, and the unique constraints on
+`common_files.file_id` and
+`common_file_services(file_id, service_name)` resolve concurrent races.
 
 ---
 

@@ -140,6 +140,30 @@ class BackendAuthenticationTests(unittest.TestCase):
         )
         self.assertNotIn("auth", str(response.json()).lower())
 
+    def test_upload_preflight_requires_the_same_bearer_auth(self) -> None:
+        body = json.dumps(
+            {
+                "service_name": "MemoryKeeper",
+                "upload_source": "mobile",
+                "client_content_sha256": "a" * 64,
+            }
+        ).encode("utf-8")
+        for headers in (
+            {"Content-Type": "application/json"},
+            {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer wrong-test-token",
+            },
+        ):
+            with self.subTest(auth="Authorization" in headers):
+                response = request_app(
+                    "post",
+                    "/api/common/upload/preflight",
+                    headers=headers,
+                    body=body,
+                )
+                self.assertEqual(response.status_code, 401)
+
     def test_gallery_original_range_requires_the_same_bearer_auth(self) -> None:
         response = request_app(
             "get",

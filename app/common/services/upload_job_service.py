@@ -16,6 +16,7 @@ from app.common.schemas.upload_job import (
     UploadJobListResponse,
     UploadJobStatusResponse,
 )
+from app.common.services.upload_validation import extract_upload_failure_code
 
 
 class UploadJobService:
@@ -98,6 +99,7 @@ class UploadJobService:
             started_at=job.started_at,
             completed_at=job.completed_at,
             last_error=job.error_message,
+            failure_code=extract_upload_failure_code(job.error_message),
             updated_at=job.completed_at or job.started_at or job.created_at,
             service_name=job.service_name,
             client_file_id=job.client_file_id,

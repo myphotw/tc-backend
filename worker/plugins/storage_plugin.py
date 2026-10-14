@@ -9,14 +9,20 @@ from sqlalchemy.exc import IntegrityError
 
 from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
+from app.common.models.file_service import CommonFileService
 from app.common.models.upload_job import UploadSourceType
 from app.common.repositories.file_service_repository import FileServiceRepository
+from app.common.services.storage import StorageRuleEngine
+from app.common.services.upload_validation import (
+    UploadFailureCode,
+    UploadValidationError,
+    acquire_upload_sha_transaction_lock,
+)
+from app.common.utils.perf import elapsed_ms, log_perf
 from app.memorykeeper.services.capture_date_service import (
     MemoryKeeperCaptureDateService,
 )
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
-from app.common.services.storage import StorageRuleEngine
-from app.common.utils.perf import elapsed_ms, log_perf
 from worker.plugins.base import BasePlugin, PluginContext
 
 
@@ -38,6 +44,8 @@ class StoragePlugin(BasePlugin):
 
         total_started = time.perf_counter()
         move_timings: dict[str, float] = {}
+
+        self._acquire_file_storage_lock(context)
 
         started = time.perf_counter()
         relative_dir = StorageRuleEngine().build_path(context)
@@ -95,6 +103,7 @@ class StoragePlugin(BasePlugin):
                 context,
                 common_file,
                 load_existing_metadata=True,
+                allow_existing_mobile_link=True,
             )
             context.common_file = common_file
             context.log("COMMON_FILE_RESTORED")
@@ -173,6 +182,11 @@ class StoragePlugin(BasePlugin):
                     context.original_path
                 )
             context.common_file = existing
+            if self._is_mobile_memorykeeper(context) and self._has_service_link(
+                context,
+                file_id=existing.id,
+            ):
+                self._reject_mobile_duplicate(context)
             link_created = self._ensure_service_link_and_projection(
                 context,
                 existing,
@@ -229,6 +243,7 @@ class StoragePlugin(BasePlugin):
         common_file: CommonFile,
         *,
         load_existing_metadata: bool,
+        allow_existing_mobile_link: bool = False,
     ) -> bool:
         service_name = context.service_name or "MemoryKeeper"
         try:
@@ -237,6 +252,13 @@ class StoragePlugin(BasePlugin):
                 service_name=service_name,
                 commit=False,
             )
+            if (
+                not allow_existing_mobile_link
+                and StoragePlugin._is_mobile_memorykeeper(context)
+                and not link_created
+            ):
+                context.db.rollback()
+                StoragePlugin._reject_mobile_duplicate(context)
             state = None
             if service_name.casefold() == "memorykeeper":
                 metadata = None
@@ -260,6 +282,49 @@ class StoragePlugin(BasePlugin):
         context.file_service_link = link
         context.memorykeeper_state = state
         return link_created
+
+    @staticmethod
+    def _is_mobile_memorykeeper(context: PluginContext) -> bool:
+        return bool(
+            context.job is not None
+            and context.job.source_type == UploadSourceType.UPLOAD_MOBILE
+            and (context.service_name or "MemoryKeeper") == "MemoryKeeper"
+        )
+
+    @staticmethod
+    def _acquire_file_storage_lock(context: PluginContext) -> None:
+        """Ensure direct StoragePlugin calls hold the shared per-SHA lock.
+
+        Normal pipelines acquire it in HashPlugin before derivative creation.
+        The transaction-scoped lock is released by every existing commit or
+        rollback path. Portable unit databases intentionally do not emulate
+        this PostgreSQL concurrency guarantee.
+        """
+
+        if context.file_id is None:
+            raise ValueError("file_id is required before storage")
+        acquire_upload_sha_transaction_lock(context.db, context.file_id)
+
+    @staticmethod
+    def _has_service_link(context: PluginContext, *, file_id: int) -> bool:
+        return (
+            context.db.query(CommonFileService.id)
+            .filter(CommonFileService.file_id == file_id)
+            .filter(CommonFileService.service_name == "MemoryKeeper")
+            .first()
+            is not None
+        )
+
+    @staticmethod
+    def _reject_mobile_duplicate(context: PluginContext) -> None:
+        if context.job is None:
+            raise ValueError("upload job is required")
+        context.log(UploadFailureCode.DUPLICATE_CONTENT)
+        context.storage_service.delete_incoming(context.job.incoming_path)
+        raise UploadValidationError(
+            UploadFailureCode.DUPLICATE_CONTENT,
+            "The file is already registered in MemoryKeeper.",
+        )
 
 
 def guess_mime_type(extension: str | None) -> str | None:

@@ -14,7 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.common.database import get_db
 from app.common.models.upload_job import UploadJob, UploadSourceType
+from app.common.repositories.file_service_repository import FileServiceRepository
 from app.common.repositories.upload_job_repository import UploadJobRepository
+from app.common.schemas.upload import UploadPreflightRequest, UploadPreflightResponse
 from app.common.services.media_probe import (
     MediaProbe,
     MediaToolUnavailableError,
@@ -23,6 +25,7 @@ from app.common.services.media_probe import (
 from app.common.services.storage_service import StorageService
 from app.common.services.upload_filename import decode_upload_filename
 from app.common.services.upload_metadata import encode_upload_metadata
+from app.common.services.upload_validation import UploadFailureCode
 from app.common.utils.perf import Stopwatch, log_perf
 from app.memorykeeper.services.reset_guard import acquire_memorykeeper_reset_lock
 from app.astrojournal.services.reset_guard import acquire_astrojournal_reset_lock
@@ -38,6 +41,28 @@ storage_service = StorageService()
 media_probe = MediaProbe()
 SUPPORTED_SERVICES = {"MemoryKeeper", "AstroJournal"}
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+@router.post(
+    "/upload/preflight",
+    response_model=UploadPreflightResponse,
+    summary="Check a MemoryKeeper mobile upload for duplicate content",
+)
+def preflight_upload(
+    payload: UploadPreflightRequest,
+    db: Session = Depends(get_db),
+) -> UploadPreflightResponse:
+    """Check MemoryKeeper membership without exposing another service's data."""
+
+    duplicate = FileServiceRepository(db).has_active_file_by_sha(
+        content_sha256=payload.client_content_sha256,
+        service_name=payload.service_name,
+    )
+    return UploadPreflightResponse(
+        duplicate=duplicate,
+        upload_allowed=not duplicate,
+        reason=UploadFailureCode.DUPLICATE_CONTENT if duplicate else None,
+    )
 
 
 @router.post(
@@ -63,6 +88,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
             },
         },
         400: {"description": "filename 누락"},
+        409: {"description": "모바일 MemoryKeeper SHA 중복 또는 멱등성 충돌"},
         415: {"description": "지원하지 않거나 손상된 미디어"},
         503: {"description": "미디어 판별 도구 사용 불가"},
         500: {"description": "업로드 실패"},
@@ -124,6 +150,22 @@ def upload_file(
                 client_content_sha256,
                 requested_source_type=source_type,
             )
+
+    if (
+        source_type == UploadSourceType.UPLOAD_MOBILE
+        and client_content_sha256 is not None
+        and FileServiceRepository(db).has_active_file_by_sha(
+            content_sha256=client_content_sha256,
+            service_name="MemoryKeeper",
+        )
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": UploadFailureCode.DUPLICATE_CONTENT,
+                "message": "The file is already registered in MemoryKeeper.",
+            },
+        )
 
     watch = Stopwatch()
     incoming_path: str | None = None

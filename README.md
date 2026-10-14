@@ -33,6 +33,16 @@ receive `service_name`, `client_file_id`, `backend_file_id`, and
 `service_name` is omitted. Feature discovery is available at
 `GET /api/common/capabilities`.
 
+MemoryKeeper mobile clients can call `POST /api/common/upload/preflight` with
+`service_name=MemoryKeeper`, `upload_source=mobile`, and a lowercase SHA-256
+before transferring bytes. The preflight reports only whether the active file
+is already linked to MemoryKeeper; an AstroJournal-only asset is not exposed or
+treated as a MemoryKeeper duplicate. Preflight is an optimization only. The
+worker calculates the uploaded bytes' SHA-256 and rejects mobile jobs with
+`DUPLICATE_CONTENT` or `CONTENT_SHA256_MISMATCH`. Upload Job responses expose
+the additive `failure_code` while retaining `last_error` and all existing job
+states.
+
 ## Shared File Assets (B2)
 
 `common_files` remains the physical FileAsset record, keyed by SHA-256. Service

@@ -2,16 +2,23 @@ from __future__ import annotations
 
 from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
+from app.common.models.file_service import CommonFileService
 from app.common.models.file_tag import CommonFileTag
+from app.common.models.upload_job import UploadSourceType
 from app.common.repositories.file_service_repository import FileServiceRepository
 from app.common.repositories.vision_job_repository import (
     VisionJobRepository,
     VisionJobStatus,
 )
+from app.common.services.media_probe import MediaCategory
+from app.common.services.upload_validation import (
+    UploadFailureCode,
+    UploadValidationError,
+    acquire_upload_sha_transaction_lock,
+)
 from app.memorykeeper.services.capture_date_service import (
     MemoryKeeperCaptureDateService,
 )
-from app.common.services.media_probe import MediaCategory
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
 from worker.plugins.base import BasePlugin, PluginContext
 
@@ -36,6 +43,20 @@ class HashPlugin(BasePlugin):
         context.file_id = context.storage_service.calculate_sha256(context.incoming_path)
         context.log("SHA256_COMPLETE")
 
+        mobile_memorykeeper = self._is_mobile_memorykeeper(context)
+        if (
+            mobile_memorykeeper
+            and context.job.client_content_sha256 is not None
+            and context.job.client_content_sha256 != context.file_id
+        ):
+            self._reject_mobile_upload(
+                context,
+                code=UploadFailureCode.CONTENT_SHA256_MISMATCH,
+                message="The client SHA-256 does not match the uploaded content.",
+            )
+
+        acquire_upload_sha_transaction_lock(context.db, context.file_id)
+
         existing = (
             context.db.query(CommonFile)
             .filter(CommonFile.file_id == context.file_id)
@@ -44,21 +65,38 @@ class HashPlugin(BasePlugin):
         context.log("DUPLICATE_CHECK_COMPLETE")
 
         if existing is not None:
-            context.common_file = existing
             if existing.deleted:
                 # Physical cleanup keeps a CommonFile tombstone because deleted
                 # ObservationRecords retain its FK. Re-upload restores that row
                 # instead of treating the now-absent asset as a valid duplicate.
+                context.common_file = existing
                 context.restore_deleted_common_file = True
                 context.log("DELETED_FILE_REUPLOAD")
                 return
             service_name = context.service_name or "MemoryKeeper"
+            if mobile_memorykeeper and self._has_service_link(
+                context,
+                file_id=existing.id,
+                service_name=service_name,
+            ):
+                self._reject_mobile_upload(
+                    context,
+                    code=UploadFailureCode.DUPLICATE_CONTENT,
+                    message="The file is already registered in MemoryKeeper.",
+                )
             try:
                 link, link_created = FileServiceRepository(context.db).ensure_link(
                     file_id=existing.id,
                     service_name=service_name,
                     commit=False,
                 )
+                if mobile_memorykeeper and not link_created:
+                    context.db.rollback()
+                    self._reject_mobile_upload(
+                        context,
+                        code=UploadFailureCode.DUPLICATE_CONTENT,
+                        message="The file is already registered in MemoryKeeper.",
+                    )
                 state = None
                 if service_name.casefold() == "memorykeeper":
                     metadata = (
@@ -77,6 +115,7 @@ class HashPlugin(BasePlugin):
                 context.db.rollback()
                 raise
 
+            context.common_file = existing
             context.file_service_link = link
             context.memorykeeper_state = state
             context.storage_service.delete_incoming(context.job.incoming_path)
@@ -95,6 +134,42 @@ class HashPlugin(BasePlugin):
                     file_id=existing.id
                 ):
                     context.log("MEMORYKEEPER_PLACE_MATCHED")
+
+    @staticmethod
+    def _is_mobile_memorykeeper(context: PluginContext) -> bool:
+        return bool(
+            context.job is not None
+            and context.job.source_type == UploadSourceType.UPLOAD_MOBILE
+            and (context.service_name or "MemoryKeeper") == "MemoryKeeper"
+        )
+
+    @staticmethod
+    def _has_service_link(
+        context: PluginContext,
+        *,
+        file_id: int,
+        service_name: str,
+    ) -> bool:
+        return (
+            context.db.query(CommonFileService.id)
+            .filter(CommonFileService.file_id == file_id)
+            .filter(CommonFileService.service_name == service_name)
+            .first()
+            is not None
+        )
+
+    @staticmethod
+    def _reject_mobile_upload(
+        context: PluginContext,
+        *,
+        code: str,
+        message: str,
+    ) -> None:
+        if context.job is None:
+            raise ValueError("upload job is required")
+        context.log(code)
+        context.storage_service.delete_incoming(context.job.incoming_path)
+        raise UploadValidationError(code, message)
 
     @staticmethod
     def _reuse_or_enqueue_vision(
