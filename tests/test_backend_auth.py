@@ -174,6 +174,12 @@ class BackendAuthenticationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.headers["www-authenticate"], "Bearer")
 
+    def test_catalog_favorites_require_the_same_bearer_auth(self) -> None:
+        response = request_app("get", "/api/astro/catalog-favorites")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers["www-authenticate"], "Bearer")
+
     def test_public_health_and_db_test_do_not_require_auth(self) -> None:
         health = request_app("get", "/health")
         connection = MagicMock()
