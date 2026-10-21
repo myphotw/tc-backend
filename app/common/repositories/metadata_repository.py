@@ -70,6 +70,7 @@ class MetadataRepository:
         approved: bool = False,
         modified_by: str | None = None,
         commit: bool = True,
+        restore_missing_projection: bool = False,
     ) -> CommonFileMetadata:
         """
         여러 metadata 필드를 한 트랜잭션에서 upsert한다.
@@ -95,30 +96,71 @@ class MetadataRepository:
             and new_value is not None
             and new_value != ""
         }
+        latest_histories = None
+        if restore_missing_projection:
+            latest_histories = self.history_repository.get_latest_histories(
+                file_id=file_id,
+                field_names=list(self.ALLOWED_FIELDS),
+            )
+            self._restore_latest_user_values(
+                item=item,
+                latest_histories=latest_histories,
+            )
         if not candidates:
             if commit:
                 self.db.commit()
+            else:
+                self.db.flush()
             return item
 
-        if self._is_update_blocked(item=item, source=source):
+        if self._is_update_blocked(
+            item=item,
+            source=source,
+            restore_missing_projection=restore_missing_projection,
+        ):
             if commit:
                 self.db.commit()
             return item
 
-        latest_priorities = self.history_repository.get_latest_priorities(
-            file_id=file_id,
-            field_names=list(candidates.keys()),
-        )
+        if restore_missing_projection:
+            latest_priorities = {
+                field_name: int(history.priority)
+                for field_name, history in latest_histories.items()
+            }
+        else:
+            latest_priorities = self.history_repository.get_latest_priorities(
+                file_id=file_id,
+                field_names=list(candidates.keys()),
+            )
 
         history_items: list[dict[str, Any]] = []
         for field_name, new_value in candidates.items():
-            current_priority = latest_priorities.get(field_name, 0)
-            if priority < current_priority:
-                continue
-            if priority == current_priority and source != MetadataSource.USER:
+            current_value = getattr(item, field_name)
+            latest_history = (
+                latest_histories.get(field_name)
+                if latest_histories is not None
+                else None
+            )
+            if (
+                restore_missing_projection
+                and latest_history is not None
+                and latest_history.source == MetadataSource.USER
+            ):
+                # The retained USER history is authoritative, including an
+                # explicit null. It was replayed above when it carried a value.
                 continue
 
-            old_value = getattr(item, field_name)
+            current_priority = latest_priorities.get(field_name, 0)
+            rebuilding_missing_value = (
+                restore_missing_projection and current_value is None
+            )
+            if not rebuilding_missing_value:
+                if priority < current_priority:
+                    continue
+                if priority == current_priority and source != MetadataSource.USER:
+                    continue
+
+            old_value = current_value
             if old_value == new_value:
                 continue
 
@@ -261,6 +303,49 @@ class MetadataRepository:
         """source의 priority 값을 반환한다."""
         return MetadataPriority.from_source(source)
 
-    def _is_update_blocked(self, *, item: CommonFileMetadata, source: str) -> bool:
+    def _is_update_blocked(
+        self,
+        *,
+        item: CommonFileMetadata,
+        source: str,
+        restore_missing_projection: bool = False,
+    ) -> bool:
         """locked Row에 대한 비사용자 source 업데이트를 차단한다."""
+        if restore_missing_projection:
+            # A restored projection may contain USER authority for one field
+            # while unrelated fields still need to be rebuilt from the asset.
+            # Per-field USER history is enforced in ``upsert_fields``.
+            return False
         return bool(item.locked and source != MetadataSource.USER)
+
+    @staticmethod
+    def _restore_latest_user_values(
+        *,
+        item: CommonFileMetadata,
+        latest_histories: dict[str, Any],
+    ) -> None:
+        """Replay retained USER decisions into a recreated current projection."""
+        user_history_found = False
+        for field_name, history in latest_histories.items():
+            if history.source != MetadataSource.USER:
+                continue
+            user_history_found = True
+            value = MetadataRepository._coerce_history_value(
+                field_name=field_name,
+                value=history.new_value,
+            )
+            setattr(item, field_name, value)
+        if user_history_found:
+            item.locked = True
+
+    @staticmethod
+    def _coerce_history_value(*, field_name: str, value: str | None) -> Any:
+        if value is None:
+            return None
+        column = CommonFileMetadata.__table__.c[field_name]
+        python_type = column.type.python_type
+        if python_type is datetime:
+            return datetime.fromisoformat(value)
+        if python_type is bool:
+            return value.casefold() in {"1", "true", "yes", "on"}
+        return python_type(value)

@@ -99,12 +99,20 @@ class GpsPlugin(BasePlugin):
                 "gps_lat": result.get("latitude", latitude),
                 "gps_lon": result.get("longitude", longitude),
             }
-            MetadataRepository(context.db).upsert_fields(
+            metadata_row = MetadataRepository(context.db).upsert_fields(
                 file_id=context.common_file.id,
                 values=metadata,
                 source=MetadataSource.GPS,
                 modified_by="GpsPlugin",
+                commit=not context.restore_deleted_common_file,
+                restore_missing_projection=context.restore_deleted_common_file,
             )
+
+            if context.restore_deleted_common_file:
+                if metadata_row.gps_lat is None or metadata_row.gps_lon is None:
+                    context.log("GPS_RESTORE_PERSISTENCE_FAILED")
+                    raise RuntimeError("restored GPS metadata was not persisted")
+                context.log("GPS_RESTORE_PERSISTED")
 
             # The relation is MemoryKeeper-only and never alters raw GPS/address.
             if MemoryKeeperPlaceService(context.db).auto_match_file(
@@ -113,6 +121,9 @@ class GpsPlugin(BasePlugin):
                 context.log("MEMORYKEEPER_PLACE_MATCHED")
             else:
                 context.log("MEMORYKEEPER_PLACE_UNMATCHED")
+
+            if context.restore_deleted_common_file:
+                context.db.commit()
 
             context.resolved_country = metadata.get("country")
             context.resolved_province = metadata.get("province")
@@ -129,3 +140,6 @@ class GpsPlugin(BasePlugin):
             context.log("GPS_COMPLETE")
         except Exception as exc:
             context.log(f"GPS_FAILED:{exc}")
+            if context.restore_deleted_common_file:
+                context.db.rollback()
+                raise

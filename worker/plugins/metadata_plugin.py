@@ -31,5 +31,6 @@ class MetadataPlugin(BasePlugin):
             source=MetadataSource.SYSTEM,
             modified_by="MetadataPlugin",
             commit=False,
+            restore_missing_projection=context.restore_deleted_common_file,
         )
         context.log("METADATA_COMPLETE")

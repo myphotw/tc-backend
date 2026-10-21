@@ -107,6 +107,29 @@ class HistoryRepository:
         )
         return {field_name: int(priority) for field_name, priority in rows}
 
+    def get_latest_histories(
+        self,
+        *,
+        file_id: int,
+        field_names: list[str] | None = None,
+    ) -> dict[str, CommonMetadataHistory]:
+        """Return the latest persisted history row for each requested field."""
+        query = self.db.query(
+            CommonMetadataHistory.field_name,
+            func.max(CommonMetadataHistory.id).label("max_id"),
+        ).filter(CommonMetadataHistory.file_id == file_id)
+        if field_names is not None:
+            if not field_names:
+                return {}
+            query = query.filter(CommonMetadataHistory.field_name.in_(field_names))
+        subq = query.group_by(CommonMetadataHistory.field_name).subquery()
+        rows = (
+            self.db.query(CommonMetadataHistory)
+            .join(subq, CommonMetadataHistory.id == subq.c.max_id)
+            .all()
+        )
+        return {row.field_name: row for row in rows}
+
     def get_history(
         self,
         *,

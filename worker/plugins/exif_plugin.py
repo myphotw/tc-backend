@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from app.common.models.file_metadata import CommonFileMetadata
 from app.common.repositories.metadata_repository import (
     MetadataRepository,
     MetadataSource,
 )
 from app.common.repositories.file_service_repository import FileServiceRepository
+from app.common.repositories.history_repository import HistoryRepository
 from app.common.services.photo_analysis import ExifReader
 from app.memorykeeper.services.capture_date_service import (
     MemoryKeeperCaptureDateService,
@@ -49,6 +51,7 @@ class ExifPlugin(BasePlugin):
                 source=MetadataSource.EXIF,
                 modified_by="ExifPlugin",
                 commit=False,
+                restore_missing_projection=context.restore_deleted_common_file,
             )
             metadata_repository.set_original_capture_datetime_if_missing(
                 item=metadata,
@@ -56,6 +59,13 @@ class ExifPlugin(BasePlugin):
                 modified_by="ExifPlugin",
                 commit=False,
             )
+
+            if context.restore_deleted_common_file:
+                self._synchronize_restored_gps_context(
+                    context=context,
+                    metadata=metadata,
+                    extracted_has_gps=context.has_gps,
+                )
 
             service_name = context.service_name or "MemoryKeeper"
             if service_name.casefold() == "memorykeeper":
@@ -74,8 +84,54 @@ class ExifPlugin(BasePlugin):
                     )
                     context.file_service_link = link
                     context.memorykeeper_state = state
-            context.db.commit()
+            if context.restore_deleted_common_file and context.has_gps:
+                # Keep the recreated metadata projection and GPS/place
+                # enrichment in one transaction. GpsPlugin owns the commit.
+                context.db.flush()
+            else:
+                context.db.commit()
         except Exception:
             context.db.rollback()
             raise
         context.log("EXIF_COMPLETE")
+
+    @staticmethod
+    def _synchronize_restored_gps_context(
+        *,
+        context: PluginContext,
+        metadata: CommonFileMetadata,
+        extracted_has_gps: bool,
+    ) -> None:
+        persisted_has_gps = (
+            metadata.gps_lat is not None and metadata.gps_lon is not None
+        )
+        if extracted_has_gps and not persisted_has_gps:
+            latest = HistoryRepository(context.db).get_latest_histories(
+                file_id=context.common_file.id,
+                field_names=["gps_lat", "gps_lon"],
+            )
+            user_cleared_gps = all(
+                latest.get(field_name) is not None
+                and latest[field_name].source == MetadataSource.USER
+                and latest[field_name].new_value is None
+                for field_name in ("gps_lat", "gps_lon")
+            )
+            if user_cleared_gps:
+                context.log("GPS_RESTORE_USER_CLEAR_PRESERVED")
+            else:
+                context.log("GPS_RESTORE_PERSISTENCE_FAILED")
+                raise RuntimeError("restored GPS metadata was not persisted")
+
+        context.gps_lat = metadata.gps_lat
+        context.gps_lon = metadata.gps_lon
+        context.has_gps = persisted_has_gps
+        if persisted_has_gps:
+            latest = HistoryRepository(context.db).get_latest_histories(
+                file_id=context.common_file.id,
+                field_names=["gps_lat", "gps_lon"],
+            )
+            if any(
+                history.source == MetadataSource.USER
+                for history in latest.values()
+            ):
+                context.log("GPS_RESTORE_USER_VALUE_PRESERVED")
