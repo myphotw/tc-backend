@@ -34,6 +34,13 @@ from app.memorykeeper.services.place_candidate_service import (
     MemoryKeeperPlaceCandidateService,
 )
 from app.memorykeeper.services.place_service import MemoryKeeperPlaceService
+from app.memorykeeper.services.fast_gallery_service import MemoryKeeperFastGalleryService
+from app.memorykeeper.repositories.place_cleanup_repository import (
+    LOCATION_REASON_COUNTRY_MISSING,
+    LOCATION_REASON_PLACE_MISSING,
+    LOCATION_REASON_REGION_MISSING,
+    location_hierarchy_reason,
+)
 from scripts.backfill_memorykeeper_places import backfill_memorykeeper_places
 from scripts.migrate_memorykeeper_places import migrate_rows
 from worker.plugins.base import PluginContext
@@ -99,6 +106,262 @@ class MemoryKeeperPlaceTests(unittest.TestCase):
         self.assertEqual(updated.revision, 2)
         with self.assertRaisesRegex(Exception, "REVISION_CONFLICT"):
             self.service.update(first.id, PlaceUpdate(revision=1, favorite=True))
+
+    def test_place_hierarchy_reuses_gallery_paths_and_includes_empty_places(self) -> None:
+        beach = self.place(
+            "헐후메일 퍼블릭 비치",
+            country="몰디브",
+            province=None,
+            city=None,
+        )
+        island = self.place(
+            "섬 장소",
+            country="몰디브",
+            province="Island",
+            city=None,
+        )
+        empty = self.place(
+            "연결 없는 장소",
+            country="대한민국",
+            province="제주",
+            city=None,
+        )
+        same_name = self.place(
+            "헐후메일 퍼블릭 비치",
+            country="몰디브",
+            province="다른 지역",
+            city=None,
+            latitude=4.3,
+            longitude=73.6,
+        )
+        missing_country = self.place(
+            "국가 누락 장소",
+            country=None,
+            province="Island",
+            city=None,
+            latitude=4.4,
+            longitude=73.7,
+        )
+        missing_name = MemoryKeeperPlace(
+            display_name="   ",
+            canonical_name=None,
+            country="몰디브",
+            province="Island",
+            city=None,
+            latitude=4.5,
+            longitude=73.8,
+            active=True,
+        )
+        self.db.add(missing_name)
+        self.db.flush()
+        male_file, male_metadata = self.file("h", lat=4.21, lon=73.54)
+        lot_file, lot_metadata = self.file("i", lat=4.22, lon=73.55)
+        for metadata, city in ((male_metadata, "말레"), (lot_metadata, "Lot")):
+            metadata.memorykeeper_place_id = beach.id
+            metadata.country = "몰디브"
+            metadata.province = None
+            metadata.city = city
+            metadata.place_name = "헐후메일 퍼블릭 비치"
+        for common_file, captured_at in (
+            (male_file, datetime(2026, 2, 13, 12, 0)),
+            (lot_file, datetime(2026, 2, 14, 12, 0)),
+        ):
+            self.db.add(
+                MemoryKeeperFileState(
+                    file_id=common_file.id,
+                    effective_capture_datetime=captured_at,
+                    effective_capture_date=captured_at.date(),
+                    effective_capture_year=2026,
+                    effective_capture_precision="DATETIME",
+                    date_basis="EXIF",
+                )
+            )
+        self.db.commit()
+
+        response = self.service.hierarchy()
+        beach_rows = [
+            item
+            for item in response.items
+            if str(item.memorykeeper_place_id) == beach.id
+        ]
+        assert {(item.region, item.photo_count) for item in beach_rows} == {
+            ("Lot", 1),
+            ("말레", 1),
+        }
+        assert len({item.location_key for item in beach_rows}) == 1
+        assert response.total_places == 6
+        assert any(
+            str(item.memorykeeper_place_id) == empty.id and item.photo_count == 0
+            for item in response.items
+        )
+        assert any(
+            str(item.memorykeeper_place_id) == island.id
+            and item.region == "Island"
+            and item.location_hierarchy_complete
+            for item in response.items
+        )
+        assert {
+            str(item.memorykeeper_place_id)
+            for item in response.items
+            if item.display_name == "헐후메일 퍼블릭 비치"
+        } == {beach.id, same_name.id}
+        assert next(
+            item
+            for item in response.items
+            if str(item.memorykeeper_place_id) == missing_country.id
+        ).location_cleanup_reason == LOCATION_REASON_COUNTRY_MISSING
+        assert next(
+            item
+            for item in response.items
+            if str(item.memorykeeper_place_id) == missing_name.id
+        ).location_cleanup_reason == LOCATION_REASON_PLACE_MISSING
+
+        gallery_before = MemoryKeeperFastGalleryService(self.db).hierarchy()
+        year_before = next(item for item in gallery_before.items if item.year == 2026)
+        maldives_before = next(
+            item for item in year_before.countries if item.country == "몰디브"
+        )
+        assert {item.region: item.count for item in maldives_before.regions} == {
+            "Lot": 1,
+            "말레": 1,
+        }
+
+        self.service.update(beach.id, PlaceUpdate(revision=1, city="말레"))
+        gallery_after = MemoryKeeperFastGalleryService(self.db).hierarchy()
+        year_after = next(item for item in gallery_after.items if item.year == 2026)
+        maldives_after = next(
+            item for item in year_after.countries if item.country == "몰디브"
+        )
+        assert [(item.region, item.count) for item in maldives_after.regions] == [
+            ("말레", 2)
+        ]
+        self.db.refresh(male_metadata)
+        self.db.refresh(lot_metadata)
+        assert male_metadata.city == "말레"
+        assert lot_metadata.city == "Lot"
+        assert (male_metadata.gps_lat, male_metadata.gps_lon) == (4.21, 73.54)
+        assert (lot_metadata.gps_lat, lot_metadata.gps_lon) == (4.22, 73.55)
+
+    def test_gallery_detail_explains_registered_hierarchy_gaps(self) -> None:
+        place = self.place(
+            "헐후메일 퍼블릭 비치",
+            canonical_name="헐후메일 퍼블릭 비치",
+            country="몰디브",
+            province=None,
+            city=None,
+            latitude=4.21147,
+            longitude=73.54420,
+        )
+        common_file, metadata = self.file("j", lat=4.21147, lon=73.54420)
+        metadata.memorykeeper_place_id = place.id
+        metadata.country = "몰디브"
+        metadata.province = None
+        metadata.city = None
+        metadata.district = "Hulhumalé"
+        metadata.place_name = None
+        self.db.commit()
+
+        detail = GalleryService(self.db).get_detail(
+            common_file.file_id,
+            service_name="MemoryKeeper",
+        )
+        assert str(detail.memorykeeper_place_id) == place.id
+        assert detail.canonical_country == "몰디브"
+        assert detail.canonical_region is None
+        assert detail.canonical_place == "헐후메일 퍼블릭 비치"
+        assert detail.location_hierarchy_complete is False
+        assert detail.location_cleanup_reason == LOCATION_REASON_REGION_MISSING
+        assert detail.metadata["district"] == "Hulhumalé"
+        assert (detail.metadata["gps_lat"], detail.metadata["gps_lon"]) == (
+            4.21147,
+            73.54420,
+        )
+
+        assert location_hierarchy_reason(
+            registered_place_id=place.id,
+            country=None,
+            region="Island",
+            place="장소",
+        ) == LOCATION_REASON_COUNTRY_MISSING
+        assert location_hierarchy_reason(
+            registered_place_id=place.id,
+            country="몰디브",
+            region="Island",
+            place="   ",
+        ) == LOCATION_REASON_PLACE_MISSING
+
+    def test_reassign_one_file_moves_gallery_count_and_preserves_raw_location(self) -> None:
+        source = self.place(
+            "기존 장소",
+            country="몰디브",
+            city="Lot",
+            province=None,
+        )
+        target = self.place(
+            "헐후메일 퍼블릭 비치",
+            country="몰디브",
+            city="말레",
+            province=None,
+            latitude=4.21147,
+            longitude=73.54420,
+        )
+        common_file, metadata = self.file("k", lat=4.21147, lon=73.54420)
+        metadata.country = "몰디브"
+        metadata.province = None
+        metadata.city = "Lot"
+        metadata.district = "Hulhumalé"
+        metadata.place_name = "원본 위치명"
+        captured_at = datetime(2026, 2, 14, 12, 0)
+        self.db.add(
+            MemoryKeeperFileState(
+                file_id=common_file.id,
+                effective_capture_datetime=captured_at,
+                effective_capture_date=captured_at.date(),
+                effective_capture_year=2026,
+                effective_capture_precision="DATETIME",
+                date_basis="EXIF",
+            )
+        )
+        self.db.commit()
+        self.service.assign_file(
+            public_file_id=common_file.file_id,
+            place_id=source.id,
+            expected_revision=0,
+        )
+        raw_before = (
+            metadata.gps_lat,
+            metadata.gps_lon,
+            metadata.country,
+            metadata.province,
+            metadata.city,
+            metadata.district,
+            metadata.place_name,
+        )
+
+        before = MemoryKeeperFastGalleryService(self.db).hierarchy().items[0]
+        assert before.countries[0].regions[0].region == "Lot"
+        assert before.countries[0].regions[0].count == 1
+
+        self.service.assign_file(
+            public_file_id=common_file.file_id,
+            place_id=target.id,
+            expected_revision=1,
+        )
+        after = MemoryKeeperFastGalleryService(self.db).hierarchy().items[0]
+        assert after.countries[0].regions[0].region == "말레"
+        assert after.countries[0].regions[0].count == 1
+        self.db.refresh(metadata)
+        assert metadata.memorykeeper_place_id == target.id
+        assert metadata.place_match_source == "USER"
+        assert raw_before == (
+            metadata.gps_lat,
+            metadata.gps_lon,
+            metadata.country,
+            metadata.province,
+            metadata.city,
+            metadata.district,
+            metadata.place_name,
+        )
 
     def test_validation(self) -> None:
         for values in (

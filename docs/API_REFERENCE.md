@@ -217,8 +217,10 @@ year. Registered Place values take priority and raw metadata remains the
 fallback, so a Place UUID alone neither guarantees nor prevents classification.
 `GET /api/memorykeeper/gallery/photos` accepts the key as an optional
 `location_key` query parameter and applies the represented leaf filter before
-keyset pagination. When present, it is authoritative for the location leaf;
-when omitted, the existing `country`, `region`, and
+keyset pagination. A registered key keeps its Place UUID identity and explicit
+`country` or `region` parameters refine it with the same canonical expressions
+used by the hierarchy. A raw key remains authoritative for its embedded raw
+path. When the key is omitted, the existing `country`, `region`, and
 `place_id` filters retain their prior behavior. A registered key may be sent
 with the same `place_id`; a conflicting `place_id`, or any `place_id` paired
 with a raw key, returns `400`.
@@ -233,6 +235,19 @@ with this filter matches that year's unclassified hierarchy leaf count.
 set.
 Combining `unclassified=true` with `place_id` or `location_key` is contradictory
 and returns `422 GALLERY_UNCLASSIFIED_FILTER_CONFLICT`.
+
+`GET /api/memorykeeper/places/hierarchy` provides a registered-Place selection
+catalog using those same canonical expressions. Each flat path row contains the
+Place UUID, registered `location_key`, country, region, display name, full path,
+linked-photo count, completeness flag, and an optional cleanup reason. The same
+UUID may have multiple path rows when linked photos supply different raw
+fallback regions. Active zero-photo Places remain selectable. No raw-only leaf
+is promoted to a registered Place.
+
+Common Gallery list/detail responses add nullable `canonical_country`,
+`canonical_region`, `canonical_place`, `location_hierarchy_complete`, and
+`location_cleanup_reason`. These fields explain the Fast Gallery classification
+without changing the legacy `incomplete` field or filling missing geography.
 
 `date_unclassified=true` is a separate MemoryKeeper capture-date filter. It
 requires `year=YYYY` and matches `effective_capture_precision=YEAR` with a null

@@ -12,27 +12,87 @@ from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.place import MemoryKeeperPlace
 
 
-def memorykeeper_country_expression():
+LOCATION_REASON_PLACE_UNASSIGNED = "PLACE_UNASSIGNED"
+LOCATION_REASON_COUNTRY_MISSING = "COUNTRY_MISSING"
+LOCATION_REASON_REGION_MISSING = "REGION_MISSING"
+LOCATION_REASON_PLACE_MISSING = "PLACE_MISSING"
+
+
+def memorykeeper_country_expression(
+    *, place=MemoryKeeperPlace, metadata=CommonFileMetadata
+):
     return func.coalesce(
-        MemoryKeeperPlace.country,
-        CommonFileMetadata.country,
+        place.country,
+        metadata.country,
     )
 
 
-def memorykeeper_region_expression():
+def memorykeeper_region_expression(
+    *, place=MemoryKeeperPlace, metadata=CommonFileMetadata
+):
     return func.coalesce(
-        MemoryKeeperPlace.city,
-        MemoryKeeperPlace.province,
-        CommonFileMetadata.city,
-        CommonFileMetadata.province,
+        place.city,
+        place.province,
+        metadata.city,
+        metadata.province,
     )
 
 
-def memorykeeper_place_display_expression():
+def memorykeeper_place_display_expression(
+    *, place=MemoryKeeperPlace, metadata=CommonFileMetadata
+):
     return func.coalesce(
-        MemoryKeeperPlace.display_name,
-        CommonFileMetadata.place_name,
+        place.display_name,
+        metadata.place_name,
     )
+
+
+def memorykeeper_location_values(
+    *, place: object | None, metadata: object
+) -> tuple[object | None, object | None, object | None]:
+    """Mirror the canonical SQL coalesce order for non-query response mapping."""
+
+    def value(source: object | None, name: str) -> object | None:
+        return getattr(source, name, None) if source is not None else None
+
+    def first_not_none(*values: object | None) -> object | None:
+        return next((item for item in values if item is not None), None)
+
+    country = first_not_none(value(place, "country"), value(metadata, "country"))
+    region = first_not_none(
+        value(place, "city"),
+        value(place, "province"),
+        value(metadata, "city"),
+        value(metadata, "province"),
+    )
+    display_name = first_not_none(
+        value(place, "display_name"),
+        value(metadata, "place_name"),
+    )
+    return country, region, display_name
+
+
+def location_hierarchy_reason(
+    *,
+    registered_place_id: object | None,
+    country: object | None,
+    region: object | None,
+    place: object | None,
+) -> str | None:
+    """Explain an incomplete canonical hierarchy without inferring location data."""
+
+    def missing(value: object | None) -> bool:
+        return value is None or not str(value).strip()
+
+    if not any(missing(value) for value in (country, region, place)):
+        return None
+    if registered_place_id is None:
+        return LOCATION_REASON_PLACE_UNASSIGNED
+    if missing(country):
+        return LOCATION_REASON_COUNTRY_MISSING
+    if missing(region):
+        return LOCATION_REASON_REGION_MISSING
+    return LOCATION_REASON_PLACE_MISSING
 
 
 def pending_condition():

@@ -107,6 +107,30 @@ class PlaceListResponse(BaseModel):
     offset: int
 
 
+class PlaceHierarchyItem(BaseModel):
+    memorykeeper_place_id: UUID
+    location_key: str
+    country: str | None = None
+    region: str | None = None
+    display_name: str | None = None
+    location_path: list[str] = Field(default_factory=list)
+    full_path: str
+    photo_count: int
+    location_hierarchy_complete: bool
+    location_cleanup_reason: Literal[
+        "PLACE_UNASSIGNED",
+        "COUNTRY_MISSING",
+        "REGION_MISSING",
+        "PLACE_MISSING",
+    ] | None = None
+
+
+class PlaceHierarchyResponse(BaseModel):
+    items: list[PlaceHierarchyItem] = Field(default_factory=list)
+    total_places: int
+    total_paths: int
+
+
 PlaceMatchSource = Literal["PROVIDER_PLACE_ID", "CANONICAL_NAME", "RADIUS", "NONE"]
 
 

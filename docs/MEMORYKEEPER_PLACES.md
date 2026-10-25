@@ -7,6 +7,7 @@ locations.
 ## API
 
 - `GET/POST /api/memorykeeper/places`
+- `GET /api/memorykeeper/places/hierarchy`
 - `GET/PATCH/DELETE /api/memorykeeper/places/{id}`
 - `POST /api/memorykeeper/places/match`
 - `POST /api/memorykeeper/places/radius-impact`
@@ -51,6 +52,20 @@ name resolution is `memorykeeper_places.display_name`, then raw `place_name`,
 then `미분류`. AstroJournal responses do not project MemoryKeeper place fields.
 An explicit `USER` assignment or unlink is authoritative and is never replaced
 by the upload worker's automatic matcher.
+
+`GET /api/memorykeeper/places/hierarchy` is the registered-Place selection
+projection. It uses the same Place-first, raw-metadata-fallback country, region,
+and display-name expressions as Fast Gallery. The response is a flat list of
+canonical paths so clients can build a tree or search it. A Place UUID can occur
+in more than one path when its own city/province is absent and linked photos
+have different raw regions; those rows retain the same Place UUID and registered
+`location_key`. Active Places with no linked photos are returned with a count of
+zero. Missing path components are reported rather than inferred.
+
+Assigning a different Place UUID changes only the selected file relations and
+preserves raw GPS and address metadata. Updating a Place's country, city,
+province, or display name changes the canonical projection for every linked
+photo on the next read; reassigning the same UUID is not a hierarchy merge.
 
 ## Dry-run-first migration
 

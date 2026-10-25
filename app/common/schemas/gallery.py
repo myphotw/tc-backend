@@ -30,6 +30,11 @@ class GalleryListItem(BaseModel):
     place_match_source: str | None = None
     place_match_distance_m: float | None = None
     place_revision: int | None = None
+    canonical_country: str | None = None
+    canonical_region: str | None = None
+    canonical_place: str | None = None
+    location_hierarchy_complete: bool | None = None
+    location_cleanup_reason: str | None = None
     gps_lat: float | None = None
     gps_lon: float | None = None
     camera_model: str | None = None
@@ -105,6 +110,11 @@ class GalleryDetailResponse(BaseModel):
     place_match_source: str | None = None
     place_match_distance_m: float | None = None
     place_revision: int | None = None
+    canonical_country: str | None = None
+    canonical_region: str | None = None
+    canonical_place: str | None = None
+    location_hierarchy_complete: bool | None = None
+    location_cleanup_reason: str | None = None
     storage_path: str | None = None
     preview_url: str | None = None
     thumbnail_url: str | None = None

@@ -35,6 +35,10 @@ from app.common.services.storage_service import StorageService
 from app.common.utils.perf import QueryCounter, Stopwatch, log_perf
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.place import MemoryKeeperPlace
+from app.memorykeeper.repositories.place_cleanup_repository import (
+    location_hierarchy_reason,
+    memorykeeper_location_values,
+)
 from app.memorykeeper.services.tag_curation_service import (
     MemoryKeeperTagCurationService,
     RawTagInput,
@@ -669,6 +673,11 @@ class GalleryService:
                 "place_match_source": None,
                 "place_match_distance_m": None,
                 "place_revision": None,
+                "canonical_country": None,
+                "canonical_region": None,
+                "canonical_place": None,
+                "location_hierarchy_complete": None,
+                "location_cleanup_reason": None,
             }
         if state is not None and state.photo_category == "DAILY":
             return {
@@ -679,6 +688,11 @@ class GalleryService:
                 "place_match_source": metadata.place_match_source,
                 "place_match_distance_m": metadata.place_match_distance_m,
                 "place_revision": int(metadata.place_match_revision or 0),
+                "canonical_country": None,
+                "canonical_region": None,
+                "canonical_place": None,
+                "location_hierarchy_complete": None,
+                "location_cleanup_reason": None,
             }
         place = None
         if metadata.memorykeeper_place_id:
@@ -689,6 +703,15 @@ class GalleryService:
             if place is not None and place.deleted_at is not None:
                 place = None
         raw_name = metadata.place_name
+        canonical_country, canonical_region, canonical_place = (
+            memorykeeper_location_values(place=place, metadata=metadata)
+        )
+        location_reason = location_hierarchy_reason(
+            registered_place_id=place.id if place is not None else None,
+            country=canonical_country,
+            region=canonical_region,
+            place=canonical_place,
+        )
         return {
             "memorykeeper_place_id": metadata.memorykeeper_place_id if place else None,
             "place_display_name": place.display_name if place else (raw_name or "미분류"),
@@ -697,6 +720,11 @@ class GalleryService:
             "place_match_source": metadata.place_match_source,
             "place_match_distance_m": metadata.place_match_distance_m,
             "place_revision": int(metadata.place_match_revision or 0),
+            "canonical_country": canonical_country,
+            "canonical_region": canonical_region,
+            "canonical_place": canonical_place,
+            "location_hierarchy_complete": location_reason is None,
+            "location_cleanup_reason": location_reason,
         }
 
     @staticmethod

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.common.models.file import CommonFile
@@ -10,6 +10,11 @@ from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_service import CommonFileService
 from app.memorykeeper.models.place import MemoryKeeperPlace
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
+from app.memorykeeper.repositories.place_cleanup_repository import (
+    memorykeeper_country_expression,
+    memorykeeper_place_display_expression,
+    memorykeeper_region_expression,
+)
 
 
 class MemoryKeeperPlaceRepository:
@@ -70,6 +75,64 @@ class MemoryKeeperPlaceRepository:
             .filter(MemoryKeeperPlace.deleted_at.is_(None))
             .filter(MemoryKeeperPlace.active.is_(True))
             .order_by(MemoryKeeperPlace.id.asc())
+            .all()
+        )
+
+    def hierarchy_rows(self) -> list[object]:
+        """Return selectable registered Places grouped by Gallery canonical path."""
+        linked_metadata = (
+            self.db.query(
+                CommonFile.id.label("file_id"),
+                CommonFileMetadata.memorykeeper_place_id.label("place_id"),
+                CommonFileMetadata.country.label("country"),
+                CommonFileMetadata.province.label("province"),
+                CommonFileMetadata.city.label("city"),
+                CommonFileMetadata.place_name.label("place_name"),
+            )
+            .join(CommonFileMetadata, CommonFileMetadata.file_id == CommonFile.id)
+            .join(CommonFileService, CommonFileService.file_id == CommonFile.id)
+            .filter(CommonFile.deleted.is_(False))
+            .filter(CommonFileService.service_name == self.SERVICE_NAME)
+            .subquery("memorykeeper_place_hierarchy_files")
+        )
+        country = memorykeeper_country_expression(
+            place=MemoryKeeperPlace,
+            metadata=linked_metadata.c,
+        )
+        region = memorykeeper_region_expression(
+            place=MemoryKeeperPlace,
+            metadata=linked_metadata.c,
+        )
+        display_name = memorykeeper_place_display_expression(
+            place=MemoryKeeperPlace,
+            metadata=linked_metadata.c,
+        )
+        return (
+            self.db.query(
+                MemoryKeeperPlace.id.label("memorykeeper_place_id"),
+                country.label("country"),
+                region.label("region"),
+                display_name.label("display_name"),
+                func.count(linked_metadata.c.file_id).label("photo_count"),
+            )
+            .outerjoin(
+                linked_metadata,
+                linked_metadata.c.place_id == MemoryKeeperPlace.id,
+            )
+            .filter(MemoryKeeperPlace.deleted_at.is_(None))
+            .filter(MemoryKeeperPlace.active.is_(True))
+            .group_by(
+                MemoryKeeperPlace.id,
+                country,
+                region,
+                display_name,
+            )
+            .order_by(
+                country.asc().nulls_last(),
+                region.asc().nulls_last(),
+                display_name.asc().nulls_last(),
+                MemoryKeeperPlace.id.asc(),
+            )
             .all()
         )
 

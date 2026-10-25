@@ -8,6 +8,7 @@ from app.memorykeeper.schemas.place import (
     FilePlaceResponse,
     FilePlaceUpdate,
     PlaceCreate,
+    PlaceHierarchyResponse,
     PlaceListResponse,
     PlaceMatchRequest,
     PlaceMatchResponse,
@@ -34,6 +35,12 @@ def list_places(
     db: Session = Depends(get_db),
 ) -> PlaceListResponse:
     return MemoryKeeperPlaceService(db).list(active=active, favorite=favorite, query=query, limit=limit, offset=offset)
+
+
+@router.get("/places/hierarchy", response_model=PlaceHierarchyResponse)
+def place_hierarchy(db: Session = Depends(get_db)) -> PlaceHierarchyResponse:
+    """Return active registered Places using the Fast Gallery canonical path."""
+    return MemoryKeeperPlaceService(db).hierarchy()
 
 
 @router.post("/places", response_model=PlaceResponse, status_code=status.HTTP_201_CREATED)

@@ -20,6 +20,8 @@ from app.memorykeeper.repositories.place_repository import MemoryKeeperPlaceRepo
 from app.memorykeeper.schemas.place import (
     FilePlaceResponse,
     PlaceCreate,
+    PlaceHierarchyItem,
+    PlaceHierarchyResponse,
     PlaceListResponse,
     PlaceMatchRequest,
     PlaceMatchResponse,
@@ -31,6 +33,8 @@ from app.memorykeeper.schemas.place import (
     ReclassifyResponse,
 )
 from app.memorykeeper.services.place_matcher import MemoryKeeperPlaceMatcher, PlaceMatchSource
+from app.memorykeeper.services.fast_gallery_location import encode_registered_location_key
+from app.memorykeeper.repositories.place_cleanup_repository import location_hierarchy_reason
 from app.memorykeeper.services.capture_date_service import MemoryKeeperCaptureDateService
 from app.memorykeeper.services.photo_classification_policy import (
     MemoryKeeperPhotoCategory,
@@ -78,6 +82,43 @@ class MemoryKeeperPlaceService:
     def list(self, **kwargs) -> PlaceListResponse:
         items, total = self.repository.list(**kwargs)
         return PlaceListResponse(items=items, total=total, limit=kwargs["limit"], offset=kwargs["offset"])
+
+    def hierarchy(self) -> PlaceHierarchyResponse:
+        items: list[PlaceHierarchyItem] = []
+        place_ids: set[str] = set()
+        for row in self.repository.hierarchy_rows():
+            place_id = str(row.memorykeeper_place_id)
+            reason = location_hierarchy_reason(
+                registered_place_id=place_id,
+                country=row.country,
+                region=row.region,
+                place=row.display_name,
+            )
+            path = [
+                str(value).strip()
+                for value in (row.country, row.region, row.display_name)
+                if value is not None and str(value).strip()
+            ]
+            items.append(
+                PlaceHierarchyItem(
+                    memorykeeper_place_id=place_id,
+                    location_key=encode_registered_location_key(place_id),
+                    country=row.country,
+                    region=row.region,
+                    display_name=row.display_name,
+                    location_path=path,
+                    full_path=" > ".join(path),
+                    photo_count=int(row.photo_count or 0),
+                    location_hierarchy_complete=reason is None,
+                    location_cleanup_reason=reason,
+                )
+            )
+            place_ids.add(place_id)
+        return PlaceHierarchyResponse(
+            items=items,
+            total_places=len(place_ids),
+            total_paths=len(items),
+        )
 
     def update(self, place_id: str, payload: PlaceUpdate) -> MemoryKeeperPlace:
         current = self.get(place_id)
