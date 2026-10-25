@@ -23,11 +23,29 @@ class MemoryKeeperPlaceRepository:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def get(self, place_id: str, *, include_deleted: bool = False) -> MemoryKeeperPlace | None:
+    def get(
+        self,
+        place_id: str,
+        *,
+        include_deleted: bool = False,
+        lock: bool = False,
+    ) -> MemoryKeeperPlace | None:
         query = self.db.query(MemoryKeeperPlace).filter(MemoryKeeperPlace.id == place_id)
         if not include_deleted:
             query = query.filter(MemoryKeeperPlace.deleted_at.is_(None))
+        if lock:
+            query = query.with_for_update()
         return query.first()
+
+    def get_many_for_update(self, place_ids: list[str]) -> list[MemoryKeeperPlace]:
+        """Lock Place rows in a deterministic order for a cross-Place mutation."""
+        return (
+            self.db.query(MemoryKeeperPlace)
+            .filter(MemoryKeeperPlace.id.in_(place_ids))
+            .order_by(MemoryKeeperPlace.id.asc())
+            .with_for_update()
+            .all()
+        )
 
     def list(
         self,
@@ -77,6 +95,96 @@ class MemoryKeeperPlaceRepository:
             .order_by(MemoryKeeperPlace.id.asc())
             .all()
         )
+
+    def active_places_bounded(
+        self,
+        *,
+        limit: int,
+    ) -> tuple[list[MemoryKeeperPlace], int]:
+        query = (
+            self.db.query(MemoryKeeperPlace)
+            .filter(MemoryKeeperPlace.deleted_at.is_(None))
+            .filter(MemoryKeeperPlace.active.is_(True))
+        )
+        total = query.count()
+        return query.order_by(MemoryKeeperPlace.id.asc()).limit(limit).all(), total
+
+    def linked_photo_counts(self, place_ids: list[str]) -> dict[str, int]:
+        """Count active MemoryKeeper photos actually assigned to each Place UUID."""
+        if not place_ids:
+            return {}
+        rows = (
+            self.db.query(
+                CommonFileMetadata.memorykeeper_place_id,
+                func.count(func.distinct(CommonFile.id)),
+            )
+            .join(CommonFile, CommonFile.id == CommonFileMetadata.file_id)
+            .join(CommonFileService, CommonFileService.file_id == CommonFile.id)
+            .filter(CommonFileMetadata.memorykeeper_place_id.in_(place_ids))
+            .filter(CommonFile.deleted.is_(False))
+            .filter(CommonFileService.service_name == self.SERVICE_NAME)
+            .group_by(CommonFileMetadata.memorykeeper_place_id)
+            .all()
+        )
+        return {str(place_id): int(count) for place_id, count in rows}
+
+    def linked_photo_count(self, place_id: str) -> int:
+        return self.linked_photo_counts([place_id]).get(place_id, 0)
+
+    def total_reference_count(self, place_id: str) -> int:
+        """Count every FK reference, including deleted or no-longer-linked files."""
+        return int(
+            self.db.query(func.count(CommonFileMetadata.file_id))
+            .filter(CommonFileMetadata.memorykeeper_place_id == place_id)
+            .scalar()
+            or 0
+        )
+
+    def relation_rows_for_update(
+        self,
+        place_ids: list[str],
+    ) -> list[tuple[CommonFileMetadata, CommonFile]]:
+        return (
+            self.db.query(CommonFileMetadata, CommonFile)
+            .join(CommonFile, CommonFile.id == CommonFileMetadata.file_id)
+            .filter(CommonFileMetadata.memorykeeper_place_id.in_(place_ids))
+            .order_by(CommonFileMetadata.file_id.asc())
+            .with_for_update()
+            .all()
+        )
+
+    def linked_photos(
+        self,
+        place_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[tuple[CommonFile, CommonFileMetadata, MemoryKeeperFileState | None]], int]:
+        """Return the exact active MemoryKeeper relation set, not a radius match."""
+        query = (
+            self.db.query(CommonFile, CommonFileMetadata, MemoryKeeperFileState)
+            .join(CommonFileMetadata, CommonFileMetadata.file_id == CommonFile.id)
+            .join(CommonFileService, CommonFileService.file_id == CommonFile.id)
+            .outerjoin(
+                MemoryKeeperFileState,
+                MemoryKeeperFileState.file_id == CommonFile.id,
+            )
+            .filter(CommonFileMetadata.memorykeeper_place_id == place_id)
+            .filter(CommonFile.deleted.is_(False))
+            .filter(CommonFileService.service_name == self.SERVICE_NAME)
+        )
+        total = query.count()
+        rows = (
+            query.order_by(
+                MemoryKeeperFileState.effective_capture_year.desc().nullslast(),
+                MemoryKeeperFileState.effective_capture_datetime.desc().nullslast(),
+                CommonFile.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return rows, total
 
     def hierarchy_rows(self) -> list[object]:
         """Return selectable registered Places grouped by Gallery canonical path."""

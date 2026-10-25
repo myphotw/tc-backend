@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 from uuid import uuid4
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
@@ -26,6 +27,7 @@ from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.schemas.place import (
     PlaceCreate,
     PlaceMatchRequest,
+    PlaceMergeRequest,
     PlaceUpdate,
     RadiusImpactRequest,
 )
@@ -731,31 +733,364 @@ class MemoryKeeperPlaceTests(unittest.TestCase):
             all(item.service_name == "AstroJournal" for item in astro_response.items)
         )
 
-    def test_delete_nulls_relation_but_preserves_raw(self) -> None:
+    def test_delete_rejects_linked_place_without_changing_relation_or_raw_data(self) -> None:
         place = self.place()
         common_file, metadata = self.file("g")
         self.service.auto_match_file(file_id=common_file.id)
-        self.service.delete(place.id)
+        with self.assertRaises(HTTPException) as raised:
+            self.service.delete(place.id, expected_revision=place.revision)
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["code"], "PLACE_IN_USE")
         self.db.refresh(metadata)
-        self.assertIsNone(metadata.memorykeeper_place_id)
+        self.assertEqual(metadata.memorykeeper_place_id, place.id)
         self.assertEqual(metadata.place_name, "원시 역지오코딩 주소")
         self.assertEqual(metadata.gps_lon, 127.5905236)
 
-    def test_delete_preserves_user_no_place_protection(self) -> None:
+    def test_delete_soft_deletes_only_unused_place_and_checks_revision(self) -> None:
         place = self.place()
-        common_file, metadata = self.file("p")
-        self.service.assign_file(
-            public_file_id=common_file.file_id,
-            place_id=place.id,
-            expected_revision=0,
+        with self.assertRaises(HTTPException) as conflict:
+            self.service.delete(place.id, expected_revision=place.revision + 1)
+        self.assertEqual(conflict.exception.status_code, 409)
+        deleted = self.service.delete(place.id, expected_revision=place.revision)
+        self.assertFalse(deleted.active)
+        self.assertIsNotNone(deleted.deleted_at)
+        self.assertIsNone(deleted.auto_dedup_key)
+        active = self.service.list(
+            active=True,
+            favorite=None,
+            query=None,
+            limit=10,
+            offset=0,
+        )
+        self.assertNotIn(place.id, {str(item.id) for item in active.items})
+
+    def test_delete_rejects_non_gallery_fk_reference(self) -> None:
+        place = self.place()
+        common_file, metadata = self.file("z", services=("AstroJournal",))
+        common_file.deleted = True
+        metadata.memorykeeper_place_id = place.id
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as raised:
+            self.service.delete(place.id, expected_revision=place.revision)
+
+        self.assertEqual(raised.exception.status_code, 409)
+        self.assertEqual(raised.exception.detail["reference_count"], 1)
+        self.assertEqual(raised.exception.detail["linked_photo_count"], 0)
+
+    def test_duplicate_candidates_are_bounded_and_include_empty_places(self) -> None:
+        same_a = self.place(
+            "Harbor Lounge",
+            country="몰디브",
+            city="말레",
+            latitude=4.21147,
+            longitude=73.54420,
+        )
+        same_b = self.place(
+            "  HARBOR   LOUNGE ",
+            country="몰디브",
+            city="Lot",
+            latitude=4.21150,
+            longitude=73.54425,
+        )
+        similar = self.place(
+            "Harbour Lounge",
+            country="몰디브",
+            city="말레",
+            latitude=4.3,
+            longitude=73.7,
+        )
+        far = self.place(
+            "Completely Different",
+            country="대한민국",
+            city="서울",
+            latitude=37.5,
+            longitude=127.0,
+        )
+        _common_file, metadata = self.file("u")
+        metadata.memorykeeper_place_id = same_a.id
+        self.db.commit()
+
+        result = self.service.duplicate_candidates(
+            distance_m=100,
+            similarity_threshold=0.75,
+            scan_limit=500,
+            result_limit=100,
         )
 
-        self.service.delete(place.id)
+        pairs = {
+            frozenset((str(item.first.id), str(item.second.id))): item
+            for item in result.items
+        }
+        same_pair = pairs[frozenset((same_a.id, same_b.id))]
+        self.assertIn("NORMALIZED_NAME", same_pair.reasons)
+        self.assertIn("NEARBY_COORDINATES", same_pair.reasons)
+        similar_pair = pairs[frozenset((same_a.id, similar.id))]
+        self.assertIn("SIMILAR_NAME_SAME_LOCATION", similar_pair.reasons)
+        counts = {
+            str(similar_pair.first.id): similar_pair.first.linked_photo_count,
+            str(similar_pair.second.id): similar_pair.second.linked_photo_count,
+        }
+        self.assertEqual(counts[similar.id], 0)
+        self.assertFalse(
+            any(far.id in pair for pair in pairs)
+        )
+        self.assertEqual(result.total_active_places, 4)
+        self.assertFalse(result.truncated)
 
-        self.db.refresh(metadata)
-        self.assertIsNone(metadata.memorykeeper_place_id)
-        self.assertEqual(metadata.place_match_source, "USER")
-        self.assertFalse(self.service.auto_match_file(file_id=common_file.id))
+    def test_duplicate_candidates_can_return_an_empty_result(self) -> None:
+        self.place("서울", latitude=37.5, longitude=127.0)
+        self.place("오사카", latitude=34.6, longitude=135.5)
+        result = self.service.duplicate_candidates(
+            distance_m=25,
+            similarity_threshold=0.95,
+            scan_limit=500,
+            result_limit=100,
+        )
+        self.assertEqual(result.items, [])
+        self.assertFalse(result.truncated)
+
+    def test_linked_photos_are_uuid_exact_counted_and_paginated(self) -> None:
+        place = self.place("연결 장소")
+        other = self.place("다른 장소", latitude=36.0, longitude=128.0)
+        linked = []
+        for marker, year in (("a", 2024), ("b", 2025), ("c", 2026)):
+            common_file, metadata = self.file(marker)
+            metadata.memorykeeper_place_id = place.id
+            self.db.add(
+                MemoryKeeperFileState(
+                    file_id=common_file.id,
+                    effective_capture_datetime=datetime(year, 1, 1, 12, 0),
+                    effective_capture_date=datetime(year, 1, 1).date(),
+                    effective_capture_year=year,
+                    effective_capture_precision="DATETIME",
+                    date_basis="EXIF",
+                )
+            )
+            linked.append(common_file.file_id)
+        unrelated, unrelated_metadata = self.file("d")
+        unrelated_metadata.memorykeeper_place_id = other.id
+        self.db.commit()
+
+        first = self.service.linked_photos(place.id, limit=2, offset=0)
+        second = self.service.linked_photos(place.id, limit=2, offset=2)
+        self.assertEqual(first.total, 3)
+        self.assertEqual(second.total, 3)
+        self.assertEqual(len(first.items), 2)
+        self.assertEqual(len(second.items), 1)
+        self.assertEqual(
+            {item.file_id for item in first.items + second.items},
+            set(linked),
+        )
+        self.assertNotIn(unrelated.file_id, {item.file_id for item in first.items})
+
+    def test_merge_moves_relations_preserves_raw_data_and_updates_gallery(self) -> None:
+        source = self.place(
+            "중복 장소",
+            country="몰디브",
+            city="Lot",
+            latitude=4.2,
+            longitude=73.5,
+        )
+        target = self.place(
+            "기준 장소",
+            country="몰디브",
+            city="말레",
+            latitude=4.21,
+            longitude=73.54,
+            radius_m=321,
+        )
+        source_file, source_metadata = self.file("m", lat=4.2, lon=73.5)
+        target_file, target_metadata = self.file("n", lat=4.21, lon=73.54)
+        source_metadata.memorykeeper_place_id = source.id
+        source_metadata.place_match_source = "USER"
+        source_metadata.place_match_revision = 4
+        original_capture_datetime = datetime(
+            2026,
+            2,
+            14,
+            12,
+            0,
+            tzinfo=timezone.utc,
+        )
+        source_metadata.datetime_original = original_capture_datetime
+        target_metadata.memorykeeper_place_id = target.id
+        target_metadata.place_match_source = "RADIUS"
+        for common_file in (source_file, target_file):
+            self.db.add(
+                MemoryKeeperFileState(
+                    file_id=common_file.id,
+                    effective_capture_datetime=datetime(2026, 2, 14, 12, 0),
+                    effective_capture_date=datetime(2026, 2, 14).date(),
+                    effective_capture_year=2026,
+                    effective_capture_precision="DATETIME",
+                    date_basis="EXIF",
+                )
+            )
+        self.db.commit()
+        self.db.refresh(source_metadata)
+        self.assertEqual(
+            source_metadata.datetime_original.replace(tzinfo=timezone.utc),
+            original_capture_datetime,
+        )
+        raw_before = (
+            source_metadata.gps_lat,
+            source_metadata.gps_lon,
+            source_metadata.country,
+            source_metadata.province,
+            source_metadata.city,
+            source_metadata.district,
+            source_metadata.place_name,
+            source_metadata.datetime_original,
+        )
+
+        preview = self.service.merge_preview(
+            source_place_id=source.id,
+            target_place_id=target.id,
+        )
+        self.assertTrue(preview.can_merge)
+        self.assertEqual(preview.source.linked_photo_count, 1)
+        self.assertEqual(preview.target.linked_photo_count, 1)
+        self.assertEqual(preview.merged_linked_photo_count, 2)
+        result = self.service.merge(
+            PlaceMergeRequest(
+                source_place_id=source.id,
+                target_place_id=target.id,
+                source_revision=source.revision,
+                target_revision=target.revision,
+            )
+        )
+
+        self.db.refresh(source)
+        self.db.refresh(source_metadata)
+        self.assertFalse(source.active)
+        self.assertIsNotNone(source.deleted_at)
+        self.assertEqual(source_metadata.memorykeeper_place_id, target.id)
+        self.assertEqual(source_metadata.place_match_source, "USER")
+        self.assertEqual(
+            raw_before,
+            (
+                source_metadata.gps_lat,
+                source_metadata.gps_lon,
+                source_metadata.country,
+                source_metadata.province,
+                source_metadata.city,
+                source_metadata.district,
+                source_metadata.place_name,
+                source_metadata.datetime_original,
+            ),
+        )
+        self.assertEqual(result.moved_reference_count, 1)
+        self.assertEqual(result.target.linked_photo_count, 2)
+        self.assertEqual(result.target.display_name, "기준 장소")
+        self.assertEqual(result.target.radius_m, 321)
+        leaves = [
+            leaf
+            for year in MemoryKeeperFastGalleryService(self.db).hierarchy().items
+            for country in year.countries
+            for region in country.regions
+            for leaf in region.places
+        ]
+        self.assertEqual(
+            sum(leaf.count for leaf in leaves if leaf.memorykeeper_place_id == target.id),
+            2,
+        )
+        self.assertFalse(
+            any(leaf.memorykeeper_place_id == source.id for leaf in leaves)
+        )
+
+    def test_merge_rejects_invalid_state_and_rolls_back_atomically(self) -> None:
+        source = self.place("Source")
+        target = self.place("Target", latitude=36.0, longitude=128.0)
+        first, first_metadata = self.file("x")
+        second, second_metadata = self.file("y")
+        first_metadata.memorykeeper_place_id = source.id
+        second_metadata.memorykeeper_place_id = source.id
+        self.db.commit()
+
+        with self.assertRaises(HTTPException) as same:
+            self.service.merge(
+                PlaceMergeRequest(
+                    source_place_id=source.id,
+                    target_place_id=source.id,
+                    source_revision=source.revision,
+                    target_revision=source.revision,
+                )
+            )
+        self.assertEqual(same.exception.status_code, 422)
+        with self.assertRaises(HTTPException) as conflict:
+            self.service.merge(
+                PlaceMergeRequest(
+                    source_place_id=source.id,
+                    target_place_id=target.id,
+                    source_revision=source.revision + 1,
+                    target_revision=target.revision,
+                )
+            )
+        self.assertEqual(conflict.exception.status_code, 409)
+
+        original = self.service._set_relation
+        calls = 0
+
+        def fail_second_relation(**kwargs):
+            nonlocal calls
+            calls += 1
+            original(**kwargs)
+            if calls == 2:
+                raise RuntimeError("injected merge failure")
+
+        with patch.object(self.service, "_set_relation", side_effect=fail_second_relation):
+            with self.assertRaisesRegex(RuntimeError, "injected merge failure"):
+                self.service.merge(
+                    PlaceMergeRequest(
+                        source_place_id=source.id,
+                        target_place_id=target.id,
+                        source_revision=source.revision,
+                        target_revision=target.revision,
+                    )
+                )
+        self.db.refresh(first_metadata)
+        self.db.refresh(second_metadata)
+        self.db.refresh(source)
+        self.assertEqual(first_metadata.memorykeeper_place_id, source.id)
+        self.assertEqual(second_metadata.memorykeeper_place_id, source.id)
+        self.assertTrue(source.active)
+        self.assertIsNone(source.deleted_at)
+
+    def test_merge_supports_empty_source_and_rejects_replay_or_inactive_target(self) -> None:
+        source = self.place("빈 중복 장소")
+        target = self.place("기준 장소", latitude=36.0, longitude=128.0)
+        result = self.service.merge(
+            PlaceMergeRequest(
+                source_place_id=source.id,
+                target_place_id=target.id,
+                source_revision=source.revision,
+                target_revision=target.revision,
+            )
+        )
+        self.assertEqual(result.moved_reference_count, 0)
+        self.assertEqual(result.moved_linked_photo_count, 0)
+        with self.assertRaises(HTTPException) as replay:
+            self.service.merge(
+                PlaceMergeRequest(
+                    source_place_id=source.id,
+                    target_place_id=target.id,
+                    source_revision=source.revision,
+                    target_revision=result.target.revision,
+                )
+            )
+        self.assertEqual(replay.exception.status_code, 409)
+        self.assertIn("SOURCE_DELETED", replay.exception.detail["reasons"])
+
+        another = self.place("다른 장소", latitude=37.0, longitude=129.0)
+        target.active = False
+        self.db.commit()
+        preview = self.service.merge_preview(
+            source_place_id=another.id,
+            target_place_id=target.id,
+        )
+        self.assertFalse(preview.can_merge)
+        self.assertIn("TARGET_INACTIVE", preview.blocking_reasons)
 
     def test_reclassify_preserves_user_decisions_and_updates_automatic_relations(self) -> None:
         target = self.place(radius_m=200)
@@ -881,8 +1216,12 @@ class MemoryKeeperPlaceTests(unittest.TestCase):
         paths = app.openapi()["paths"]
         for path in (
             "/api/memorykeeper/places",
+            "/api/memorykeeper/places/duplicate-candidates",
+            "/api/memorykeeper/places/merge-preview",
+            "/api/memorykeeper/places/merge",
             "/api/memorykeeper/places/match",
             "/api/memorykeeper/places/radius-impact",
+            "/api/memorykeeper/places/{place_id}/photos",
             "/api/memorykeeper/places/{place_id}/reclassify",
             "/api/memorykeeper/files/{file_id}/place",
         ):

@@ -99,12 +99,7 @@ class MemoryKeeperFilePlaceBatchService:
         payload: MemoryKeeperBatchAssignPlaceRequest,
     ) -> MemoryKeeperBatchAssignPlaceResponse:
         try:
-            place = self.places.get(str(payload.memorykeeper_place_id))
-            if not place.active:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Inactive place cannot be assigned",
-                )
+            place = self.places.get_assignable(str(payload.memorykeeper_place_id))
 
             rows = self._file_query(payload.file_ids, lock=True).all()
             by_public_id = {common_file.file_id: common_file for common_file in rows}

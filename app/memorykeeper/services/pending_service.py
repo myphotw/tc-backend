@@ -105,9 +105,7 @@ class MemoryKeeperPendingService:
         )
 
     def assign_place(self, payload: PendingAssignPlaceRequest) -> PendingAssignPlaceResponse:
-        place = self.places.get(str(payload.memorykeeper_place_id))
-        if not place.active:
-            raise HTTPException(status_code=422, detail="Inactive place cannot be assigned")
+        place = self.places.get_assignable(str(payload.memorykeeper_place_id))
 
         rows = (
             self.db.query(CommonFile)

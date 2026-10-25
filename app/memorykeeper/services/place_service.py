@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 import re
 import unicodedata
 
@@ -14,17 +15,26 @@ from app.common.repositories.change_event_repository import ChangeEventRepositor
 from app.common.repositories.file_service_repository import FileServiceRepository
 from app.common.repositories.history_repository import HistoryRepository
 from app.common.repositories.metadata_priority import MetadataPriority
+from app.common.services.gallery_media import build_gallery_media_url
 from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from app.memorykeeper.models.place import MemoryKeeperPlace
 from app.memorykeeper.repositories.place_repository import MemoryKeeperPlaceRepository
 from app.memorykeeper.schemas.place import (
     FilePlaceResponse,
+    PlaceDuplicateCandidate,
+    PlaceDuplicateCandidatesResponse,
     PlaceCreate,
     PlaceHierarchyItem,
     PlaceHierarchyResponse,
+    PlaceLinkedPhotoItem,
+    PlaceLinkedPhotosResponse,
     PlaceListResponse,
+    PlaceManagementItem,
     PlaceMatchRequest,
     PlaceMatchResponse,
+    PlaceMergePreviewResponse,
+    PlaceMergeRequest,
+    PlaceMergeResponse,
     PlaceOverlap,
     PlaceResponse,
     PlaceUpdate,
@@ -77,6 +87,18 @@ class MemoryKeeperPlaceService:
         place = self.repository.get(place_id)
         if place is None:
             raise HTTPException(status_code=404, detail="Place not found")
+        return place
+
+    def get_assignable(self, place_id: str) -> MemoryKeeperPlace:
+        """Lock and validate a Place before locking files that will reference it."""
+        place = self.repository.get(place_id, lock=True)
+        if place is None:
+            raise HTTPException(status_code=404, detail="Place not found")
+        if not place.active:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Inactive place cannot be assigned",
+            )
         return place
 
     def list(self, **kwargs) -> PlaceListResponse:
@@ -134,37 +156,258 @@ class MemoryKeeperPlaceService:
         self.db.refresh(updated)
         return updated
 
-    def delete(self, place_id: str) -> MemoryKeeperPlace:
-        place = self.get(place_id)
-        now = datetime.now(timezone.utc)
-        metadata_rows = (
-            self.db.query(CommonFileMetadata)
-            .filter(CommonFileMetadata.memorykeeper_place_id == place.id)
-            .all()
+    def delete(
+        self,
+        place_id: str,
+        *,
+        expected_revision: int | None = None,
+    ) -> MemoryKeeperPlace:
+        """Soft-delete only an unused Place; never silently orphan photos."""
+        try:
+            place = self.repository.get(place_id, include_deleted=True, lock=True)
+            if place is None or place.deleted_at is not None:
+                raise HTTPException(status_code=404, detail="Place not found")
+            if expected_revision is not None and place.revision != expected_revision:
+                self._revision_conflict(place, expected_revision)
+            reference_count = self.repository.total_reference_count(place.id)
+            if reference_count:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "PLACE_IN_USE",
+                        "place_id": place.id,
+                        "reference_count": reference_count,
+                        "linked_photo_count": self.repository.linked_photo_count(
+                            place.id
+                        ),
+                        "message": "Merge this Place before deleting it",
+                    },
+                )
+            now = datetime.now(timezone.utc)
+            place.active = False
+            place.deleted_at = now
+            place.auto_dedup_key = None
+            place.revision = int(place.revision) + 1
+            place.updated_at = now
+            self._append_place_change(place, ChangeOperation.DELETE, tombstone=True)
+            self.db.commit()
+            self.db.refresh(place)
+            return place
+        except Exception:
+            self.db.rollback()
+            raise
+
+    def linked_photos(
+        self,
+        place_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> PlaceLinkedPhotosResponse:
+        self.get(place_id)
+        rows, total = self.repository.linked_photos(
+            place_id,
+            limit=limit,
+            offset=offset,
         )
-        for metadata in metadata_rows:
-            common_file = self.db.get(CommonFile, metadata.file_id)
-            source = (
-                PlaceMatchSource.USER
-                if metadata.place_match_source == PlaceMatchSource.USER
-                else PlaceMatchSource.PLACE_DELETED
+        return PlaceLinkedPhotosResponse(
+            items=[
+                PlaceLinkedPhotoItem(
+                    common_file_id=common_file.id,
+                    file_id=common_file.file_id,
+                    filename=common_file.original_name,
+                    thumbnail_url=build_gallery_media_url(
+                        common_file.file_id,
+                        "thumbnail",
+                        common_file.thumb_path,
+                    ),
+                    effective_capture_datetime=(
+                        state.effective_capture_datetime if state else None
+                    ),
+                    effective_capture_date=(
+                        state.effective_capture_date if state else None
+                    ),
+                    effective_capture_year=(
+                        state.effective_capture_year if state else None
+                    ),
+                    place_revision=int(metadata.place_match_revision or 0),
+                )
+                for common_file, metadata, state in rows
+            ],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+    def duplicate_candidates(
+        self,
+        *,
+        distance_m: float,
+        similarity_threshold: float,
+        scan_limit: int,
+        result_limit: int,
+    ) -> PlaceDuplicateCandidatesResponse:
+        places, total = self.repository.active_places_bounded(limit=scan_limit)
+        counts = self.repository.linked_photo_counts([place.id for place in places])
+        items: list[PlaceDuplicateCandidate] = []
+        for index, first in enumerate(places):
+            first_name = self._normalized_name(first.display_name)
+            first_country = self._normalized_optional(first.country)
+            first_region = self._normalized_optional(first.city or first.province)
+            for second in places[index + 1 :]:
+                second_name = self._normalized_name(second.display_name)
+                similarity = SequenceMatcher(None, first_name, second_name).ratio()
+                center_distance = self.matcher.distance_m(
+                    first.latitude,
+                    first.longitude,
+                    second.latitude,
+                    second.longitude,
+                )
+                reasons = []
+                if first_name and first_name == second_name:
+                    reasons.append("NORMALIZED_NAME")
+                elif (
+                    first_country
+                    and first_country == self._normalized_optional(second.country)
+                    and first_region
+                    and first_region
+                    == self._normalized_optional(second.city or second.province)
+                    and similarity >= similarity_threshold
+                ):
+                    reasons.append("SIMILAR_NAME_SAME_LOCATION")
+                if center_distance <= distance_m:
+                    reasons.append("NEARBY_COORDINATES")
+                if not reasons:
+                    continue
+                items.append(
+                    PlaceDuplicateCandidate(
+                        first=self._management_item(first, counts.get(first.id, 0)),
+                        second=self._management_item(second, counts.get(second.id, 0)),
+                        reasons=reasons,
+                        name_similarity=round(similarity, 4),
+                        center_distance_m=round(center_distance, 3),
+                    )
+                )
+        items.sort(
+            key=lambda item: (
+                -len(item.reasons),
+                item.center_distance_m,
+                -item.name_similarity,
+                str(item.first.id),
+                str(item.second.id),
             )
-            self._set_relation(
-                metadata=metadata,
-                common_file=common_file,
-                place=None,
-                source=source,
-                distance_m=None,
-                touch_usage=False,
+        )
+        return PlaceDuplicateCandidatesResponse(
+            items=items[:result_limit],
+            scanned_places=len(places),
+            total_active_places=total,
+            truncated=total > len(places) or len(items) > result_limit,
+            distance_m=distance_m,
+            similarity_threshold=similarity_threshold,
+        )
+
+    def merge_preview(
+        self,
+        *,
+        source_place_id: str,
+        target_place_id: str,
+    ) -> PlaceMergePreviewResponse:
+        source = self.repository.get(source_place_id, include_deleted=True)
+        target = self.repository.get(target_place_id, include_deleted=True)
+        if source is None or target is None:
+            raise HTTPException(status_code=404, detail="Place not found")
+        counts = self.repository.linked_photo_counts(
+            list({source_place_id, target_place_id})
+        )
+        source_count = counts.get(source.id, 0)
+        target_count = counts.get(target.id, 0)
+        reasons = self._merge_blocking_reasons(source, target)
+        return PlaceMergePreviewResponse(
+            source=self._management_item(source, source_count),
+            target=self._management_item(target, target_count),
+            merged_linked_photo_count=(
+                source_count if source.id == target.id else source_count + target_count
+            ),
+            source_total_reference_count=self.repository.total_reference_count(
+                source.id
+            ),
+            target_total_reference_count=self.repository.total_reference_count(
+                target.id
+            ),
+            other_reference_counts={},
+            can_merge=not reasons,
+            blocking_reasons=reasons,
+        )
+
+    def merge(self, payload: PlaceMergeRequest) -> PlaceMergeResponse:
+        source_id = str(payload.source_place_id)
+        target_id = str(payload.target_place_id)
+        if source_id == target_id:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"code": "SAME_PLACE", "message": "Source and target must differ"},
             )
-        place.active = False
-        place.deleted_at = now
-        place.revision = int(place.revision) + 1
-        place.updated_at = now
-        self._append_place_change(place, ChangeOperation.DELETE, tombstone=True)
-        self.db.commit()
-        self.db.refresh(place)
-        return place
+        try:
+            locked = self.repository.get_many_for_update([source_id, target_id])
+            by_id = {place.id: place for place in locked}
+            source = by_id.get(source_id)
+            target = by_id.get(target_id)
+            if source is None or target is None:
+                raise HTTPException(status_code=404, detail="Place not found")
+            reasons = self._merge_blocking_reasons(source, target)
+            if reasons:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={"code": "PLACE_MERGE_BLOCKED", "reasons": reasons},
+                )
+            if source.revision != payload.source_revision:
+                self._revision_conflict(source, payload.source_revision)
+            if target.revision != payload.target_revision:
+                self._revision_conflict(target, payload.target_revision)
+
+            relation_rows = self.repository.relation_rows_for_update(
+                [source.id, target.id]
+            )
+            linked_before = self.repository.linked_photo_count(source.id)
+            source_rows = [
+                (metadata, common_file)
+                for metadata, common_file in relation_rows
+                if metadata.memorykeeper_place_id == source.id
+            ]
+            for metadata, common_file in source_rows:
+                self._set_relation(
+                    metadata=metadata,
+                    common_file=common_file,
+                    place=target,
+                    source=(metadata.place_match_source or PlaceMatchSource.USER),
+                    distance_m=self._distance(metadata, target),
+                    touch_usage=False,
+                )
+
+            now = datetime.now(timezone.utc)
+            source.active = False
+            source.deleted_at = now
+            source.auto_dedup_key = None
+            source.revision = int(source.revision) + 1
+            source.updated_at = now
+            target.revision = int(target.revision) + 1
+            target.updated_at = now
+            self._append_place_change(source, ChangeOperation.DELETE, tombstone=True)
+            self._append_place_change(target, ChangeOperation.UPDATE)
+            self.db.commit()
+            self.db.refresh(target)
+            return PlaceMergeResponse(
+                target=self._management_item(
+                    target,
+                    self.repository.linked_photo_count(target.id),
+                ),
+                source_place_id=source.id,
+                moved_reference_count=len(source_rows),
+                moved_linked_photo_count=linked_before,
+            )
+        except Exception:
+            self.db.rollback()
+            raise
 
     def match(self, payload: PlaceMatchRequest) -> PlaceMatchResponse:
         match = self.matcher.match(
@@ -187,6 +430,7 @@ class MemoryKeeperPlaceService:
         place_id: str | None,
         expected_revision: int,
     ) -> FilePlaceResponse:
+        place = self.get_assignable(place_id) if place_id is not None else None
         common_file = (
             self.db.query(CommonFile)
             .filter(CommonFile.file_id == public_file_id)
@@ -212,7 +456,6 @@ class MemoryKeeperPlaceService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"code": "REVISION_CONFLICT", "expected_revision": expected_revision, "current_revision": current_revision},
             )
-        place = self.get(place_id) if place_id is not None else None
         distance = self._distance(metadata, place)
         if place is not None:
             self._set_photo_category_normal(
@@ -380,6 +623,17 @@ class MemoryKeeperPlaceService:
         distance_m: float | None,
         touch_usage: bool = True,
     ) -> None:
+        if place is not None:
+            locked_place = self.repository.get(place.id, lock=True)
+            if locked_place is None or not locked_place.active:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "PLACE_NOT_ASSIGNABLE",
+                        "place_id": place.id,
+                    },
+                )
+            place = locked_place
         old_values = {
             "memorykeeper_place_id": metadata.memorykeeper_place_id,
             "place_match_source": metadata.place_match_source,
@@ -556,6 +810,67 @@ class MemoryKeeperPlaceService:
     def _normalized_name(value: str) -> str:
         normalized = unicodedata.normalize("NFKC", value).casefold().strip()
         return re.sub(r"\s+", " ", normalized)
+
+    @classmethod
+    def _normalized_optional(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = cls._normalized_name(value)
+        return normalized or None
+
+    @staticmethod
+    def _merge_blocking_reasons(
+        source: MemoryKeeperPlace,
+        target: MemoryKeeperPlace,
+    ) -> list[str]:
+        reasons = []
+        if source.id == target.id:
+            reasons.append("SAME_PLACE")
+        if source.deleted_at is not None:
+            reasons.append("SOURCE_DELETED")
+        elif not source.active:
+            reasons.append("SOURCE_INACTIVE")
+        if target.deleted_at is not None:
+            reasons.append("TARGET_DELETED")
+        elif not target.active:
+            reasons.append("TARGET_INACTIVE")
+        return reasons
+
+    @staticmethod
+    def _management_item(
+        place: MemoryKeeperPlace,
+        linked_photo_count: int,
+    ) -> PlaceManagementItem:
+        country = place.country
+        region = place.city or place.province
+        reason = location_hierarchy_reason(
+            registered_place_id=place.id,
+            country=country,
+            region=region,
+            place=place.display_name,
+        )
+        path = [
+            str(value).strip()
+            for value in (country, region, place.display_name)
+            if value is not None and str(value).strip()
+        ]
+        return PlaceManagementItem(
+            id=place.id,
+            display_name=place.display_name,
+            canonical_name=place.canonical_name,
+            country=country,
+            region=region,
+            full_path=" > ".join(path),
+            location_hierarchy_complete=reason is None,
+            location_cleanup_reason=reason,
+            address=place.address,
+            latitude=place.latitude,
+            longitude=place.longitude,
+            radius_m=place.radius_m,
+            active=place.active,
+            revision=place.revision,
+            linked_photo_count=linked_photo_count,
+        )
 
     @staticmethod
     def _duplicate_source(

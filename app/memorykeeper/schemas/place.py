@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -129,6 +129,97 @@ class PlaceHierarchyResponse(BaseModel):
     items: list[PlaceHierarchyItem] = Field(default_factory=list)
     total_places: int
     total_paths: int
+
+
+class PlaceManagementItem(BaseModel):
+    """Stable Place identity plus its exact active MemoryKeeper relation count."""
+
+    id: UUID
+    display_name: str
+    canonical_name: str | None = None
+    country: str | None = None
+    region: str | None = None
+    full_path: str
+    location_hierarchy_complete: bool
+    location_cleanup_reason: Literal[
+        "COUNTRY_MISSING",
+        "REGION_MISSING",
+        "PLACE_MISSING",
+    ] | None = None
+    address: str | None = None
+    latitude: float
+    longitude: float
+    radius_m: float
+    active: bool
+    revision: int
+    linked_photo_count: int
+
+
+PlaceDuplicateReason = Literal[
+    "NORMALIZED_NAME",
+    "SIMILAR_NAME_SAME_LOCATION",
+    "NEARBY_COORDINATES",
+]
+
+
+class PlaceDuplicateCandidate(BaseModel):
+    first: PlaceManagementItem
+    second: PlaceManagementItem
+    reasons: list[PlaceDuplicateReason]
+    name_similarity: float
+    center_distance_m: float
+
+
+class PlaceDuplicateCandidatesResponse(BaseModel):
+    items: list[PlaceDuplicateCandidate] = Field(default_factory=list)
+    scanned_places: int
+    total_active_places: int
+    truncated: bool
+    distance_m: float
+    similarity_threshold: float
+
+
+class PlaceMergeRequest(BaseModel):
+    source_place_id: UUID
+    target_place_id: UUID
+    source_revision: int = Field(ge=1)
+    target_revision: int = Field(ge=1)
+
+
+class PlaceMergePreviewResponse(BaseModel):
+    source: PlaceManagementItem
+    target: PlaceManagementItem
+    merged_linked_photo_count: int
+    source_total_reference_count: int
+    target_total_reference_count: int
+    other_reference_counts: dict[str, int] = Field(default_factory=dict)
+    can_merge: bool
+    blocking_reasons: list[str] = Field(default_factory=list)
+
+
+class PlaceMergeResponse(BaseModel):
+    target: PlaceManagementItem
+    source_place_id: UUID
+    moved_reference_count: int
+    moved_linked_photo_count: int
+
+
+class PlaceLinkedPhotoItem(BaseModel):
+    common_file_id: int
+    file_id: str
+    filename: str
+    thumbnail_url: str | None = None
+    effective_capture_datetime: datetime | None = None
+    effective_capture_date: date | None = None
+    effective_capture_year: int | None = None
+    place_revision: int
+
+
+class PlaceLinkedPhotosResponse(BaseModel):
+    items: list[PlaceLinkedPhotoItem] = Field(default_factory=list)
+    total: int
+    limit: int
+    offset: int
 
 
 PlaceMatchSource = Literal["PROVIDER_PLACE_ID", "CANONICAL_NAME", "RADIUS", "NONE"]

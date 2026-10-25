@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, Query, Response, status
 from sqlalchemy.orm import Session
 
@@ -8,10 +10,15 @@ from app.memorykeeper.schemas.place import (
     FilePlaceResponse,
     FilePlaceUpdate,
     PlaceCreate,
+    PlaceDuplicateCandidatesResponse,
     PlaceHierarchyResponse,
+    PlaceLinkedPhotosResponse,
     PlaceListResponse,
     PlaceMatchRequest,
     PlaceMatchResponse,
+    PlaceMergePreviewResponse,
+    PlaceMergeRequest,
+    PlaceMergeResponse,
     PlaceResponse,
     PlaceUpdate,
     RadiusImpactRequest,
@@ -43,6 +50,46 @@ def place_hierarchy(db: Session = Depends(get_db)) -> PlaceHierarchyResponse:
     return MemoryKeeperPlaceService(db).hierarchy()
 
 
+@router.get(
+    "/places/duplicate-candidates",
+    response_model=PlaceDuplicateCandidatesResponse,
+)
+def duplicate_place_candidates(
+    distance_m: float = Query(250.0, gt=0, le=10000),
+    similarity_threshold: float = Query(0.85, ge=0.5, le=1.0),
+    scan_limit: int = Query(500, ge=2, le=1000),
+    result_limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+) -> PlaceDuplicateCandidatesResponse:
+    """Return bounded duplicate suggestions; never mutate or auto-merge Places."""
+    return MemoryKeeperPlaceService(db).duplicate_candidates(
+        distance_m=distance_m,
+        similarity_threshold=similarity_threshold,
+        scan_limit=scan_limit,
+        result_limit=result_limit,
+    )
+
+
+@router.get("/places/merge-preview", response_model=PlaceMergePreviewResponse)
+def preview_place_merge(
+    source_place_id: UUID = Query(...),
+    target_place_id: UUID = Query(...),
+    db: Session = Depends(get_db),
+) -> PlaceMergePreviewResponse:
+    return MemoryKeeperPlaceService(db).merge_preview(
+        source_place_id=str(source_place_id),
+        target_place_id=str(target_place_id),
+    )
+
+
+@router.post("/places/merge", response_model=PlaceMergeResponse)
+def merge_places(
+    payload: PlaceMergeRequest,
+    db: Session = Depends(get_db),
+) -> PlaceMergeResponse:
+    return MemoryKeeperPlaceService(db).merge(payload)
+
+
 @router.post("/places", response_model=PlaceResponse, status_code=status.HTTP_201_CREATED)
 def create_place(payload: PlaceCreate, db: Session = Depends(get_db)) -> PlaceResponse:
     return MemoryKeeperPlaceService(db).create(payload)
@@ -69,9 +116,34 @@ def update_place(place_id: str, payload: PlaceUpdate, db: Session = Depends(get_
 
 
 @router.delete("/places/{place_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_place(place_id: str, db: Session = Depends(get_db)) -> Response:
-    MemoryKeeperPlaceService(db).delete(place_id)
+def delete_place(
+    place_id: str,
+    expected_revision: int | None = Query(None, ge=1),
+    db: Session = Depends(get_db),
+) -> Response:
+    MemoryKeeperPlaceService(db).delete(
+        place_id,
+        expected_revision=expected_revision,
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/places/{place_id}/photos",
+    response_model=PlaceLinkedPhotosResponse,
+)
+def linked_place_photos(
+    place_id: UUID,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+) -> PlaceLinkedPhotosResponse:
+    """List photos actually assigned to the Place UUID, not radius matches."""
+    return MemoryKeeperPlaceService(db).linked_photos(
+        str(place_id),
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.post("/places/{place_id}/reclassify", response_model=ReclassifyResponse)
