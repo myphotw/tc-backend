@@ -85,9 +85,9 @@ class DatabaseMigrationFrameworkTests(unittest.TestCase):
     def test_revision_graph_has_single_astro_general_info_head(self) -> None:
         checks = verify_revision_graph(build_alembic_config())
 
-        self.assertIn("single_head=20261012_0009", checks)
+        self.assertIn("single_head=20261021_0010", checks)
         self.assertIn(f"baseline={BASELINE_REVISION}", checks)
-        self.assertIn("revision_count=9", checks)
+        self.assertIn("revision_count=10", checks)
 
     def test_alembic_config_contains_no_database_url(self) -> None:
         content = (PROJECT_ROOT / "alembic.ini").read_text(encoding="utf-8")

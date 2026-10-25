@@ -1239,6 +1239,99 @@ class TestMemoryKeeperFastGallery:
         assert registered_photo.id not in ids
         assert ishikawa.id not in ids
 
+    def test_registered_location_key_refines_country_region_and_pagination(
+        self,
+    ) -> None:
+        place = self._place(
+            display_name="헐후메일 퍼블릭 비치",
+            country="몰디브",
+            province=None,
+            city=None,
+        )
+        male_photos = [
+            self._photo(
+                datetime(2026, 1, day, 8, 0),
+                place=place,
+                country="몰디브",
+                city="말레",
+                place_name="헐후메일 퍼블릭 비치",
+            )
+            for day in range(1, 12)
+        ]
+        lot_photo = self._photo(
+            datetime(2026, 1, 12, 8, 0),
+            place=place,
+            country="몰디브",
+            city="Lot",
+            place_name="헐후메일 퍼블릭 비치",
+        )
+        key = encode_registered_location_key(place.id)
+
+        hierarchy = self.service.hierarchy()
+        year = next(item for item in hierarchy.items if item.year == 2026)
+        country = next(item for item in year.countries if item.country == "몰디브")
+        region_counts = {
+            region.region: next(
+                leaf.count
+                for leaf in region.places
+                if leaf.location_key == key
+            )
+            for region in country.regions
+        }
+        assert region_counts == {"Lot": 1, "말레": 11}
+
+        delivered = []
+        cursor = None
+        while True:
+            page = self.service.photos(
+                cursor=cursor,
+                limit=4,
+                filters=FastGalleryFilters(
+                    year=2026,
+                    country="몰디브",
+                    region="말레",
+                ),
+                location_key=key,
+            )
+            delivered.extend(item.common_file_id for item in page.items)
+            if not page.has_more:
+                break
+            cursor = page.next_cursor
+
+        assert delivered == [photo.id for photo in reversed(male_photos)]
+        assert len(delivered) == len(set(delivered)) == 11
+
+        lot = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(
+                year=2026,
+                country="몰디브",
+                region="Lot",
+            ),
+            location_key=key,
+        )
+        other_country = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(
+                year=2026,
+                country="대한민국",
+                region="Lot",
+            ),
+            location_key=key,
+        )
+        key_only = self.service.photos(
+            cursor=None,
+            limit=50,
+            filters=FastGalleryFilters(year=2026),
+            location_key=key,
+        )
+
+        assert [item.common_file_id for item in lot.items] == [lot_photo.id]
+        assert other_country.items == []
+        assert len(key_only.items) == 12
+
     def test_location_key_keeps_registered_place_id_compatibility_explicit(self) -> None:
         place = self._place()
         matched = self._photo(datetime(2025, 1, 2, 10, 0), place=place)

@@ -218,6 +218,14 @@ class MemoryKeeperFastGalleryRepository:
                     CommonFileMetadata.memorykeeper_place_id
                     == filters.location.place_id
                 )
+                if filters.country is not None:
+                    location_conditions.append(
+                        self._country_expression() == filters.country
+                    )
+                if filters.region is not None:
+                    location_conditions.append(
+                        self._region_expression() == filters.region
+                    )
             else:
                 raw_values = (
                     filters.location.country,
