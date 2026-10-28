@@ -11,11 +11,13 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     Numeric,
     String,
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
 from app.common.model_base import Base
@@ -75,6 +77,10 @@ class AstroEquipment(Base):
     aperture_mm = Column(Float, nullable=True)
     fov_width_degrees = Column(Float, nullable=True)
     fov_height_degrees = Column(Float, nullable=True)
+    capture_capability = Column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+    )
     sort_order = Column(Integer, nullable=False, default=0, server_default=text("0"))
     revision = Column(Integer, nullable=False, default=1, server_default=text("1"))
     created_at = Column(

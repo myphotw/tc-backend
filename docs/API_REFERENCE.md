@@ -381,6 +381,42 @@ Equipment capabilities are independent per tracking mode:
     "min_seconds": 1,
     "max_seconds": 300,
     "step_seconds": 0.5
+  },
+  "capture_capability": {
+    "version": 1,
+    "modes": [
+      {
+        "id": "alt_az_derotated",
+        "type": "altAzDerotated",
+        "label": "AZ sensor rotation correction",
+        "exposure_capability": {
+          "type": "free_input_range",
+          "min_seconds": 0.1,
+          "max_seconds": 300
+        }
+      }
+    ],
+    "gain_capability": {
+      "type": "range",
+      "min": 0,
+      "max": 500,
+      "step": 1
+    },
+    "filters": [
+      {"id": "sho", "type": "narrowBand", "name": "SHO"}
+    ],
+    "channel_combinations": [
+      {
+        "id": "sho_mix",
+        "name": "SHO mix",
+        "primary_label": "SII",
+        "secondary_label": "OIII",
+        "ratio_adjustable": true,
+        "min_primary_percent": 0,
+        "max_primary_percent": 100,
+        "step_percent": 5
+      }
+    ]
   }
 }
 ```
@@ -391,11 +427,24 @@ min_seconds`. `kind` uses `smartTelescope`, `refractor`, `reflector`, or
 `other`; `purpose` uses `imaging` or `visual`. Exposure values are API numbers
 backed by exact `NUMERIC(12,6)` rows.
 
+`capture_capability` is a nullable, versioned generalized profile stored as
+JSONB. Version 1 supports `altAz`, `equatorial`, `altAzDerotated`, and `custom`
+modes; `discrete`, `range`, and `free_input_range` exposure capabilities;
+discrete/range gain; `off`, `broadband`, `dualBand`, `narrowBand`, and `custom`
+filters; and adjustable channel combinations. The encoded payload is limited to
+64 KiB. Identifiers and required labels must not be blank, collection IDs must
+be unique, and all numeric values must be finite and within their documented
+ranges.
+
 PATCH is partial, but a supplied `horizon_points`,
 `blocked_azimuth_ranges`, or `eyepieces` list replaces that complete child
 collection. A supplied AZ/EQ capability replaces only that mode; explicit
-`null` clears it. Every PATCH requires `expected_revision` and increments the
-aggregate revision. DELETE takes `expected_revision` as a query parameter.
+`null` clears it. For `capture_capability`, omission preserves the current JSONB
+profile, an explicit `null` clears it, and an object replaces the complete
+profile. Existing AZ/EQ fields remain independent compatibility projections and
+never clear a generalized profile merely because an older client omits it.
+Every PATCH requires `expected_revision` and increments the aggregate revision.
+DELETE takes `expected_revision` as a query parameter.
 Stale writes return `409 REVISION_CONFLICT` with the resource ID,
 `expected_revision`, and `current_revision`.
 

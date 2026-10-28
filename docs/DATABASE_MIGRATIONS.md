@@ -48,7 +48,9 @@ base
   -> 20260910_0006 (multi-night framing reference)
   -> 20260914_0007 (MemoryKeeper photo category)
   -> 20260925_0008 (MemoryKeeper YEAR-only capture-date expand)
-  -> 20261012_0009 (Astro Gallery general information, head)
+  -> 20261012_0009 (Astro Gallery general information)
+  -> 20261021_0010 (Astro catalog favorites)
+  -> 20261028_0011 (Equipment capture capability JSONB, head)
 ```
 
 The baseline `upgrade()` and `downgrade()` are both no-ops. It does not create,
@@ -247,8 +249,17 @@ general-information fields: canonical `equipment_ref_id`, server-owned
 `ON DELETE SET NULL` Equipment foreign key, a non-negative integration-time
 CHECK constraint, and an Equipment-reference index. The legacy free-form
 `equipment_id` is retained unchanged and the revision performs no data update,
-inference, or backfill. The revision graph remains single-head at
-`20261012_0009`.
+inference, or backfill.
+
+Revision `20261021_0010` adds the shared AstroJournal catalog favorite set.
+
+Revision `20261028_0011` additively introduces nullable JSONB
+`astro_equipment.capture_capability`. It has no server default and performs no
+backfill or rewrite of existing Equipment rows. The normalized AZ/EQ exposure
+tables remain in place for older clients. Generalized capability updates remain
+part of the Equipment aggregate revision and existing `Equipment` change feed;
+no independent capability resource or migration-owned table is introduced. The
+revision graph remains single-head at `20261028_0011`.
 
 - The capture-date nullable expand migration deliberately contains no
   dual-write, backfill, read-path switch, constraint, or index work. Those

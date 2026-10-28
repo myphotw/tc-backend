@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.astrojournal.schemas.capture_capability import EquipmentCaptureCapability
+
 
 EquipmentKind = Literal["smartTelescope", "refractor", "reflector", "other"]
 EquipmentPurpose = Literal["imaging", "visual"]
@@ -79,6 +81,7 @@ class EquipmentCreate(BaseModel):
     eyepieces: list[EyepieceWrite] = Field(default_factory=list)
     az_exposure_capability: ExposureCapability | None = None
     eq_exposure_capability: ExposureCapability | None = None
+    capture_capability: EquipmentCaptureCapability | None = None
 
     @field_validator("name")
     @classmethod
@@ -114,6 +117,7 @@ class EquipmentUpdate(BaseModel):
     eyepieces: list[EyepieceWrite] | None = None
     az_exposure_capability: ExposureCapability | None = None
     eq_exposure_capability: ExposureCapability | None = None
+    capture_capability: EquipmentCaptureCapability | None = None
 
     @field_validator("name")
     @classmethod
@@ -152,6 +156,7 @@ class EquipmentResponse(BaseModel):
     eyepieces: list[EyepieceResponse]
     az_exposure_capability: ExposureCapability | None
     eq_exposure_capability: ExposureCapability | None
+    capture_capability: EquipmentCaptureCapability | None
     revision: int
     created_at: datetime
     updated_at: datetime

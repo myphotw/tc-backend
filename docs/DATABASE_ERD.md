@@ -174,6 +174,7 @@ erDiagram
         float aperture_mm
         float fov_width_degrees
         float fov_height_degrees
+        jsonb capture_capability
         int sort_order
         int revision
         datetime created_at
