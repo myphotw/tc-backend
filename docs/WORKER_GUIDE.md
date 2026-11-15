@@ -1,5 +1,61 @@
 # Worker Guide (v1.0.0 Freeze)
 
+## Cooperative shutdown (NAS)
+
+The three worker entry points handle SIGTERM/SIGINT with `WorkerShutdown`.
+The handler only sets a flag; it never acquires Event locks, logs, accesses
+storage or calls the DB. Cooperative Event waits check signals at most every
+100ms, including on Windows Python where a long lock wait can defer handlers.
+No further claim is started after a
+shutdown checkpoint. A claim already in progress is allowed to return safely.
+Handlers are installed before initialization and restored on exit.
+
+- Upload/Vision finish the claimed pipeline, its existing success/failure or
+  quota-WAITING commits, close sessions, and explicitly mark the monitor STOPPED.
+  Shutdown never interrupts file writes, tag-event publication or completion.
+- Plate Solve returns unfinished polling work using `requeue_transient()`:
+  WAITING, cleared started/completed timestamps, owner and lease, retained
+  provider IDs and attempts, and `last_error="Worker shutdown requested"`.
+  No failure counter is incremented. Claim-time attempts retain existing
+  semantics when there are no saved provider IDs.
+- A submitted request is not cancelled: submit and provider-ID persistence
+  finish before honoring shutdown. Submission lookups also save a discovered
+  job ID before yielding. Completed results (including an in-flight WCS fetch
+  and the completion commit) are finalized rather than discarded.
+- Restart polls saved provider work without another login/upload. Only the
+  existing explicit-provider-404 replacement policy permits a replacement.
+- Explicit monitor stop unregisters atexit and is idempotent. If the status DB
+  is unavailable, failure is logged without masking shutdown; heartbeat expiry
+  is the OFFLINE fallback, not proof that STOPPED was persisted.
+
+`docker-compose.nas.yml` uses configurable stop budgets:
+
+| Service | Variable | Default | Budget rationale |
+|---------|----------|---------|------------------|
+| backend | BACKEND_STOP_GRACE_PERIOD | 90s | Native Uvicorn graceful timeout 60s plus exit margin |
+| upload-worker | UPLOAD_STOP_GRACE_PERIOD | 5m | ffprobe 15s, ffmpeg thumbnail 30s, HTTP 30s x 3 retries per request, local pipeline/DB margin |
+| vision-worker | VISION_STOP_GRACE_PERIOD | 12m | Existing Google Vision SDK default RPC timeout/retry deadline 600s plus pipeline/DB margin |
+| plate-solve-worker | PLATE_SOLVE_STOP_GRACE_PERIOD | 5m | Current login/upload budget about 180s at default HTTP settings, ID commit/return margin; no need to wait the 1800s polling deadline |
+
+These are operational budgets, not hard upper bounds: slow storage, SDK retries,
+custom API timeouts and DB lock waits can exceed them. Reassess against actual
+NAS per-job durations before stopping busy workers. Do not shorten with `stop -t`.
+SIGKILL cannot run cleanup: Upload uses its existing stale recovery, Vision its
+existing six-hour stale threshold/live-worker guard, and Plate Solve its existing
+lease expiry. Previously committed plugin/file side effects are not undone.
+Provider success followed by response loss, a DB failure before ID persistence,
+or SIGKILL in that gap still cannot guarantee exactly-once external submission;
+this change adds no provider idempotency protocol or schema migration.
+
+Deployment: block requests and new maintenance writers, signal all worker
+replicas, wait for exit/DB transaction release, then stop the API and switch all
+event publishers/readers together. Use project `tc-backend` and compose file
+`docker-compose.nas.yml`; do not stop PostgreSQL or use an unqualified stack down.
+Old running images do not acquire graceful shutdown by updating the checkout:
+the first rollout still needs a separately verified old-worker drain procedure.
+No forced queue edits, cursor reset, provider cancellation or quota reset is part
+of this procedure. Inspect job/provider IDs and startup recovery before resuming.
+
 ## UploadWorker
 
 Entry: `python -m worker.background_worker`

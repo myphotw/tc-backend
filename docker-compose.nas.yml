@@ -34,6 +34,7 @@ services:
 
   backend:
     <<: *app-base
+    stop_grace_period: ${BACKEND_STOP_GRACE_PERIOD:-90s}
 
     command:
       - uvicorn
@@ -42,6 +43,8 @@ services:
       - 0.0.0.0
       - --port
       - "8000"
+      - --timeout-graceful-shutdown
+      - "60"
 
     healthcheck:
       test:
@@ -56,6 +59,7 @@ services:
 
   upload-worker:
     <<: *app-base
+    stop_grace_period: ${UPLOAD_STOP_GRACE_PERIOD:-5m}
 
     command:
       - python
@@ -68,6 +72,7 @@ services:
 
   vision-worker:
     <<: *app-base
+    stop_grace_period: ${VISION_STOP_GRACE_PERIOD:-12m}
     profiles: ["vision"]
 
     command:
@@ -81,6 +86,7 @@ services:
 
   plate-solve-worker:
     <<: *app-base
+    stop_grace_period: ${PLATE_SOLVE_STOP_GRACE_PERIOD:-5m}
     profiles: ["astro"]
     command:
       - python

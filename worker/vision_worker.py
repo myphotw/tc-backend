@@ -29,6 +29,7 @@ from app.memorykeeper.models.file_state import MemoryKeeperFileState
 from worker.plugins.base import PluginContext
 from worker.plugins.plugin_manager import PluginManager
 from worker.worker_monitor import WorkerMonitor
+from worker.shutdown import WorkerShutdown
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -45,7 +46,14 @@ LIVE_HEARTBEAT_SECONDS = int(
 WORKER_NAME = "VisionWorker"
 
 
-def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
+def run_worker(
+    poll_interval: int = POLLING_INTERVAL, *, shutdown: WorkerShutdown | None = None
+) -> None:
+    with shutdown or WorkerShutdown() as stopping:
+        _run_worker(poll_interval, stopping)
+
+
+def _run_worker(poll_interval: int, stopping: WorkerShutdown) -> None:
     """
     Vision Queue Worker를 실행한다.
 
@@ -54,17 +62,20 @@ def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
     """
     initialize_database()
     monitor = WorkerMonitor(WORKER_NAME)
-    _recover_stale(stale_seconds=STALE_SECONDS)
-    monitor.start()
-    logger.info(
-        "Vision worker started stale_seconds=%s recovery_interval=%s",
-        STALE_SECONDS,
-        STALE_RECOVERY_INTERVAL,
-    )
-    last_stale_at = time.monotonic()
-
     try:
-        while True:
+        if stopping.requested:
+            return
+        # Preserve startup ordering: recovery must inspect existing heartbeat /
+        # current_job_id before start() clears this worker's persisted job ID.
+        _recover_stale(stale_seconds=STALE_SECONDS)
+        monitor.start()
+        logger.info(
+            "Vision worker started stale_seconds=%s recovery_interval=%s",
+            STALE_SECONDS,
+            STALE_RECOVERY_INTERVAL,
+        )
+        last_stale_at = time.monotonic()
+        while not stopping.requested:
             monitor.maybe_heartbeat()
             now = time.monotonic()
             if now - last_stale_at >= STALE_RECOVERY_INTERVAL:
@@ -72,16 +83,17 @@ def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
                 last_stale_at = now
             db = SessionLocal()
             try:
-                processed = process_next_vision_job(db, monitor=monitor)
+                processed = process_next_vision_job(db, monitor=monitor, shutdown=stopping)
                 if not processed:
-                    time.sleep(poll_interval)
+                    stopping.wait(poll_interval)
             except Exception:
                 logger.exception("Unexpected vision worker error in main loop")
-                time.sleep(poll_interval)
+                stopping.wait(poll_interval)
             finally:
                 db.close()
     finally:
         monitor.stop()
+        logger.info("Vision worker shutdown complete")
 
 
 def _recover_stale(*, stale_seconds: int) -> int:
@@ -100,6 +112,7 @@ def process_next_vision_job(
     db: Session,
     *,
     monitor: WorkerMonitor | None = None,
+    shutdown: WorkerShutdown | None = None,
 ) -> bool:
     """
     다음 WAITING VisionJob 하나를 처리한다.
@@ -107,6 +120,8 @@ def process_next_vision_job(
     Returns:
         bool: 처리했거나 usage limit으로 대기했으면 True, job이 없으면 False
     """
+    if shutdown is not None and shutdown.requested:
+        return False
     repository = VisionJobRepository(db)
     job = repository.get_next_waiting_job()
     if job is None:
@@ -126,9 +141,12 @@ def process_next_vision_job(
             monitor,
             seconds=USAGE_RETRY_INTERVAL,
             current_job_id=str(job.id),
+            shutdown=shutdown,
         )
         return True
 
+    if shutdown is not None and shutdown.requested:
+        return False
     claimed = repository.mark_processing(job)
     if claimed is None:
         logger.info("Vision job claim skipped: job_id=%s", job.id)
@@ -153,6 +171,7 @@ def process_next_vision_job(
             monitor,
             seconds=USAGE_RETRY_INTERVAL,
             current_job_id=str(job.id),
+            shutdown=shutdown,
         )
     except Exception as exc:
         logger.exception("Vision job failed: job_id=%s", job.id)
@@ -286,16 +305,23 @@ def _wait_with_heartbeat(
     *,
     seconds: int,
     current_job_id: str | None = None,
+    shutdown: WorkerShutdown | None = None,
 ) -> None:
     """대기 중에도 heartbeat를 유지한다."""
     deadline = time.monotonic() + seconds
     while True:
+        if shutdown is not None and shutdown.requested:
+            return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         if monitor is not None:
             monitor.maybe_heartbeat(current_job_id=current_job_id)
-        time.sleep(min(monitor.heartbeat_interval if monitor else 30, remaining))
+        delay = min(monitor.heartbeat_interval if monitor else 30, remaining)
+        if shutdown is None:
+            time.sleep(delay)
+        else:
+            shutdown.wait(delay)
 
 
 if __name__ == "__main__":

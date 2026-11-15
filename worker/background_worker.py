@@ -25,6 +25,7 @@ from worker.plugins.base import PluginContext
 from worker.plugins.plugin_manager import PluginManager
 from worker.worker_id import resolve_stale_seconds, resolve_upload_worker_id
 from worker.worker_monitor import WorkerMonitor
+from worker.shutdown import WorkerShutdown
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -33,7 +34,14 @@ POLLING_INTERVAL = int(os.environ.get("POLLING_INTERVAL", "2"))
 STALE_RECOVERY_INTERVAL = int(os.environ.get("UPLOAD_STALE_RECOVERY_INTERVAL", "30"))
 
 
-def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
+def run_worker(
+    poll_interval: int = POLLING_INTERVAL, *, shutdown: WorkerShutdown | None = None
+) -> None:
+    with shutdown or WorkerShutdown() as stopping:
+        _run_worker(poll_interval, stopping)
+
+
+def _run_worker(poll_interval: int, stopping: WorkerShutdown) -> None:
     """업로드 후처리 Worker를 실행한다."""
     initialize_database()
     worker_id = resolve_upload_worker_id()
@@ -46,13 +54,12 @@ def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
         stale_seconds,
     )
 
-    last_stale_at = 0.0
-    # 시작 시 1회 stale 복구
-    _recover_stale(worker_id=worker_id, stale_seconds=stale_seconds)
-    last_stale_at = time.monotonic()
-
     try:
-        while True:
+        if stopping.requested:
+            return
+        _recover_stale(worker_id=worker_id, stale_seconds=stale_seconds)
+        last_stale_at = time.monotonic()
+        while not stopping.requested:
             monitor.maybe_heartbeat()
             now = time.monotonic()
             if now - last_stale_at >= STALE_RECOVERY_INTERVAL:
@@ -61,7 +68,9 @@ def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
 
             claimed = False
             try:
-                claimed = process_next_job(worker_id=worker_id, monitor=monitor)
+                claimed = process_next_job(
+                    worker_id=worker_id, monitor=monitor, shutdown=stopping
+                )
             except Exception:
                 logger.exception(
                     "Unexpected worker error in main loop worker_id=%s",
@@ -69,9 +78,10 @@ def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
                 )
 
             if not claimed:
-                time.sleep(poll_interval)
+                stopping.wait(poll_interval)
     finally:
         monitor.stop()
+        logger.info("Upload worker shutdown complete worker_id=%s", worker_id)
 
 
 def _recover_stale(*, worker_id: str, stale_seconds: int) -> int:
@@ -90,18 +100,23 @@ def process_next_job(
     worker_id: str | None = None,
     monitor: WorkerMonitor | None = None,
     db: Session | None = None,
+    shutdown: WorkerShutdown | None = None,
 ) -> bool:
     """
     다음 WAITING UploadJob을 claim 후 처리한다.
 
     claim transaction과 processing transaction을 분리한다.
     """
+    if shutdown is not None and shutdown.requested:
+        return False
     resolved_worker_id = worker_id or resolve_upload_worker_id()
 
     # --- claim transaction (short) ---
     claim_db = db if db is not None else SessionLocal()
     owned_claim_db = db is None
     try:
+        if shutdown is not None and shutdown.requested:
+            return False
         repository = UploadJobRepository(claim_db)
         job = repository.claim_next_waiting_job(resolved_worker_id)
         job_id = job.job_id if job is not None else None

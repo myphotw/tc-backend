@@ -42,6 +42,8 @@ class WorkerMonitor:
 
     def start(self) -> None:
         """Worker를 RUNNING으로 등록한다."""
+        if self._started:
+            return
         db = SessionLocal()
         try:
             WorkerStatusRepository(db).update_status(
@@ -61,19 +63,27 @@ class WorkerMonitor:
         """Worker를 STOPPED로 변경한다."""
         if not self._started:
             return
-        db = SessionLocal()
+        # Explicit finally and atexit must not issue duplicate STOPPED writes.
+        # A failed status write is logged; heartbeat expiry remains the fallback.
+        self._started = False
+        atexit.unregister(self.stop)
+        db = None
         try:
+            db = SessionLocal()
             WorkerStatusRepository(db).update_status(
                 self.worker_name,
                 WorkerStatusValue.STOPPED,
                 clear_current_job=True,
             )
-            self._started = False
             logger.info("Worker monitor stopped: %s", self.worker_name)
         except Exception:
             logger.exception("Failed to mark worker stopped: %s", self.worker_name)
         finally:
-            db.close()
+            if db is not None:
+                try:
+                    db.close()
+                except Exception:
+                    logger.exception("Failed to close worker status session: %s", self.worker_name)
 
     def maybe_heartbeat(
         self,

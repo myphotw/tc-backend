@@ -34,6 +34,7 @@ from app.common.services.api_clients.astrometry.wcs_parser import parse_wcs_fits
 from app.common.services.key_resolver import ExternalServiceName, KeyResolver
 from app.common.services.storage_service import StorageService
 from worker.worker_monitor import WorkerMonitor
+from worker.shutdown import WorkerShutdown, WorkerShutdownRequested
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -58,27 +59,36 @@ class PlateSolveWork:
     height: int | None
 
 
-def run_worker(poll_interval: int = POLLING_INTERVAL) -> None:
+def run_worker(
+    poll_interval: int = POLLING_INTERVAL, *, shutdown: WorkerShutdown | None = None
+) -> None:
+    with shutdown or WorkerShutdown() as stopping:
+        _run_worker(poll_interval, stopping)
+
+
+def _run_worker(poll_interval: int, stopping: WorkerShutdown) -> None:
     initialize_database()
     worker_id = resolve_plate_solve_worker_id()
     monitor = WorkerMonitor(worker_id)
     monitor.start()
     logger.info("Plate Solve worker started worker_id=%s", worker_id)
     try:
-        while True:
+        while not stopping.requested:
             monitor.maybe_heartbeat()
             try:
                 processed = process_next_plate_solve_job(
                     monitor=monitor,
                     worker_id=worker_id,
+                    shutdown=stopping,
                 )
                 if not processed:
-                    time.sleep(poll_interval)
+                    stopping.wait(poll_interval)
             except Exception:
                 logger.exception("Unexpected Plate Solve worker error")
-                time.sleep(poll_interval)
+                stopping.wait(poll_interval)
     finally:
         monitor.stop()
+        logger.info("Plate Solve worker shutdown complete worker_id=%s", worker_id)
 
 
 def resolve_plate_solve_worker_id() -> str:
@@ -99,10 +109,15 @@ def process_next_plate_solve_job(
     provider_poll_interval: int = PROVIDER_POLL_INTERVAL,
     provider_timeout: int = PROVIDER_TIMEOUT,
     api_key: str | None = None,
+    shutdown: WorkerShutdown | None = None,
 ) -> bool:
     """Claim and process one job without holding a DB transaction during I/O."""
+    if shutdown is not None and shutdown.requested:
+        return False
     claim_db = session_factory()
     try:
+        if shutdown is not None and shutdown.requested:
+            return False
         claimed = PlateSolveQueueService(claim_db).claim_next(
             worker_id=worker_id,
             lease_seconds=lease_seconds,
@@ -129,6 +144,8 @@ def process_next_plate_solve_job(
 
     client = None
     try:
+        if shutdown is not None:
+            shutdown.check()
         work = _load_work(
             session_factory,
             job_id=job_id,
@@ -148,12 +165,16 @@ def process_next_plate_solve_job(
         provider_job_id = work.provider_job_id
         resuming_saved_work = submission_id is not None or provider_job_id is not None
         if not resuming_saved_work:
+            if shutdown is not None:
+                shutdown.check()
             logger.info(
                 "Creating initial Astrometry submission job_id=%s common_file_id=%s",
                 job_id,
                 common_file_id,
             )
             _reserve_submit_usage(session_factory)
+            # Do not interrupt submit -> persist-ID on SIGTERM/SIGINT. Once
+            # this request starts, finish it and save its ID before yielding.
             submitted = client.submit(image_path=work.image_path)
             submission_id = int(submitted["submission_id"])
             _record_submission(
@@ -183,10 +204,13 @@ def process_next_plate_solve_job(
                 lease_seconds=lease_seconds,
                 poll_interval=provider_poll_interval,
                 timeout=provider_timeout,
+                shutdown=shutdown,
             )
         except AstrometryProviderWorkNotFound as exc:
             if not resuming_saved_work:
                 raise
+            if shutdown is not None:
+                shutdown.check()
             logger.warning(
                 "Saved Astrometry work is explicitly absent; creating replacement "
                 "submission job_id=%s provider_submission_id=%s provider_job_id=%s "
@@ -218,6 +242,7 @@ def process_next_plate_solve_job(
                 lease_seconds=lease_seconds,
                 poll_interval=provider_poll_interval,
                 timeout=provider_timeout,
+                shutdown=shutdown,
             )
         provider = _normalize_result(provider, width=work.width, height=work.height)
         provider["wcs"] = _fetch_optional_wcs(client, provider=provider)
@@ -237,6 +262,19 @@ def process_next_plate_solve_job(
             job_id,
             common_file_id,
         )
+    except WorkerShutdownRequested:
+        retry_db = session_factory()
+        try:
+            # Existing transient return preserves provider IDs/attempts and
+            # clears owner/lease. Do not classify shutdown as provider failure.
+            PlateSolveQueueService(retry_db).requeue_transient(
+                job_id=job_id,
+                worker_id=worker_id,
+                error_message="Worker shutdown requested",
+            )
+        finally:
+            retry_db.close()
+        logger.info("Plate Solve job returned for shutdown job_id=%s", job_id)
     except Exception as exc:
         if (
             submission_id is not None or provider_job_id is not None
@@ -437,9 +475,12 @@ def _poll_provider(
     lease_seconds: int,
     poll_interval: int,
     timeout: int,
+    shutdown: WorkerShutdown | None = None,
 ) -> dict[str, object]:
     deadline = time.monotonic() + timeout
     while True:
+        if shutdown is not None:
+            shutdown.check()
         _touch_lease(
             session_factory,
             job_id=job_id,
@@ -480,7 +521,10 @@ def _poll_provider(
                 "Astrometry provider timed out",
                 code=ExternalApiErrorCode.PROVIDER_TIMEOUT,
             )
-        time.sleep(poll_interval)
+        if shutdown is None:
+            time.sleep(poll_interval)
+        else:
+            shutdown.wait(poll_interval)
 
 
 def _is_transient_provider_error(exc: BaseException) -> bool:
