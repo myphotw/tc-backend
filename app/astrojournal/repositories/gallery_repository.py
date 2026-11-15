@@ -63,6 +63,64 @@ class AstroGalleryRepository:
     def get(self, record_id: str) -> AstroGalleryRow | None:
         return self._base_query().filter(ObservationRecord.id == record_id).first()
 
+    def active_record_ids_for_files(self, file_ids: set[int]) -> list[str]:
+        if not file_ids:
+            return []
+        rows = (
+            self._base_query()
+            .with_entities(ObservationRecord.id)
+            .filter(ObservationRecord.file_id.in_(file_ids))
+            .distinct()
+            .order_by(ObservationRecord.id)
+            .all()
+        )
+        return [row.id for row in rows]
+
+    def current_resource_states(
+        self, record_ids: set[str]
+    ) -> dict[str, tuple[str, int | None]]:
+        """Resolve one change-feed page, including tombstones, in one SELECT.
+
+        Availability follows _base_query's required joins/filters. Metadata,
+        equipment and Plate Solve results are optional and do not gate reads.
+        """
+        if not record_ids:
+            return {}
+        states = {record_id: ("MISSING", None) for record_id in record_ids}
+        rows = (
+            self.db.query(
+                ObservationRecord.id,
+                ObservationRecord.revision,
+                ObservationRecord.deleted_at,
+                ObservationRecord.service_name,
+                CommonFile.id.label("common_file_id"),
+                CommonFile.deleted,
+                CommonFileService.id.label("service_link_id"),
+            )
+            .outerjoin(CommonFile, CommonFile.id == ObservationRecord.file_id)
+            .outerjoin(
+                CommonFileService,
+                (CommonFileService.file_id == CommonFile.id)
+                & (CommonFileService.service_name == self.SERVICE_NAME),
+            )
+            .filter(ObservationRecord.id.in_(record_ids))
+            .all()
+        )
+        for row in rows:
+            if row.deleted_at is not None:
+                state = "DELETED"
+            elif (
+                row.service_name == self.SERVICE_NAME
+                and row.common_file_id is not None
+                and row.deleted is False
+                and row.service_link_id is not None
+            ):
+                state = "ACTIVE"
+            else:
+                state = "UNAVAILABLE"
+            states[row.id] = (state, row.revision)
+        return states
+
     def _base_query(self):
         return (
             self.db.query(

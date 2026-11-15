@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+from app.astrojournal.services.gallery_visibility_service import AstroGalleryVisibilityService
+
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -77,9 +79,10 @@ class ObservationRecordService:
         values = payload.model_dump(exclude={"client_record_id"})
         self._prepare_created_equipment(values)
 
-        FileServiceRepository(self.db).ensure_link(
+        _, link_created = FileServiceRepository(self.db).ensure_link(
             file_id=payload.file_id,
             service_name=self.SERVICE_NAME,
+            commit=False,
         )
         demoted_records: list[ObservationRecord] = []
         if payload.representative:
@@ -93,6 +96,8 @@ class ObservationRecordService:
             **values,
         )
         try:
+            if link_created:
+                AstroGalleryVisibilityService(self.db).notify_for_files([payload.file_id])
             self.repository.create(record, commit=False)
             plate_solve_job, _ = self.plate_solve_queue.enqueue(
                 common_file_id=record.file_id,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,6 +17,8 @@ class ChangeEventResponse(BaseModel):
     revision: int | None
     tombstone: bool
     changed_at: datetime
+    current_resource_state: Literal["ACTIVE", "DELETED", "MISSING", "UNAVAILABLE"] | None = None
+    current_revision: int | None = None
 
 
 class ChangesResponse(BaseModel):

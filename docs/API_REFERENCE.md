@@ -714,6 +714,8 @@ than the supplied `cursor`.
       "operation": "DELETE",
       "revision": 4,
       "tombstone": true,
+      "current_resource_state": "DELETED",
+      "current_revision": 4,
       "changed_at": "2026-08-07T12:00:00Z"
     }
   ],
@@ -725,6 +727,85 @@ than the supplied `cursor`.
 CREATE and UPDATE events identify the resource and revision; clients retrieve
 the current canonical resource separately. DELETE is represented as a
 tombstone. An empty page retains the requested cursor as `next_cursor`.
+
+On PostgreSQL, the feed is read in an independent READ COMMITTED transaction.
+Every ORM event insertion takes the shared transaction-level Changes fence
+before allocating its ID, and keeps it until commit/rollback. A feed reader
+tries the exclusive side of that fence before selecting a page. If publishers
+are still in flight it returns `503` with `detail.code=CHANGE_FEED_BUSY` and
+`Retry-After: 1`; clients retain their checkpoint and retry normally.
+
+This intentionally does **not** serialize domain writers or force physical
+commit order. Instead, consumers cannot advance beyond a committed higher ID
+while a lower allocated ID is uncommitted. Readers never queue an exclusive
+lock behind writers, avoiding a row-lock/advisory-lock cycle. A successful
+response retains the existing integer cursor, ordering, page and filter
+semantics. No event rows are rewritten or hidden. Feed reads inside an event
+writer transaction or under REPEATABLE READ/SERIALIZABLE are rejected.
+
+All API/worker/maintenance event publishers must run this version. Drain old
+writer transactions and switch readers and publishers together before resuming
+sync traffic; mixed old publishers bypass the fence. Raw SQL/Core/bulk inserts
+that bypass the ORM flush hook are not part of this publication contract.
+
+For AstroJournal `ObservationRecord` and `AstroGalleryVisibility` events, optional `current_resource_state`
+and `current_revision` describe the resource **at lookup time**, not at the
+historical event revision. Other resource types/services leave both fields null.
+
+| State | Meaning |
+|-------|---------|
+| `ACTIVE` | Currently eligible for Astro Gallery detail (active record/file and AstroJournal service link). |
+| `DELETED` | ObservationRecord has `deleted_at` set, regardless of file/link cleanup. |
+| `MISSING` | ObservationRecord no longer exists; current revision is null. |
+| `UNAVAILABLE` | Record exists but Gallery's required file, service link, or service condition is not satisfied. |
+
+CREATE/UPDATE does not guarantee that current detail still exists. Historical
+CREATE/UPDATE/DELETE events are all retained; operation, event revision,
+tombstone, ordering and cursors are unchanged. State is resolved in one batch
+per page and is advisory: a deletion can occur after this lookup. Clients must
+still handle detail `404` without permanently stalling synchronization. Apply
+DELETE tombstones without fetching detail; process deleted/missing resources
+and advance the cursor after local handling. Do not treat transient network or
+server errors as deletion. Old clients may ignore these additive fields.
+
+`AstroGalleryVisibility` is a projection recheck notification: `resource_id` is
+an ObservationRecord UUID, `operation=UPDATE`, `revision=null`, and
+`tombstone=false`. It is emitted when file or AstroJournal service-link recovery
+makes an existing, non-deleted record Gallery-visible. Recovery DB writes and
+the notification commit together. ObservationRecord revision is not increased.
+Multiple records sharing one file each receive a notification. Repeated
+notifications are safe; their current state is resolved at read time, so a later
+deletion may yield DELETED/MISSING/UNAVAILABLE rather than ACTIVE.
+
+Clients distinguish visibility ordering (event cursor) from record ordering
+(current_revision). An equal record revision may become hidden then visible
+again at increasing event cursors. A visibility notification must never undo an
+actual DELETE tombstone. Unknown resource types with the existing UPDATE
+operation may be skipped while advancing the page checkpoint. Existing clients
+need explicit support to benefit from recovery notifications.
+
+Android also rechecks at most five due soft-hidden IDs after draining the feed,
+without downloading a Gallery snapshot. Durable JSON cache markers preserve
+visibility cursor and retry times across restart. First retry waits one minute;
+subsequent absent/error retries use exponential backoff capped at six hours.
+Actual DELETE tombstones are excluded. Transient recheck errors fail the current
+page before its checkpoint is saved; successful earlier local mutations remain
+visible. No server event retention or cursor-reset policy is introduced.
+
+Local cross-language contract check (SQLite, not PostgreSQL; detail HTTP mocked):
+
+```powershell
+# Run from the tc-backend checkout. This test creates the output directory.
+$env:ASTRO_VISIBILITY_FIXTURE_OUT = "$PWD\watcher_data\pytest-runtime\astro-gallery-visibility-contract.json"
+python -m pytest -q tests/test_astro_gallery_visibility.py
+$env:ASTRO_VISIBILITY_FIXTURE = $env:ASTRO_VISIBILITY_FIXTURE_OUT
+# Then run from the astro_journal checkout in the same PowerShell session:
+flutter test --no-pub test/gallery_visibility_recovery_test.dart
+```
+
+Without `ASTRO_VISIBILITY_FIXTURE`, only the cross-language fixture test is
+skipped; Android's independent visibility/SQLite tests still run. This is not
+a live HTTP, codec, PostgreSQL concurrency, or NAS end-to-end test.
 
 신규 API는 v1.0 Freeze 이후 별도 버전으로 추가한다.
 

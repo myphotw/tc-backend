@@ -50,16 +50,24 @@ class FileServiceRepository:
         if existing is not None:
             return existing, False
 
+        # begin_nested() flushes pending caller changes unconditionally. Keep
+        # that flush outside the uniqueness handler: unrelated caller failures
+        # must not be mistaken for a duplicate service link.
+        self.db.flush()
         link = CommonFileService(file_id=file_id, service_name=service_name)
-        self.db.add(link)
+        created = True
         try:
-            self.db.flush()
-            if commit:
-                self.db.commit()
+            with self.db.begin_nested():
+                self.db.add(link)
+                self.db.flush()
         except IntegrityError:
-            self.db.rollback()
+            if not self.db.is_active:
+                raise
             existing = self.get(file_id=file_id, service_name=service_name)
             if existing is None:
                 raise
-            return existing, False
-        return link, True
+            link = existing
+            created = False
+        if commit:
+            self.db.commit()
+        return link, created

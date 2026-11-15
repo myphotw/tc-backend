@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Index, Integer, String, text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Index, Integer, String, event, text
+from sqlalchemy.orm import Session
 from sqlalchemy.sql import func
 
 from app.common.model_base import Base
+from app.common.services.change_feed_fence import acquire_change_feed_write_fence
 
 
 class CommonChangeEvent(Base):
@@ -43,3 +45,10 @@ class CommonChangeEvent(Base):
         server_default=func.now(),
         index=True,
     )
+
+
+@event.listens_for(Session, "before_flush")
+def _fence_new_change_events(session: Session, flush_context, instances) -> None:
+    # Covers repository append AND direct ORM insertion, before INSERT/nextval.
+    if any(isinstance(row, CommonChangeEvent) for row in session.new):
+        acquire_change_feed_write_fence(session)

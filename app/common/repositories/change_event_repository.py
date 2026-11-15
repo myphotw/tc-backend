@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.common.models.change_event import CommonChangeEvent
+from app.common.services.change_feed_fence import acquire_change_feed_read_fence
 
 
 class ChangeOperation:
@@ -44,6 +45,7 @@ class ChangeEventRepository:
         limit: int,
         service_name: str | None = None,
     ) -> tuple[list[CommonChangeEvent], bool]:
+        acquire_change_feed_read_fence(self.db)
         query = self.db.query(CommonChangeEvent).filter(CommonChangeEvent.id > cursor)
         if service_name is not None:
             query = query.filter(CommonChangeEvent.service_name == service_name)

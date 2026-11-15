@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.astrojournal.services.gallery_visibility_service import AstroGalleryVisibilityService
+
 from app.common.models.file import CommonFile
 from app.common.models.file_metadata import CommonFileMetadata
 from app.common.models.file_service import CommonFileService
@@ -110,6 +112,8 @@ class HashPlugin(BasePlugin):
                         metadata=metadata,
                         state_missing_known=link_created,
                     )
+                if service_name == "AstroJournal" and link_created:
+                    AstroGalleryVisibilityService(context.db).notify_for_files([existing.id])
                 context.db.commit()
             except Exception:
                 context.db.rollback()

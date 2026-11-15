@@ -150,6 +150,44 @@ PostgreSQL 16, marker, and suite-lock guards:
 
 Do not automate or run this procedure against NAS/production infrastructure.
 
+## Sync transaction safety tests
+
+`test_sync_transaction_safety.py` uses the same guarded disposable PostgreSQL 16
+database. It exercises real concurrent UNIQUE conflicts in service-link creation
+and verifies that savepoint rollback retains earlier CommonFile/ObservationRecord
+changes, for both commit options.
+
+For the Changes feed, the selected design is a shared-publisher/nonblocking
+exclusive-reader fence, not a global exclusive publisher lock. Tests deliberately
+commit a higher ID first and require a `503 CHANGE_FEED_BUSY` response until the
+lower-ID writer commits or rolls back. They also cover multi-event transactions,
+multiple services, existing cursors, rollback gaps, direct ORM insertion,
+concurrent publishers/consumer polling, and a row-lock cycle that a queued
+exclusive reader would deadlock. Physical writer commit order is not constrained;
+the verified invariant is that an API consumer cannot pass an uncommitted ID.
+
+Publication audit: production event construction is centralized in
+`ChangeEventRepository.append()`; the Session before-flush hook also fences direct
+ORM inserts. Current callers are AstroJournal observation records, sites,
+equipment, framing references, Plate Solve status, reset and Gallery visibility;
+MemoryKeeper files/metadata, places/file-place relations, tags/file-tag relations,
+capture dates, photo categories, tag visibility and reset; Vision worker tag
+projection; and the place/source-year maintenance scripts. They share the same
+hook regardless of caller-owned commit, worker/API session, or multi-event
+transaction. No production Core/raw-SQL/bulk event insertion path was found.
+New bypass writers must not be introduced without the same fence protocol.
+
+`ensure_link(commit=False)` leaves the caller's transaction open. A conflict
+rolls back only its insertion savepoint; `commit=True` completes the attempted
+write transaction after resolving the conflict. The pre-existing-link fast path
+keeps its prior behavior and does not commit unrelated pending caller work.
+
+```powershell
+python -m pytest -o "addopts=" -m postgresql_integration tests/integration/postgresql/test_sync_transaction_safety.py -v
+```
+
+Do not interpret SQLite-only results as proof of these PostgreSQL guarantees.
+
 ## Secret-test scope and limitation
 
 The suite substitutes a deliberately wrong password for the already-authorized

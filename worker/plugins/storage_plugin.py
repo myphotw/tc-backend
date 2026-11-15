@@ -5,6 +5,8 @@ from __future__ import annotations
 import mimetypes
 import time
 
+from app.astrojournal.services.gallery_visibility_service import AstroGalleryVisibilityService
+
 from sqlalchemy.exc import IntegrityError
 
 from app.common.models.file import CommonFile
@@ -94,8 +96,9 @@ class StoragePlugin(BasePlugin):
             common_file.service_name = context.service_name or "MemoryKeeper"
             common_file.deleted = False
             try:
-                context.db.commit()
-                context.db.refresh(common_file)
+                # File recovery, link recovery and visibility notification must
+                # commit together in _ensure_service_link_and_projection below.
+                context.db.flush()
             except Exception:
                 context.db.rollback()
                 raise
@@ -274,6 +277,10 @@ class StoragePlugin(BasePlugin):
                     metadata=metadata,
                     state_missing_known=link_created,
                 )
+            if context.restore_deleted_common_file or (
+                service_name == "AstroJournal" and link_created
+            ):
+                AstroGalleryVisibilityService(context.db).notify_for_files([common_file.id])
             context.db.commit()
         except Exception:
             context.db.rollback()
